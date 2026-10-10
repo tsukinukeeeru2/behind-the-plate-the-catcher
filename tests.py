@@ -2572,6 +2572,170 @@ class StadiumPieceTests(unittest.TestCase):
         self.assertNotIn("form.submit()", js)
         self.assertIn("'X-Fetch'", js)
 
+    def test_the_cursor_numbers_in_the_page_are_the_ones_the_server_judges_with(self):
+        import re
+        js = stadium._assets()[1]
+        radius = {k: float(v) for k, v in re.findall(r"(normal|power): \{ radius: ([0-9.]+)", js)}
+        self.assertEqual(radius, {"normal": swing_module.MODES["normal"]["radius"], "power": swing_module.MODES["power"]["radius"]})
+        self.assertIn("D.BALL_R = %s;" % swing_module.BALL_R, js)
+        self.assertIn("D.TIME_MAX = %s;" % swing_module.TIME_MAX, js)
+        self.assertIn("D.TIME_GOOD = %s;" % swing_module.TIME_GOOD, js)
+
+    def test_the_page_has_a_step_guide_a_timer_a_pause_and_a_hand_off_screen(self):
+        js, page = stadium._assets()[1], stadium.render_stadium_page()
+        for needle in ('id="guide"', 'id="g-tmr"', 'id="handoff"', 'id="pausev"'):
+            self.assertIn(needle, page, needle)
+        for needle in ("function timerTick", "function setPaused", "function updateGuide", "function lockCall", "function batterReady",
+                       "function duelClick", "if (e.button !== 0) return;",              # only the left button swings
+                       "if (d.sent) return;",                                           # one swing per pitch: a held or repeated click does nothing
+                       "if (!e.repeat) catchPress", "if (e.code === 'KeyP'",             # one Space press per pitch, and P pauses
+                       "BTP.settings.TIMERS", "Time up"):
+            self.assertIn(needle, js, needle)
+        self.assertEqual(js.count("class=\"ho-ready\""), 1)                            # the hand-off has exactly one way forward: the batter's click
+        self.assertEqual(swing_module.MODES.keys(), {"normal", "power"})
+
+    def test_the_timer_choices_include_off_and_the_rule_is_written_on_screen(self):
+        js = stadium._assets()[1]
+        self.assertIn("TIMERS: [0, 10, 15, 20, 30]", js)
+        self.assertIn("your current pick is thrown", js)
+        self.assertIn("none picked: ", js)
+
+
+# ---------- two players: a human batter with the mouse (swing.py, /pitch2p, /swing) ----------
+import swing as swing_module
+from judge import judge_pitch, prepare_pitch
+
+
+class DuelTests(unittest.TestCase):
+    def _play(self, dx, dy, off, mode="normal", n=150, bats=None, seed=3):
+        """Run n identical swings (fresh batters) through the real judge. Returns the outcomes."""
+        rng = random.Random(seed)
+        outs = []
+        for _ in range(n):
+            st = generate_random_situation(rng)
+            st.runners = [False, False, False]
+            if bats:
+                st.batter.bats = bats
+            pre = prepare_pitch(st, "four_seam", "mid_mid", rng, "strike")
+            human = swing_module.judge_swing(dx, dy, off, mode, st.batter, rng)
+            human["swung"] = True
+            outs.append(judge_pitch(st, "four_seam", "mid_mid", rng, "strike", prepared=pre, human=human))
+        return outs
+
+    def _share(self, outs, pred):
+        return sum(1 for o in outs if pred(o)) / len(outs)
+
+    def test_a_ball_caught_in_the_middle_is_hit_hard_and_a_ball_off_centre_is_not(self):
+        centre = self._play(0.0, 0.0, 0.0)
+        off = self._play(0.0, 0.17, 0.0)
+        self.assertGreater(self._share(centre, lambda o: o["batted_ball"] and o["batted_ball"].hardness == "hard"), 0.95)
+        self.assertLess(self._share(off, lambda o: o["batted_ball"] and o["batted_ball"].hardness == "hard"), 0.05)
+        self.assertGreater(self._share(off, lambda o: o["result"] == "Foul"), 0.5)         # the rim of the cursor is mostly foul
+        self.assertGreater(self._share(centre, lambda o: o["result"] in ("Double", "Triple", "Home run")), 0.3)
+
+    def test_the_cursor_height_decides_grounder_or_fly_ball(self):
+        above = self._play(0.0, 0.09, 0.0)       # the cursor was above the ball: the bat meets its top
+        below = self._play(0.0, -0.09, 0.0)      # below the ball: it gets under it
+        self.assertGreater(self._share(above, lambda o: o["batted_ball"] and o["batted_ball"].ball_type == "ground"), 0.9)
+        self.assertGreater(self._share(below, lambda o: o["batted_ball"] and o["batted_ball"].ball_type == "fly"), 0.9)
+
+    def test_early_pulls_late_goes_the_other_way_and_it_follows_the_batters_hand(self):
+        for bats, pull_side in (("R", "LF"), ("L", "RF")):
+            early = self._play(0.0, 0.0, -0.12, bats=bats)
+            late = self._play(0.0, 0.0, 0.12, bats=bats)
+            in_play_early = [o for o in early if o["batted_ball"]]
+            in_play_late = [o for o in late if o["batted_ball"]]
+            self.assertGreater(len(in_play_early), 40)
+            self.assertGreater(self._share(in_play_early, lambda o: o["batted_ball"].direction == "pull"), 0.95)
+            self.assertGreater(self._share(in_play_late, lambda o: o["batted_ball"].direction == "oppo"), 0.95)
+            self.assertGreater(self._share(in_play_early, lambda o: o["fielding"]["position"] == pull_side), 0.4)
+            self.assertGreater(self._share(in_play_late, lambda o: o["fielding"]["position"] != pull_side), 0.4)
+
+    def test_a_swing_far_from_the_ball_or_far_too_late_misses_and_a_take_is_a_called_pitch(self):
+        self.assertEqual({o["result"] for o in self._play(0.0, 0.30, 0.0, n=40)}, {"Whiff"})
+        self.assertEqual({o["result"] for o in self._play(0.0, 0.0, 0.25, n=40)}, {"Whiff"})
+        self.assertEqual({o["result"] for o in self._play(0.0, 0.0, -0.25, n=40)}, {"Whiff"})
+        rng = random.Random(5)
+        for _ in range(60):
+            st = generate_random_situation(rng)
+            pre = prepare_pitch(st, "four_seam", "mid_mid", rng, "strike")
+            o = judge_pitch(st, "four_seam", "mid_mid", rng, "strike", prepared=pre, human={"swung": False})
+            self.assertFalse(o["swung"])
+            if pre["in_zone"]:
+                self.assertEqual(o["result"], "Strike")
+            else:
+                self.assertIn(o["result"], ("Ball", "Strike"))      # a close one can be framed into a strike, never anything else
+
+    def test_a_power_swing_trades_a_smaller_cursor_for_more_long_balls(self):
+        normal = self._play(0.0, 0.0, 0.0, "normal", n=300)
+        power = self._play(0.0, 0.0, 0.0, "power", n=300)
+        self.assertGreater(self._share(power, lambda o: o["result"] == "Home run"), self._share(normal, lambda o: o["result"] == "Home run") + 0.05)
+        # 14 cm off: the big cursor still reaches the ball, the small one does not
+        self.assertGreater(self._share(self._play(0.0, 0.14, 0.0, "normal"), lambda o: o["swung"] and o["result"] != "Whiff"), 0.9)
+        self.assertEqual({o["result"] for o in self._play(0.0, 0.14, 0.0, "power", n=40)}, {"Whiff"})
+
+    def test_a_pitch_with_no_human_input_keeps_the_same_numbers_as_before(self):
+        a, b = random.Random(9), random.Random(9)
+        st1, st2 = generate_random_situation(random.Random(2)), generate_random_situation(random.Random(2))
+        o1 = judge_pitch(st1, "slider", "out_lo", a, "strike")
+        pre = prepare_pitch(st2, "slider", "out_lo", b, "strike")
+        o2 = judge_pitch(st2, "slider", "out_lo", b, "strike", prepared=pre)
+        self.assertEqual((o1["result"], o1["timing"], o1["actual_course"], o1["in_zone"]), (o2["result"], o2["timing"], o2["actual_course"], o2["in_zone"]))
+
+    def _api(self, method, path, body=""):
+        return json.loads(json.loads(pagesapi.handle(method, path, body, json.dumps({"X-Fetch": "1"})))["body"])
+
+    def _start_duel(self):
+        self._api("POST", "/start", "scenario=random&difficulty=normal&mode=duel&seed=4242")
+        return self._api("POST", "/playball")
+
+    def test_the_two_player_pitch_goes_in_two_steps_and_the_extra_requests_are_ignored(self):
+        st = self._start_duel()
+        self.assertEqual(st["mode"], "duel")
+        key = st["repertoire"][0]["key"]
+        seq0 = st["seq"]
+        self.assertIsNone(self._api("POST", "/swing", "swung=0")["plan"])                # nothing was thrown yet: ignored
+        self.assertEqual(self._api("POST", "/pitch", "pitch_type=%s&course=mid_mid&intent=strike" % key)["seq"], seq0)   # the one-player route is shut
+        planned = self._api("POST", "/pitch2p", "pitch_type=%s&course=mid_mid&intent=strike" % key)
+        self.assertIsNotNone(planned["plan"])
+        self.assertEqual(planned["seq"], seq0)                                              # no result yet
+        self.assertEqual(planned["plan"]["pitch_type"], key)
+        again = self._api("POST", "/pitch2p", "pitch_type=%s&course=in_lo&intent=chase" % key)  # a second pitch while one is on its way
+        self.assertEqual(again["plan"]["actual_course"], planned["plan"]["actual_course"])
+        self.assertEqual(self._api("POST", "/walk")["seq"], seq0)                            # nothing else may happen either
+        done = self._api("POST", "/swing", "swung=1&dx=0&dy=0&off=0&mode=normal")
+        self.assertIsNone(done["plan"])
+        self.assertEqual(done["seq"], seq0 + 1)
+        self.assertTrue(done["last"]["duel"])
+        self.assertEqual(done["last"]["swing"]["mode"], "normal")
+        self.assertEqual(done["last"]["swing"]["label"], "GOOD")
+        self.assertEqual(self._api("POST", "/swing", "swung=1&dx=0&dy=0&off=0")["seq"], seq0 + 1)    # a second swing for the same pitch does nothing
+
+    def test_bad_swing_numbers_never_crash_and_a_solo_game_ignores_the_duel_routes(self):
+        st = self._start_duel()
+        key = st["repertoire"][0]["key"]
+        for bad in ("swung=1&dx=abc&dy=0&off=0", "swung=1&dx=nan&dy=nan&off=nan", "swung=1&dx=9e99&dy=-9e99&off=1e9", "swung=1"):
+            self._api("POST", "/pitch2p", "pitch_type=%s&course=mid_mid&intent=strike" % key)
+            out = self._api("POST", "/swing", bad)
+            self.assertIsNone(out["plan"])
+            if out["phase"] != "play":
+                break
+        solo = self._api("POST", "/start", "scenario=random&mode=solo&seed=77")
+        self.assertEqual(solo["mode"], "solo")
+        self._api("POST", "/playball")
+        key = solo["repertoire"][0]["key"]
+        self.assertIsNone(self._api("POST", "/pitch2p", "pitch_type=%s&course=mid_mid&intent=strike" % key)["plan"])
+
+    def test_the_human_result_is_the_game_result_and_never_claims_what_he_thought(self):
+        st = self._start_duel()
+        key = st["repertoire"][0]["key"]
+        self._api("POST", "/pitch2p", "pitch_type=%s&course=mid_mid&intent=strike" % key)
+        out = self._api("POST", "/swing", "swung=1&dx=0&dy=0.30&off=0&mode=normal")        # 30 cm away: a miss
+        self.assertEqual(out["last"]["result"], "Whiff")
+        self.assertEqual(out["last"]["swing"]["contact"], "miss")
+        self.assertEqual(out["last"]["eval"]["reason"], "He swung and missed")
+        self.assertEqual(out["situation"]["strikes"], 1)
+
 
 # ---------- the browser-only build (pagesapi.py) ----------
 import pagesapi

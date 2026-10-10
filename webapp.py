@@ -46,7 +46,8 @@ os.environ["PITCHSIM_QTE"] = "0"
 from constants import COURSE_SHORT
 from defense import ALIGNMENTS
 import qte
-from engine import begin_at_bat, resolve_pitch_flow, save_game_log
+from engine import begin_at_bat, prepare_call, resolve_pitch_flow, save_game_log
+import swing as swing_rules
 from fielders import POSITIONS, position_fit, weakest_fielder
 from lineup import load_lineup_file
 from match_state import generate_random_situation
@@ -152,6 +153,8 @@ def _start_options(form):
         opts["scenario"] = scenario
     if form.get("difficulty") in _DIFFICULTIES:
         opts["difficulty"] = form["difficulty"]
+    if form.get("mode") in ("solo", "duel"):
+        opts["mode"] = form["mode"]
     return opts
 
 
@@ -186,8 +189,10 @@ class GameSession:
         self.next_tempo = 0.0      # how the last catch leaves the pitcher: a clean catch steadies him, a dropped one rattles him
         self.last_catch = None     # the catch of the last pitch: {"quality", "message", "stolen", "passed"}
         self.pitch_qtes = []       # the rhythm games that ran during the pitch being resolved
+        self.mode = "solo"         # "solo": you are the catcher and the game plays the batter. "duel": a second person bats with the mouse
+        self.plan = None           # duel only: the pitch that has been decided and thrown but not yet swung at (see /pitch2p, /swing)
 
-    def start_new_game(self, challenge_seed=None, scenario=_KEEP, difficulty=None):
+    def start_new_game(self, challenge_seed=None, scenario=_KEEP, difficulty=None, mode=None):
         """Start a game. Every game gets a seed (its Challenge Code): the one typed on the start screen,
         else --seed, else a fresh random one. The same code gives the same opening scene."""
         if challenge_seed is not None:
@@ -200,11 +205,16 @@ class GameSession:
             self.scenario = scenario
         if difficulty in _DIFFICULTIES:
             self.difficulty = difficulty
+        if mode in ("solo", "duel"):
+            self.mode = mode
+        self.plan = None
         rng = random.Random(self.game_seed)
         self.rng = rng
         self.state = generate_random_situation(rng=rng, lineup_batters=self.lineup_batters)
         if self.scenario:
             _apply_scenario(self.state, self.scenario)
+        if self.mode == "duel":
+            self.state.opp_tactic, self.state.tactic_decided = None, True      # a human batter picks his own plan (no bunt / hit-and-run from the bench)
         self.started = True
         self.showing_intro = True
         self.messages = []
@@ -742,6 +752,10 @@ def render_start_screen(session):
     No answers are shown during play. Read the batter's reactions, the pitch history, and the batter info yourself.</p>
   {seed_note}
   <form method="post" action="/start" style="margin-top:1.4em;">
+    <div class="modepick" role="radiogroup" aria-label="Players">
+      <label><input type="radio" name="mode" value="solo" checked> <b>1 player</b> <span class="dim">you catch, the game bats</span></label>
+      <label><input type="radio" name="mode" value="duel"> <b>2 players</b> <span class="dim">catcher (keyboard) vs batter (mouse), one PC</span></label>
+    </div>
     <button class="primary big" type="submit" name="scenario" value="random">START GAME</button>
     <div class="startopts">
       <label>Difficulty <select name="difficulty">{diff_opts}</select></label>
@@ -1984,6 +1998,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._send_html("not found", status=404)
 
+    def _handle_pitch2p(self, form, state):
+        """Two-player mode, step one: the catcher's call is locked in and the pitch is thrown. Nobody knows the result yet:
+        the page animates the flight while the batter decides when and where to swing, then posts /swing."""
+        pitch_type = form.get("pitch_type")
+        course = form.get("course", "mid_mid")
+        intent = form.get("intent", "strike")
+        if (SESSION.mode != "duel" or SESSION.plan is not None
+                or pitch_type not in repertoire_options(state.pitcher)
+                or course not in COURSE_SHORT or intent not in PITCH_INTENTS):
+            self._redirect()
+            return
+        SESSION.last_batter_bats = state.batter.bats
+        SESSION.last_call = {"pitch_type": pitch_type, "target_course": course, "intent": intent}
+        tempo = SESSION.next_tempo
+        SESSION.next_tempo = 0.0
+        SESSION.plan = {"prepared": prepare_call(state, pitch_type, course, intent, SESSION.rng, tempo=tempo),
+                        "pitch_type": pitch_type, "course": course, "intent": intent, "seq": SESSION.event_seq + 1}
+        self._redirect()
+
+    def _handle_swing(self, form, state):
+        """Two-player mode, step two: the batter's swing (or no swing) arrives and the pitch is judged with it."""
+        plan = SESSION.plan
+        if plan is None or SESSION.pitch_gen is not None:
+            self._redirect()
+            return
+        human = {"swung": False}
+        if form.get("swung") == "1":
+            try:
+                dx, dy, off = (max(-1.0, min(1.0, float(form.get(k, "0")))) for k in ("dx", "dy", "off"))
+            except ValueError:
+                dx = dy = off = None
+            if dx is not None and all(v == v for v in (dx, dy, off)):          # (NaN is not a number)
+                human = swing_rules.judge_swing(dx, dy, off, form.get("mode"), state.batter, SESSION.rng)
+                human["swung"] = True
+        SESSION.plan = None
+        SESSION.pitch_qtes = []
+        SESSION.pitch_gen = resolve_pitch_flow(state, plan["pitch_type"], plan["course"], plan["intent"], SESSION.rng,
+                                               prepared=plan["prepared"], human=human)
+        _advance_pitch_gen(None)
+        while self._wants_json() and SESSION.pending_qte is not None and SESSION.pending_qte[0] == "frame":
+            _advance_pitch_gen(None)
+        self._redirect()
+
     def _handle_post(self):
         form = self._read_form()
 
@@ -2024,7 +2081,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/menu":
             SESSION.started = False
-            SESSION.pitch_gen = SESSION.pending_qte = None
+            SESSION.pitch_gen = SESSION.pending_qte = SESSION.plan = None
             self._redirect()
             return
 
@@ -2038,7 +2095,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._redirect()
             return
 
+        # Two-player mode: between the thrown pitch and the swing nothing else may happen
+        if SESSION.plan is not None and self.path not in ("/swing", "/newgame", "/start", "/menu"):
+            self._redirect()
+            return
+
+        if self.path == "/pitch2p":
+            self._handle_pitch2p(form, state)
+            return
+
+        if self.path == "/swing":
+            self._handle_swing(form, state)
+            return
+
         if self.path == "/pitch":
+            if SESSION.mode == "duel":             # in two-player mode every pitch goes through /pitch2p and /swing
+                self._redirect()
+                return
             pitch_type = form.get("pitch_type")
             course = form.get("course", "mid_mid")
             intent = form.get("intent", "strike")

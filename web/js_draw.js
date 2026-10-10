@@ -383,8 +383,10 @@ BTP.renderFrame = function (ctx, scene, m) {
   if (!ball && m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.35 * (m.trailFade == null ? 1 : m.trailFade), 0.075);
 
   // the mitt hangs just behind the plate; the grid is drawn over it so the target stays readable
-  if (m.mitt) drawMitt(ctx, m.mitt.x, m.mitt.y, m.mitt.size, m.mitt.pop || 0, m.mitt.tilt);
+  if (m.mitt && !m.mittHidden) drawMitt(ctx, m.mitt.x, m.mitt.y, m.mitt.size, m.mitt.pop || 0, m.mitt.tilt);
   drawZone(ctx, m.zone);
+  if (m.cursor) BTP.drawMeatCursor(ctx, m.cursor);                       // the batter's cursor (two players)
+  if (m.hudRing) BTP.drawHudRing(ctx, m.hudRing);
   // the timing ring: it closes on the mitt as the ball arrives (a cue for the easier difficulties only)
   if (m.ring) {
     ctx.strokeStyle = m.ring.gold ? 'rgba(255,214,90,.95)' : 'rgba(255,255,255,.7)'; ctx.lineWidth = m.ring.gold ? 4 : 2.5;

@@ -11,6 +11,7 @@ import re
 import playview
 from constants import COURSE_SHORT, zone_x, zone_y
 from pitch_data import family_of, pitch_name, repertoire_options, velocity_of
+import swing as swing_rules
 from strategy import PITCH_INTENTS, intent_label
 
 # A rough break for each pitch: (drop, sweep). drop 0 = none .. 1 = big drop; sweep: - slides toward third base,
@@ -59,6 +60,17 @@ def swing_info(seq, result, timing, swung):
     vert = "OVER THE TOP" if dy > 0.07 else ("UNDER IT" if dy < -0.07 else "")
     return {"swung": True, "timing": timing, "label": _TIMING_LABEL.get(timing, "ON TIME"), "off": round(off, 3),
             "ahead": round(-off * 3.2, 3), "dy": round(dy, 3), "vert": vert}
+
+
+def human_swing_info(h):
+    """The swing of a human batter (two-player mode), as the page draws it: the numbers are the ones he really produced."""
+    if not h or not h.get("swung"):
+        return {"swung": False, "timing": None, "label": "TOOK IT", "off": 0.0, "ahead": 0.0, "dy": 0.0, "vert": "", "human": True}
+    dy = h["dy"]
+    vert = "OVER THE TOP" if dy > 0.07 else ("UNDER IT" if dy < -0.07 else "")
+    return {"swung": True, "timing": h["timing"], "label": h["timing_label"], "off": h["off"], "ahead": round(-h["off"] * 3.2, 3),
+            "dy": dy, "dx": h["dx"], "vert": vert, "human": True, "centre": h["centre"], "mode": h["mode"],
+            "contact": h["contact"], "pos": swing_rules.position_words(h["dx"], dy)}
 
 
 def batter_reads(state, limit=6):
@@ -135,6 +147,16 @@ def evaluate_call(outcome):
     return grade, title, " · ".join(reasons[:2])
 
 
+def _duel_reason(o):
+    """Two-player mode: the reason line states only what happened (the human's swing and where the pitch went), never his thoughts."""
+    h = o.get("human") or {}
+    if o.get("framed"):
+        return "You framed it into a strike"
+    if not h.get("swung"):
+        return "He took it" + (" (in the zone)" if o.get("in_zone") else " (off the plate)")
+    return {"miss": "He swung and missed", "foul": "He got a piece of it", "fair": "He put it in play"}[h["contact"]]
+
+
 def _batter_json(b):
     return {"name": b.name, "bats": b.bats, "type": b.type_label(), "avg": b.avg, "obp": b.obp, "slg": b.slg,
             "ops": b.ops, "scouting": b.scouting_note()}
@@ -148,6 +170,8 @@ def _outcome_json(session):
     play = o.get("play")
     fielding = o.get("fielding")
     grade, title, reason = evaluate_call(o)
+    if o.get("human") is not None:
+        reason = _duel_reason(o)
     out = {
         "seq": session.event_seq,
         "pitch_type": call["pitch_type"], "pitch_name": pitch_name(call["pitch_type"]),
@@ -159,7 +183,9 @@ def _outcome_json(session):
         "at_bat_end": o.get("at_bat_end"), "good_call": bool(o.get("good_call")),
         "eval": {"grade": grade, "title": title, "reason": reason},
         "batted": None,
-        "swing": swing_info(session.event_seq, o["result"], o.get("timing"), bool(o.get("swung"))),
+        "swing": (human_swing_info(o["human"]) if o.get("human") is not None
+                  else swing_info(session.event_seq, o["result"], o.get("timing"), bool(o.get("swung")))),
+        "duel": o.get("human") is not None,
         "qtes": list(session.pitch_qtes),
         "catch": session.last_catch,
     }
@@ -219,7 +245,13 @@ def build_state(session, qte_specs):
     history = [{"n": e["pitch_number"], "pitch": pitch_name(e["pitch_type"]),
                 "course": COURSE_SHORT[e["actual_course"]], "intent": intent_label(e["intent"]),
                 "result": e["result"], "framed": bool(e.get("framed"))} for e in st.pitch_log[-8:][::-1]]
-    return dict(base, phase=phase,
+    plan = None
+    if getattr(session, "plan", None):
+        pl = session.plan["prepared"]
+        plan = {"seq": session.plan["seq"], "pitch_type": session.plan["pitch_type"],
+                "actual_course": pl["actual"]["actual_course"], "in_zone": bool(pl["in_zone"]),
+                "missed": bool(pl["actual"]["missed"])}
+    return dict(base, phase=phase, mode=getattr(session, "mode", "solo"), plan=plan,
                 situation={
                     "inning": st.inning_label(), "our": st.our_score, "opp": st.opp_score,
                     "start_our": st.start_our, "start_opp": st.start_opp,

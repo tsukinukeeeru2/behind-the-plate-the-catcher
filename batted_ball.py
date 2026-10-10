@@ -34,6 +34,7 @@ class BattedBall:
     hardness: str           # "soft" / "medium" / "hard"
     hardness_score: float   # continuous 0-1 value (the strength before rounding)
     distance: str           # "infield" / "shallow" / "deep"
+    bonus: float = 0.0      # extra carry for a well-struck power swing (two-player mode only; 0 for everything else)
 
     def describe(self):
         return (f"{_HARDNESS_TEXT[self.hardness]} {_TYPE_TEXT[self.ball_type]} "

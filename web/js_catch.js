@@ -40,7 +40,29 @@ L.pose = function (l) {
   return sw.timing === 'late' ? 'late' : (sw.timing === 'early' ? 'early' : 'contact');
 };
 // a = {l (the last pitch from the server), reaction, reads, bats, Pt ({x,y} where it crossed), markT ({row,col}), headline (text), difficulty, catchLabel}
+// two players: the call is revealed, and the human swing is described by what he did (never by what he was thinking)
+function duelPanel(a) {
+  var l = a.l, sw = l.swing, tone = TONE[l.result] || 'neutral', D = BTP.duel;
+  var word = sw.swung ? sw.label : 'TOOK IT', wcls = !sw.swung ? 'took' : sw.timing;
+  var ms = sw.swung ? (sw.off < 0 ? '' : '+') + Math.round(sw.off * 1000) + ' ms' : '';
+  var swingLine = sw.swung
+    ? '<div class="rp-line"><span class="rp-k">SWING</span><b>' + (sw.mode === 'power' ? 'POWER' : 'NORMAL') + '</b><span class="rp-why">' + esc(D.posWords(sw.dx, sw.dy)) + ' &middot; ' + esc(sw.label) + ' (' + ms + ')' +
+      (sw.contact === 'miss' ? ' &middot; no contact' : (sw.contact === 'foul' ? ' &middot; off the edge of the bat' : ' &middot; centred ' + Math.round(sw.centre * 100) + '%')) + '</span></div>'
+    : '<div class="rp-line"><span class="rp-k">SWING</span><b>Took it</b><span class="rp-why">' + (l.in_zone ? 'It was in the zone' : 'It was off the plate') + '</span></div>';
+  var c = a.catchLabel, catchLine = c ? '<div class="rp-line"><span class="rp-k">CATCH</span><b class="cq-' + c.cls + '">' + esc(c.text) + '</b><span class="rp-why">' + esc(c.detail || '') + '</span></div>' : '';
+  var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>'
+    : '<div class="rp-none">Not enough swings yet to read a pattern.</div>';
+  var callTxt = esc(l.pitch_name) + ' &middot; ' + esc(l.intent_label);
+  return '<div class="rp-face"><div class="rp-cap">THE CALL, REVEALED</div><div class="rp-kao" style="font-size:24px">' + esc(l.pitch_name) + '</div><div class="rp-mood">' + esc(l.intent_label) + '</div>' +
+    '<div class="rp-say">Aimed ' + esc(D.courseName(l.target_course)) + ' &middot; it went ' + esc(D.courseName(l.actual_course)) + '</div></div>' +
+    '<div class="rp-zone"><div class="rp-cap">HIS SWING</div>' + D.picture(a.Pt, sw) + '<div class="rp-vert">' + esc(sw.swung ? (sw.dy > 0.07 ? 'OVER THE TOP' : (sw.dy < -0.07 ? 'UNDER IT' : '')) : '') + '</div></div>' +
+    '<div class="rp-main"><div class="rp-head"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span></div>' +
+    swingLine + catchLine + '<div class="rp-sub">WHAT YOU HAVE SEEN</div>' + reads + '</div>' +
+    '<div class="rp-mini"><span class="rp-mood-s">' + callTxt + '</span><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' +
+    (c ? '<span class="rp-chip cq-' + c.cls + '">' + esc(c.text) + '</span>' : '') + '</div>';
+}
 L.panelHTML = function (a) {
+  if (a.duel) return duelPanel(a);
   var l = a.l, sw = l.swing, ev = l.eval, tone = TONE[l.result] || 'neutral';
   var word = sw.swung ? sw.label : 'TOOK IT';
   var wcls = !sw.swung ? 'took' : sw.timing;

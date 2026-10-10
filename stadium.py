@@ -10,7 +10,7 @@ import os
 from bgm_js import MUSIC_CORE
 
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_aerial.js", "js_draw.js", "js_hud.js", "js_catch.js", "js_game.js")
+_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_aerial.js", "js_draw.js", "js_hud.js", "js_catch.js", "js_duel.js", "js_game.js")
 _cache = {}
 
 
@@ -31,6 +31,11 @@ def _assets():
 _BODY = """
 <div id="app">
   <div id="top"></div>
+  <div id="guide" aria-live="polite">
+    <div class="g-steps" id="g-steps"></div>
+    <div class="g-main"><b id="g-title"></b><span id="g-sub"></span></div>
+    <div class="g-tmr" id="g-tmr" title="Time left to choose the pitch"><span class="g-tl" id="g-tl">TIME</span><span class="g-tn" id="g-tn"></span></div>
+  </div>
   <div id="stage">
     <canvas id="view" aria-label="The field as seen by the catcher"></canvas>
     <canvas id="mask" aria-hidden="true"></canvas>
@@ -38,6 +43,8 @@ _BODY = """
     <div id="mapbox" class="ov glass"></div>
     <div id="readpanel" class="ov"></div>
     <div id="catchhint" class="ov"></div>
+    <div id="handoff" class="ov"></div>
+    <div id="pausev" class="ov"></div>
     <canvas id="mini" class="ov" width="250" height="162" aria-label="Top-down view of the play"></canvas>
     <div id="banner" class="ov"></div>
     <div id="hint" class="ov"></div>

@@ -25,7 +25,7 @@ import os
 
 import opponent
 from constants import COURSE_SHORT, is_corner, zone_x, zone_y
-from judge import judge_pitch
+from judge import judge_pitch, prepare_pitch
 from pitch_data import family_of, pitch_name, velocity_of
 from qte import catcher_block, catcher_change_signs, catcher_field_bunt, catcher_throw
 from reaction import describe_reaction
@@ -234,12 +234,20 @@ def resolve_one_pitch(state, pitch_type, course, intent, rng, frame_timing=None,
                   lambda k, p: _cli_answer(k, p, rng, frame_timing))
 
 
-def resolve_pitch_flow(state, pitch_type, course, intent, rng, tempo=0.0):
+def resolve_pitch_flow(state, pitch_type, course, intent, rng, tempo=0.0, prepared=None, human=None):
     """For the Web: a generator that drives "stolen signs -> judging one pitch" as one continuous flow."""
     pre = yield from _sign_steal_events(state, rng)
     outcome, msgs = yield from resolve_pitch_events(state, pitch_type, course, intent, rng,
-                                                   tempo=tempo)
+                                                   tempo=tempo, prepared=prepared, human=human)
     return outcome, pre + msgs
+
+
+def prepare_call(state, pitch_type, course, intent, rng, tempo=0.0):
+    """Two-player mode, step one: decide what the pitcher really throws (and whether it is in the zone) before the human batter swings.
+
+    The page animates the pitch from this, then sends the swing back; resolve_pitch_flow(prepared=..., human=...) finishes the pitch.
+    """
+    return prepare_pitch(state, pitch_type, course, rng, intent, tempo + state.good_call_bonus())
 
 
 def _call_label(pitch_type, course, intent):
@@ -247,8 +255,11 @@ def _call_label(pitch_type, course, intent):
             f" / {intent_label(intent)}")
 
 
-def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
-    """Judge one pitch plus the surrounding events (a generator). It yields at each QTE point."""
+def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0, prepared=None, human=None):
+    """Judge one pitch plus the surrounding events (a generator). It yields at each QTE point.
+
+    prepared / human: the two-player game (see prepare_call): the pitch was already decided, and a human batter's swing decides the rest.
+    """
     messages = []
 
     # If the opponent is bunting, go to the bunt-specific resolution instead of the normal at-bat judging
@@ -263,10 +274,11 @@ def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
                                         "velocity": velocity_of(pitch_type)})
 
     # When good calls stack up, the pitcher gets going a little on the next pitch (lenient, up to +0.15).
-    tempo += state.good_call_bonus()
+    if prepared is None:
+        tempo += state.good_call_bonus()
 
     outcome = judge_pitch(state, pitch_type, course, rng, intent=intent,
-                          frame_timing=frame_timing, tempo=tempo)
+                          frame_timing=frame_timing, tempo=tempo, prepared=prepared, human=human)
     outcome["reaction"] = describe_reaction(pitch_type, outcome["actual_course"], outcome, rng)
 
     log_pitch(state, outcome)

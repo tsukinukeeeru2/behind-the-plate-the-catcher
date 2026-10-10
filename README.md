@@ -30,10 +30,16 @@ Your browser opens at `http://127.0.0.1:8765` (use `--no-browser` to stop that, 
 4. After each pitch you get the result, a one-line grade of your call, and the reason.
 5. After the third out you get your **Catcher Rating** (S to D), badges, and a full review of your calling.
 
-Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** timing games, **click the stage** to skip an animation.
+Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** catch and timing games, **P** pause, **click the stage** to skip an animation. A strip under the top bar always shows where you are (**1 Choose the pitch, 2 The pitch, 3 Catch it**), the one thing to do now, and the **call timer**.
+
+**The call timer.** You have 15 seconds to choose a pitch (change or turn it off in **Settings**). The last five seconds turn red and tick. When time runs out, **your current pick is thrown**; if you have not picked anything, the standard call is used (Four-seam, middle, Get ahead). That rule is written on the screen. The timer stops while a help, settings or history panel is open, while the game is paused, during an animation and during the practice pitch, and it is separate from the Space-press timing of the catch.
+
+**Practice.** The first time you play, one practice pitch walks you through the three steps with no timer; it is not counted and nothing is sent to the game. After a catch the guide says **SUCCESS**, **TOO EARLY** or **TOO LATE** and what to do next. You can replay it from the Help panel.
+
+**Two players, one PC.** Choose **2 players** on the start screen. The *catcher* uses the keyboard: pick the call, press Enter to lock it in, press Space to catch. The *batter* uses the mouse: while the call is chosen they look away; after it is locked the pitch is hidden (no pitch type, target or mitt is shown), they choose **NORMAL** (big cursor) or **POWER** (small cursor, harder contact, more long balls) and click **BATTER READY**. During the pitch they move a round cursor over the ball's path and left-click to swing. **Where the cursor was and when they clicked both decide the result**: dead centre is hit hard; off-centre is weaker or foul; a cursor above the ball's centre makes a grounder and below it a fly ball; early contact is pulled, late contact goes the other way (left or right follows the batter's hand); too far off or too early/late is a miss; no click is a take (ball or strike). After the pitch the call is revealed and the panel shows how far off the bat was, EARLY / GOOD / LATE, and the result. The same result then plays out in the high oblique view. Only one swing counts per pitch, only the left button swings, and a held or repeated click or key does nothing.
 The old page-style layout is still available at `/classic`. Terminal version: `python main.py` (Enter = pitch, `d` = defense, `m` = note a read, `w` = intentional walk, `p` = pitching change, `q` = quit).
 
-Run the tests: `python tests.py` (192 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
+Run the tests: `python tests.py` (206 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
 
 ![The start screen](screenshots/stadium_start.png)
 
@@ -95,6 +101,7 @@ These rhythm games never decide a play on their own. They only nudge the odds (a
 See [the next section](#built-on-a-pre-existing-base-be-upfront-about-this) for what existed before. These features are new:
 
 - **The catcher's-eye 3D view** (`stadium.py`, `web/`, `api.py`): a one-screen stadium page seen through the mask, a clickable strike zone, a mitt that follows your target, a full-body pitching motion for either hand, a ball flown by gravity, drag and spin (Magnus force), the batter and his bat close beside you, a one-line grade and reason after every pitch, and a high oblique play view for balls in play. The page talks to the same Python game rules through a small JSON API, so it never reloads.
+- **Timer, step guide, practice and a two-player mode** (`swing.py`, `judge.prepare_pitch`, `/pitch2p` + `/swing` in `webapp.py`, `web/js_duel.js`): the call timer with its on-screen rule, pause, the three-step guide, one practice pitch, and a hot-seat catcher-vs-batter mode where the batter aims a cursor and times a click with the mouse. The swing is judged by the server with the same rules and numbers the page draws (checked in `tests.py`), then handed to the normal fielding and baserunning rules, so a two-player result is as consistent as a one-player one.
 - **Music that does not restart**: one audio player independent of the screen, a seamless loop, mute and volume that are remembered (`bgm_js.py`).
 - **Play Viewer**: an animated replay of every ball in play (flight, the fielder's run, the throw, and the baserunners), drawn from the same result the game already decided (`playview.py`; the OUT / RUN labels are checked against the game's out count and runs in `tests.py`). It never changes the outcome and uses no game randomness.
 - **Catcher Rating (S, A, B, C, D)** with a title and badges (Shutdown, Strikeout Artist, Pickpocket, Mind Games, Cannon Arm, Hard Luck), computed from runs allowed, decision quality, strikeouts, framing, and holding the lead.
@@ -159,6 +166,7 @@ opponent.py        the opposing bench (bunts, hit-and-run)
 qte.py             the catcher's rhythm mini-games (terminal)
 main.py            terminal version                      webapp.py        web version (http.server)
 playview.py        the Play Viewer (classic page) and the replay script the 3D page also uses
+swing.py           a human batter's swing (two-player mode): cursor position + click timing -> miss / foul / batted ball
 stadium.py         the 3D catcher's-eye page; its canvas code is in web/ (camera and ball physics, stadium, the pitcher's delivery, players, game loop)
 api.py             the JSON the 3D page reads (state, evaluation text); never the hidden score
 bgm_js.py          the background music (one player, seamless loop)

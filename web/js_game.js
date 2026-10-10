@@ -22,6 +22,15 @@ var markers = { T: null, A: null };
 var catchG = null;          // the catch game for the pitch being thrown (your mitt, your press), or null
 var catchCount = 0;         // how many catches you have played this session (the first few get a bigger timing guide)
 var panelOpen = false;
+var paused = false, pausedTotal = 0, pausedAt = 0;      // the pause: the animation clock and the call timer both stand still
+var duelPh = null;          // two players: null = the catcher is choosing, 'locked' = call locked (hand-off screen), 'throwing' = the pitch is on its way
+var lockedCall = null;      // two players: the call, kept here (not shown anywhere) until the batter is ready
+var swingMode = BTP.duel.mode();                       // the batter's swing type for the next pitch ('normal' | 'power'); changed only before the pitch
+var cursorW = { x: 0, y: 0.8 };                        // the batter's cursor on the plate plane (metres)
+var tm = { left: BTP.settings.timer(), shown: -1, lastNow: 0, lowSec: -1 };    // the call timer
+var practice = false;       // the practice pitch: no timer, not counted, nothing sent to the server
+var lastGuide = '';
+function clk() { var n = performance.now(); return n - pausedTotal - (paused ? n - pausedAt : 0); }   // the game clock (stops while paused)
 var TS = parseFloat(new URLSearchParams(location.search).get('slow')) || 1;     // ?slow=3 plays the pitch animations three times slower
 
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
@@ -85,8 +94,9 @@ function renderTop() {
     '<span class="t-sep"></span><span class="t-grp">B ' + pips(s.balls, 4, 'b') + ' S ' + pips(s.strikes, 3, 's') + ' OUT ' + pips(s.outs, 3, 'o') + '</span>' +
     '<span class="t-sep"></span><span class="t-grp">' + (st.pitcher.throws === 'R' ? 'RHP' : 'LHP') + ' <b>' + st.pitcher.pitches + '</b> pitches' + tire + '</span>' +
     '<span class="t-spacer"></span>' +
-    ['history', 'defense', 'bench', 'help'].map(function (n) {
-      return '<button class="t-btn' + (drawerName === n ? ' on' : '') + '" data-drawer="' + n + '">' + { history: 'History', defense: 'Defense', bench: 'Notes', help: 'Help' }[n] + '</button>';
+    '<button class="t-btn' + (paused ? ' on' : '') + '" id="pause-btn" data-act="pause" title="Pause / resume (P)"' + (canPause() ? '' : ' disabled') + '>' + (paused ? 'Resume' : 'Pause') + '</button>' +
+    ['history', 'defense', 'bench', 'settings', 'help'].map(function (n) {
+      return '<button class="t-btn' + (drawerName === n ? ' on' : '') + '" data-drawer="' + n + '">' + { history: 'History', defense: 'Defense', bench: 'Notes', settings: 'Settings', help: 'Help' }[n] + '</button>';
     }).join('') + audioControls();
   bindAudio();
 }
@@ -120,40 +130,52 @@ function renderBottom() {
   var st = shown;
   if (!st || !st.repertoire) { $('bottom').innerHTML = ''; return; }
   if (!sel.pitch || !st.repertoire.some(function (p) { return p.key === sel.pitch; })) sel.pitch = st.repertoire[0].key;
-  var canCall = canPlay();
+  var canCall = canPlay(), duel = st.mode === 'duel', hide = duel && (duelPh || anim), dis = canCall ? '' : ' disabled';     // only what you can do right now is clickable
   var h = '<div class="b-row"><span class="b-label">Pitch</span>' + st.repertoire.map(function (p, i) {
-    return '<button class="pbtn' + (sel.pitch === p.key ? ' sel' : '') + '" data-pitch="' + p.key + '">' + arcSvg(p.move) + esc(p.name) +
+    return '<button class="pbtn' + (hide ? ' hid' : (sel.pitch === p.key ? ' sel' : '')) + '" data-pitch="' + p.key + '"' + dis + '>' + arcSvg(p.move) + esc(p.name) +
       ' <span class="v">' + p.velocity + '</span> <span class="k">' + (i + 1) + '</span></button>';
   }).join('') + '<span class="target-read" id="targetread"></span><span class="modebadge ' + (catchActive() ? 'catch' : 'call') + '">' + (catchActive() ? '\u25CF CATCH' : '\u25CF CALL') + '</span></div>' +
   '<div class="b-row"><span class="b-label">Intent</span>' + st.intents.map(function (it) {
-    return '<button class="ibtn' + (sel.intent === it.key ? ' sel' : '') + '" data-intent="' + it.key + '" title="' + esc(it.desc) + '">' + esc(it.label) + '</button>';
-  }).join('') + '<button class="callbtn" id="callbtn"' + (canCall ? '' : ' disabled') + '>CALL PITCH</button></div>';
+    return '<button class="ibtn' + (!hide && sel.intent === it.key ? ' sel' : '') + '" data-intent="' + it.key + '" title="' + esc(it.desc) + '"' + dis + '>' + esc(it.label) + '</button>';
+  }).join('') + '<button class="callbtn" id="callbtn"' + (canCall ? '' : ' disabled') + '>' + (duel ? 'LOCK IN CALL' : 'CALL PITCH') + '</button></div>';
   $('bottom').innerHTML = h;
   updateTargetRead();
 }
 function updateTargetRead() {
   var el = $('targetread'); if (!el || !shown || !shown.batter) return;
+  if (shown.mode === 'duel' && (duelPh || anim)) { el.innerHTML = 'The call is <b>hidden</b> from the batter'; return; }
+  if (!canPlay()) { el.innerHTML = 'Wait for the pitch to finish'; return; }
   var key = BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats);
   var names = { in_hi: 'High-In', mid_hi: 'High', out_hi: 'High-Out', in_mid: 'In', mid_mid: 'Middle', out_mid: 'Out', in_lo: 'Low-In', mid_lo: 'Low', out_lo: 'Low-Out' };
-  el.innerHTML = 'Target <b>' + names[key] + '</b> &middot; click the zone &middot; <b>Enter</b> to call';
+  el.innerHTML = 'Target <b>' + names[key] + '</b> &middot; click the zone or use the arrows &middot; <b>Enter</b> to call';
 }
 function catchActive() { return !!(anim && anim.interactive && catchG && !catchG.resolved); }
 function renderAll() { renderTop(); renderSide(); renderBottom(); }
-function canPlay() { return !!(shown && S && S.phase === 'play' && !anim && !qteRun && !busy && !modalOpen()); }
+function canPlay() { return !!(shown && S && S.phase === 'play' && !anim && !qteRun && !busy && !modalOpen() && !duelPh && !paused); }
+function canPause() { return !!(shown && S && S.phase === 'play' && !qteRun && !modalOpen()); }
 function modalOpen() { return $('modal').classList.contains('open'); }
 
 /* ---------------- the state machine ---------------- */
 function onState(ns) {
   S = ns;
-  if (anim) { pendingState = ns; return; }
+  if (anim) {
+    pendingState = ns;
+    var d = anim.duel;
+    if (d && d.sent && !d.resolved && ns.phase !== 'qte' && ns.last && ns.last.seq === anim.l.seq) { closeQTE(); resolveDuel(anim, ns); }     // the rhythm game that held the pitch is over
+    return;
+  }
   if (!shown) { shown = ns; lastSeq = ns.last ? ns.last.seq : null; }
+  if (ns.phase !== 'play') { duelPh = null; lockedCall = null; hideHandoff(); }
   if (ns.phase === 'qte') { openQTE(ns.qte); return; }
   closeQTE();
+  if (ns.mode === 'duel' && ns.plan && ns.phase === 'play') { startDuelAnim(ns); return; }                // a pitch was thrown: the batter may swing
   if (ns.last && ns.last.seq !== lastSeq) { lastSeq = ns.last.seq; startPitchAnim(ns); return; }
   settle(ns);
 }
 function settle(ns) {
   shown = ns;
+  if (ns.mode === 'duel' && !ns.plan) { duelPh = (duelPh === 'locked') ? duelPh : null; }
+  if (!practice && !practiceDone() && ns.mode === 'solo' && ns.phase === 'play' && !ns.last && !modalOpen()) startPractice();
   if (ns.messages && ns.messages.length && ns.phase !== 'start') {
     var msg = ns.messages.map(function (m) { return m.replace(/^>>>\s*/, ''); }).slice(0, 2).join(' ');
     if (msg !== lastMsg) { lastMsg = msg; toast(msg, /(hit|Passed|error|Walk|dropped|gave up|Stolen|stole)/i.test(msg)); }
@@ -211,11 +233,22 @@ var HELP = '<div class="card"><h3>How to play</h3><p style="font-size:14px;margi
   'It comes from the same hidden score the post-game review uses, but the number is never shown. Expert hides it.</p></div>';
 function loadDrawer(name) {
   drawerName = name;
-  var dr = $('drawer'), titles = { history: 'History', defense: 'Defense', bench: 'Notes & Bench', help: 'Help' };
+  var dr = $('drawer'), titles = { history: 'History', defense: 'Defense', bench: 'Notes & Bench', help: 'How to play', settings: 'Settings' };
   dr.className = 'open';
   dr.querySelector('.dh .ttl').textContent = titles[name] || name;
   var db = dr.querySelector('.db');
-  if (name === 'help') { db.innerHTML = HELP; renderTop(); return; }
+  if (name === 'help') {
+    db.innerHTML = BTP.duel.helpHTML(S && S.mode);
+    var pb = $('hp-practice'); if (pb) pb.onclick = function () { closeDrawer(); try { practiceNow(); } catch (e) {} };
+    renderTop(); return;
+  }
+  if (name === 'settings') {
+    db.innerHTML = BTP.duel.settingsHTML();
+    Array.prototype.forEach.call(db.querySelectorAll('[data-timer]'), function (b) {
+      b.onclick = function () { BTP.settings.setTimer(parseInt(b.dataset.timer, 10)); tm.left = BTP.settings.timer(); loadDrawer('settings'); };
+    });
+    renderTop(); return;
+  }
   fetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
     if (drawerName === name) db.innerHTML = html;
   });
@@ -319,8 +352,34 @@ function mittPlane(cell) {                          // the idle mitt, as a point
   return { x: BTP.CAM.x + (c.x - BTP.CAM.x) * k, y: BTP.CAM.y + (c.y - BTP.CAM.y) * k };
 }
 function mittPx(x, y) { return mittAtWorld(x, y); }
-function startPitchAnim(ns) {
-  var l = ns.last, prev = shown, bats = prev.batter.bats, lefty = prev.pitcher.throws === 'L';
+// everything about the animation that depends on how the pitch ended. The one-player game knows it at the start; the duel learns it
+// when the batter's swing has been judged, so the same function fills it in either way.
+function fillResult(a, ns, l) {
+  var res = l.result, script = l.batted ? l.batted.script : null;
+  a.l = l; a.ns = ns; a.script = script;
+  if (!a.duel) { a.swung = l.swung; a.tContact = a.tHitZ + (l.swung ? l.swing.off : 0); }   // early (-) or late (+), in seconds: the engine's own judgement of the swing
+  var tAfter = a.tCatch + 1.5;
+  if (script) tAfter = a.tContact + script.duration - 0.2 + 0.5;
+  else if (res === 'Foul') tAfter = a.tContact + 2.2;
+  a.foul = null;                                                              // a foul ball goes up and off to the side
+  if (res === 'Foul') {
+    var fr = BTP.rng(l.seq * 31 + 7), side = (l.timing === 'late') ? (a.bats === 'R' ? 1 : -1) : (a.bats === 'R' ? -1 : 1);
+    a.foul = { vx: side * (9 + fr() * 5), vy: 9 + fr() * 4, vz: 2 + fr() * 7 };
+  }
+  a.caught = !script && res !== 'Foul';                                       // the mitt takes it unless the bat does
+  a.interactive = !!(l.catchable && ns.phase === 'play');                     // you catch it yourself when the pitch ended in the mitt
+  a.tAfter = a.interactive ? Infinity : tAfter;                               // with a catch, it ends once your catch is decided
+  a.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? a.tContact + 1.2 : (a.interactive ? Infinity : a.tCatch + 0.45));
+}
+function makeCatchG(a, ns) {
+  var p0 = mittPlane(sel.cell);
+  catchCount++;
+  catchG = { x: p0.x, y: p0.y, sx: p0.x, sy: p0.y, pressT: null, resolved: false, quality: null, tRes: null, dt: null, word: '', detail: '',
+             guide: !!a.duel || ns.difficulty !== 'expert' || catchCount <= 3 };
+}
+function startPitchAnim(ns, opts) {
+  opts = opts || {};
+  var l = opts.l || ns.last, prev = shown, bats = prev.batter.bats, lefty = prev.pitcher.throws === 'L', duel = !!opts.duel;
   var rep = null; prev.repertoire.forEach(function (p) { if (p.key === l.pitch_type) rep = p; });
   rep = rep || { key: l.pitch_type, velocity: 90, move: [0.3, 0], family: 'fastball' };
   var rnd = BTP.rng(l.seq * 977 + 13);
@@ -331,42 +390,114 @@ function startPitchAnim(ns) {
   var tRel = BTP.DELIVERY.release, S_ = BALL_TIME_SCALE;
   var tPlate = tRel + path.tPlate * S_, tCatch = tRel + BTP.phys.timeAtZ(path, CATCH_Z) * S_;
   var tHitZ = tRel + BTP.phys.timeAtZ(path, 0.22) * S_;                       // the bat meets the ball just over the front of the plate
-  var swung = l.swung, res = l.result, batted = l.batted;
-  var off = swung ? l.swing.off : 0;                                          // early (-) or late (+), in seconds: the engine's own judgement of the swing
-  var tContact = tHitZ + off, swingDur = 0.52;
-  var tAfter = tCatch + 1.5, script = batted ? batted.script : null;
-  if (script) tAfter = tContact + script.duration - 0.2 + 0.5;
-  else if (res === 'Foul') tAfter = tContact + 2.2;
-  var foul = null;                                                            // a foul ball goes up and off to the side
-  if (res === 'Foul') {
-    var side = (l.timing === 'late') ? (bats === 'R' ? 1 : -1) : (bats === 'R' ? -1 : 1);
-    foul = { vx: side * (9 + rnd() * 5), vy: 9 + rnd() * 4, vz: 2 + rnd() * 7 };
-  }
   var tx = BTP.cellCenter(sel.cell.row, sel.cell.col);                        // where the mitt was set
   var atCatch = BTP.phys.at(path, BTP.phys.timeAtZ(path, CATCH_Z));
   var mittT = mittScreen(tx.x, tx.y), mittA = mittAtWorld(atCatch.x, atCatch.y) || mittT;
-  var caught = !script && res !== 'Foul';                                     // the mitt takes it unless the bat does
-  var interactive = !!(l.catchable && ns.phase === 'play');                   // you catch it yourself when the pitch ended in the mitt
   var pts = [];                                                               // the whole path, kept for the faint trace afterwards
   for (var q = 0; q <= 40; q++) { var pp = BTP.phys.at(path, path.tPlate * q / 40); pts.push([pp.x, pp.y, pp.z]); }
-  anim = { t0: performance.now(), tRel: tRel, tPlate: tPlate, tCatch: tCatch, tContact: tContact, swingDur: swingDur, scale: S_,
-           path: path, R: Rp, Pt: Pt, bats: bats, lefty: lefty, l: l, script: script, foul: foul, caught: caught, swung: swung,
-           mittT: mittT, mittA: mittA, tAfter: tAfter, spin: rnd() * 6, trail: [], pathPts: pts, banner: -1, rep: rep, done: false, ns: ns,
-           snd: {}, tArr: tPlate, interactive: interactive, rules: ns.catch_rules, difficulty: ns.difficulty, atCatch: atCatch, spinVec: spin,
-           catchPending: false, panelShown: false };
-  anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
-  catchG = null;
-  if (interactive) {
-    var p0 = mittPlane(sel.cell);
-    catchCount++;
-    catchG = { x: p0.x, y: p0.y, sx: p0.x, sy: p0.y, pressT: null, resolved: false, quality: null, tRes: null, dt: null, word: '', detail: '', guide: ns.difficulty !== 'expert' || catchCount <= 3 };
-    anim.tAfter = Infinity;                                                   // it ends once your catch is decided
+  anim = { t0: clk(), tRel: tRel, tPlate: tPlate, tCatch: tCatch, tHitZ: tHitZ, tContact: Infinity, swingDur: duel ? BTP.duel.SWING_DUR : 0.52, scale: S_,
+           path: path, R: Rp, Pt: Pt, bats: bats, lefty: lefty, l: l, script: null, foul: null, caught: true, swung: false,
+           mittT: mittT, mittA: mittA, tAfter: 0, spin: rnd() * 6, trail: [], pathPts: pts, banner: -1, rep: rep, done: false, ns: ns,
+           snd: {}, tArr: tPlate, interactive: false, rules: ns.catch_rules, difficulty: ns.difficulty, atCatch: atCatch, spinVec: spin,
+           catchPending: false, panelShown: false, practice: !!opts.practice, holdAt: Infinity, duel: null,
+           contactAt: BTP.phys.at(path, BTP.phys.timeAtZ(path, 0.22)) };
+  if (duel) {
+    anim.duel = { mode: swingMode, tClose: tHitZ - BTP.duel.LAG + BTP.duel.TIME_MAX, sent: false, resolved: false, swing: null, lastNow: null, qte: false };
+    anim.holdAt = tCatch - 0.03;                                              // the picture waits here until the swing has been judged
   }
-  anim.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? tContact + 1.2 : (interactive ? Infinity : tCatch + 0.45));
+  anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
+  fillResult(anim, ns, l);
+  catchG = null;
+  if (anim.interactive) makeCatchG(anim, ns);
   setPanelCompact(true);                                                      // the read panel steps aside while the pitch is on its way
   hint('');
   renderBottom();
   $('banner').className = 'ov';
+}
+
+/* ---------------- two players: the batter's swing ---------------- */
+function startDuelAnim(ns) {
+  var plan = ns.plan;
+  var l0 = { seq: plan.seq, pitch_type: plan.pitch_type, actual_course: plan.actual_course, in_zone: plan.in_zone, framed: false, swung: false,
+             result: 'Pending', batted: null, catchable: true, timing: null, swing: { swung: false }, missed: plan.missed };
+  if (!shown) shown = ns;
+  duelPh = 'throwing'; hideHandoff();
+  startPitchAnim(Object.assign({}, ns, { last: l0 }), { l: l0, duel: true });
+}
+function duelSend(a, swing) {
+  var d = a.duel;
+  if (d.sent) return;
+  d.sent = true;
+  var data = swing ? { swung: 1, dx: swing.dx.toFixed(4), dy: swing.dy.toFixed(4), off: swing.off.toFixed(4), mode: d.mode } : { swung: 0 };
+  post('/swing', data).then(function (ns2) { resolveDuel(a, ns2); }, function () {
+    toast('The swing could not be sent. Trying again...', true);
+    setTimeout(function () { post('/swing', data).then(function (ns2) { resolveDuel(a, ns2); }, function () { d.sent = false; getState().then(function (ns3) { S = ns3; }, function () {}); }); }, 500);
+  });
+}
+// the click: one swing per pitch, from the moment the ball has left the pitcher's hand until it is too late to touch it
+function duelClick(e) {
+  var a = anim, d = a && a.duel;
+  if (!d || paused) return;
+  if (a.panelShown) { skipAnim(); return; }
+  if (d.sent) return;                                                         // already swung (a held button or a second click does nothing)
+  var t = (clk() - a.t0) / 1000 / TS;
+  if (t < a.tRel || t > d.tClose) return;
+  var off = t + BTP.duel.LAG - a.tHitZ, b = a.contactAt;
+  d.swing = { cx: cursorW.x, cy: cursorW.y, dx: cursorW.x - b.x, dy: cursorW.y - b.y, off: off };
+  a.swung = true; a.tContact = t + BTP.duel.LAG; a.holdAt = Math.min(a.holdAt, a.tContact);
+  duelSend(a, d.swing);
+}
+function resolveDuel(a, ns2) {
+  if (anim !== a) { onState(ns2); return; }
+  var d = a.duel;
+  if (d.resolved) return;
+  S = ns2; pendingState = ns2;
+  if (ns2.phase === 'qte') { d.qte = true; openQTE(ns2.qte); return; }        // a rhythm game (a throw, a block) comes first, as in the one-player game
+  if (!ns2.last || ns2.last.seq !== a.l.seq) { getState().then(function (ns3) { S = ns3; pendingState = ns3; a.done = true; }, function () { a.done = true; }); return; }
+  d.resolved = true; lastSeq = ns2.last.seq;
+  fillResult(a, ns2, ns2.last);
+  if (!a.interactive) { catchG = null; a.hintState = null; $('catchhint').className = 'ov'; }
+  renderBottom();
+}
+var handoffHooked = false;
+function showHandoff() {
+  var el = $('handoff'), m = BTP.duel.MODES;
+  el.innerHTML = '<div class="ho-card"><div class="ho-lock">CALL LOCKED IN</div><div class="ho-big">Batter, you\u2019re up</div>' +
+    '<div class="ho-sub">The pitch is hidden. <b>Batter</b>: look at the screen now. Choose your swing, then click <b>BATTER READY</b>. You cannot change it once the pitch starts.</div>' +
+    '<div class="ho-modes">' + ['normal', 'power'].map(function (k) {
+      return '<button type="button" data-sw="' + k + '" class="' + (swingMode === k ? 'on' : '') + '">' + m[k].label + '<i>' + m[k].note + '</i></button>';
+    }).join('') + '</div><button type="button" class="ho-ready" id="ho-ready">BATTER READY</button>' +
+    '<button type="button" class="ho-back" id="ho-back">Change the call</button></div>';
+  el.className = 'ov show';
+  Array.prototype.forEach.call(el.querySelectorAll('[data-sw]'), function (b) {
+    b.onclick = function () { swingMode = b.dataset.sw; BTP.duel.setMode(swingMode); Array.prototype.forEach.call(el.querySelectorAll('[data-sw]'), function (x) { x.className = x.dataset.sw === swingMode ? 'on' : ''; }); };
+  });
+  $('ho-ready').onclick = function (e) { batterReady(e); };
+  $('ho-back').onclick = function () { duelPh = null; lockedCall = null; hideHandoff(); renderBottom(); };
+}
+function hideHandoff() { var el = $('handoff'); if (el && el.className) { el.className = 'ov'; el.innerHTML = ''; } }
+function batterReady(e) {
+  if (duelPh !== 'locked' || !lockedCall || busy || paused) return;
+  var r = $('view').getBoundingClientRect(), q = BTP.unproject(e.clientX - r.left, e.clientY - r.top, BTP.ZONE.z);
+  if (q) cursorW = BTP.duel.clampCursor(q);                                    // the cursor starts under the pointer
+  var c = lockedCall; duelPh = 'throwing'; hideHandoff(); lockedCall = null;
+  act('/pitch2p', { pitch_type: c.pitch, course: c.course, intent: c.intent });
+}
+function lockCall(course) {
+  lockedCall = { pitch: sel.pitch, course: course, intent: sel.intent };
+  duelPh = 'locked'; markers.T = markers.A = null;
+  setPanelCompact(true); showHandoff(); renderAll();
+}
+
+/* ---------------- the practice pitch (no timer, not counted, nothing is sent to the server) ---------------- */
+function practiceDone() { return BTP.store.get('btp_practiced', '0') === '1'; }
+function startPractice() { practice = true; lastGuide = ''; }
+function practiceNow() { if (S && S.mode === 'solo' && S.phase === 'play' && !anim && !qteRun) { practice = true; lastGuide = ''; renderAll(); } }
+function runPractice(course) {
+  var l = { seq: -1, pitch_type: sel.pitch, actual_course: course, in_zone: true, framed: false, swung: false, result: 'Strike', batted: null,
+            catchable: true, timing: null, swing: { swung: false, label: 'TOOK IT', vert: '' }, missed: false, quality: 0.6, catch: null,
+            eval: { grade: 'fair', title: 'Practice', reason: '' } };
+  startPitchAnim(Object.assign({}, shown, { last: l, phase: 'play' }), { l: l, practice: true });
 }
 
 /* ---------------- the catch game ---------------- */
@@ -381,9 +512,12 @@ function resolveCatch(a, cg, t, dt) {
   $('banner').innerHTML = '<div class="big ' + (q === 'clean' ? 'r-gold' : (q === 'barely' ? 'r-warn' : 'r-bad')) + '">' + label + '</div>' +
     '<div class="sub f"><b class="cw-' + cg.word.toLowerCase().replace(' ', '') + '">' + cg.word + '</b> &middot; ' + esc(cg.detail) + '</div>';
   $('banner').className = 'ov show';
-  a.catchPending = true;
-  post('/catch', { quality: q }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
-                                      function () { a.catchPending = false; });
+  if (a.practice) a.catchPending = false;
+  else {
+    a.catchPending = true;
+    post('/catch', { quality: q }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
+                                        function () { a.catchPending = false; });
+  }
   renderBottom();
   $('catchhint').className = 'ov';
 }
@@ -391,6 +525,7 @@ function resolveCatch(a, cg, t, dt) {
 function catchPress(now) {
   var a = anim, cg = catchG;
   if (!a || !cg || cg.resolved || cg.pressT !== null) return;
+  if (paused) return;
   var t = (now - a.t0) / 1000 / TS;
   if (t < a.tRel) return;                                                          // the pitcher has not thrown yet
   cg.pressT = t;
@@ -416,7 +551,8 @@ function showPanel(a) {
     if (l2.catch && l2.catch.stolen) label.detail = 'Stole a strike!';
     if (l2.catch && l2.catch.passed) label.detail = 'Passed ball: the runners moved up';
   }
-  var data = { l: l2, reaction: ns2.reaction, reads: ns2.reads, bats: a.bats, Pt: a.Pt, markT: a.markT, headline: plainLabel(l2), difficulty: ns2.difficulty, catchLabel: label };
+  if (a.practice) { a.panelShown = true; return; }                                  // the practice pitch has no read of the batter
+  var data = { l: l2, reaction: ns2.reaction, reads: ns2.reads, bats: a.bats, Pt: a.Pt, markT: a.markT, headline: plainLabel(l2), difficulty: ns2.difficulty, catchLabel: label, duel: !!l2.duel };
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data);
   $('readpanel').className = 'ov show';
   $('banner').className = 'ov';
@@ -425,11 +561,12 @@ function showPanel(a) {
 function restorePanel(ns) {                                                        // after a reload: the last pitch, compact
   if (!ns.last || panelOpen) return;
   var l = ns.last, bats = ns.batter.bats, cell = BTP.courseCell(l.actual_course, bats), c = BTP.cellCenter(cell.row, cell.col);
-  var data = { l: l, reaction: ns.reaction, reads: ns.reads, bats: bats, Pt: { x: c.x, y: c.y }, markT: cell, headline: plainLabel(l), difficulty: ns.difficulty, catchLabel: null };
+  var data = { l: l, reaction: ns.reaction, reads: ns.reads, bats: bats, Pt: { x: c.x, y: c.y }, markT: cell, headline: plainLabel(l), difficulty: ns.difficulty, catchLabel: null, duel: !!l.duel };
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data); $('readpanel').className = 'ov show compact'; panelOpen = true;
 }
 function finishAnim() {
-  var ns = pendingState || S; pendingState = null; anim = null; catchG = null;
+  var ns = pendingState || S, wasPractice = anim && anim.practice; pendingState = null; anim = null; catchG = null; duelPh = null;
+  if (wasPractice) { practice = false; BTP.store.set('btp_practiced', '1'); toast('Practice done. The real game starts now: pick your first pitch.', false); }
   $('catchhint').className = 'ov';
   $('banner').className = 'ov';
   onState(ns);
@@ -501,7 +638,13 @@ function buildModel(now) {
   if (!anim) return m;
 
   /* ---- the pitch / play animation ---- */
-  var a = anim, t = (now - a.t0) / 1000 / TS;
+  var a = anim;
+  if (a.duel) {                                                                    // two players: the picture waits (briefly) until the swing has been judged
+    if (!a.duel.resolved && a.duel.lastNow != null && (now - a.t0) / 1000 / TS >= a.holdAt) a.t0 += now - a.duel.lastNow;
+    a.duel.lastNow = now;
+  }
+  var t = (now - a.t0) / 1000 / TS;
+  if (a.duel && !a.duel.sent && t >= a.duel.tClose) duelSend(a, null);             // nobody swung in time: he took it
   var l = a.l;
   function once(name, cond, fn) { if (cond && !a.snd[name]) { a.snd[name] = 1; fn(); } }
   // the pitcher's whole-body delivery, in real time
@@ -559,12 +702,17 @@ function buildModel(now) {
     } else if (t >= a.tRel - 0.2) {
       // the guide: a ring closes on the mitt and turns gold at the right moment (always on the first few catches, then not on Expert)
       var near = Math.abs(t - a.tCatch) <= rules.time[0];
-      if (cg.guide && t < a.tCatch + rules.time[1]) m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * clamp((a.tCatch - t) / 0.5, 0, 1)), gold: near };
+      if (cg.guide && t < a.tCatch + rules.time[1]) {
+        var u0 = clamp((a.tCatch - t) / 0.5, 0, 1);
+        if (a.duel) m.hudRing = { x: V.W / 2, y: V.H - 120, r0: 24, r: 24 * (1.1 + 2.6 * u0), gold: near };       // two players: nothing on the mitt shows where the ball lands
+        else m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * u0), gold: near };
+      }
       var hintEl = $('catchhint'), now2 = cg.pressT !== null ? 'wait' : (cg.guide && near ? 'now' : 'press');
       if (a.hintState !== now2) {
         a.hintState = now2;
+        var who = a.duel ? 'CATCHER: ' : '';
         hintEl.innerHTML = now2 === 'wait' ? '<b>GOT IT</b> &nbsp; waiting for the ball...' :
-          (now2 === 'now' ? '<b>NOW!</b> &nbsp; Press <b>SPACE</b>' : '<b>Press SPACE to catch</b> &nbsp;&middot;&nbsp; when the ring turns gold');
+          (now2 === 'now' ? '<b>' + who + 'NOW!</b> &nbsp; Press <b>SPACE</b>' : '<b>' + who + 'Press SPACE to catch</b> &nbsp;&middot;&nbsp; when the ring turns gold');
         hintEl.className = 'ov show' + (now2 === 'now' ? ' now' : '');
         renderBottom();
       }
@@ -585,6 +733,7 @@ function buildModel(now) {
       m.shake = [Math.sin(shakeAge * 220) * amp, Math.cos(shakeAge * 260) * amp * 0.8];
     }
   }
+  if (a.duel && t < a.tCatch - 0.12) m.mittHidden = true;                          // two players: the mitt must not show where the ball is going, nor hide the cursor
   if (!a.marked && t >= a.tPlate) { a.marked = true; markers.T = a.markT; markers.A = a.markA; }
   m.zone.markT = markers.T; m.zone.markA = markers.A;
   m.zone.enabled = false; m.zone.sel = null; m.zone.hover = null;
@@ -641,6 +790,24 @@ function buildModel(now) {
     }
   }
   m.ball = ball;
+  if (a.duel) {                                                                    // the batter's cursor: aim before the swing, frozen where it was at the swing
+    var dd = a.duel, md = BTP.duel.MODES[dd.mode], ccx = dd.swing ? dd.swing.cx : cursorW.x, ccy = dd.swing ? dd.swing.cy : cursorW.y, pc = P(ccx, ccy, 0);
+    var ct = t - a.tContact;
+    if (pc && (dd.swing ? ct < 1.8 : t < a.tCatch + 0.5)) {
+      var cur = { x: pc.x, y: pc.y, r: md.radius * pc.s, mode: dd.mode, alpha: 1 };
+      if (!dd.swing) { cur.label = md.label + ' SWING'; cur.alpha = clamp(1 - (t - a.tCatch - 0.1) / 0.35, 0, 1); }
+      else {
+        cur.flash = ct >= 0 && ct < 0.25 ? 1 - ct / 0.25 : 0;
+        cur.alpha = clamp((1.8 - ct) / 0.5, 0, 1);
+        if (dd.resolved && ct >= 0) {                                              // after contact: where the ball really was, and how far off
+          var pb = P(a.contactAt.x, a.contactAt.y, 0);
+          if (pb) cur.ball = { x: pb.x, y: pb.y };
+          cur.label = BTP.duel.timingOf(dd.swing.off).word + ' \u00B7 ' + BTP.duel.posWords(dd.swing.dx, dd.swing.dy).replace(' of the ball', '').replace(' the ball', '');
+        }
+      }
+      m.cursor = cur;
+    }
+  }
 
   // the play-by-play words (CAUGHT!, OUT!, FALLS IN!...) while a ball in play is replayed
   if (a.script && t >= a.tContact + 0.25 && a.banner < 0) {
@@ -659,6 +826,92 @@ function buildModel(now) {
   return m;
 }
 
+
+/* ---------------- the call timer ---------------- */
+function timerEligible() {
+  return !!(S && S.phase === 'play' && shown && !anim && !qteRun && !busy && !modalOpen() && !duelPh && !practice && BTP.settings.timer() > 0);
+}
+function timerTick(now) {
+  var dt = tm.lastNow ? Math.min(0.25, (now - tm.lastNow) / 1000) : 0, limit = BTP.settings.timer();
+  tm.lastNow = now;
+  if (!timerEligible()) { tm.left = limit; tm.lowSec = -1; return; }              // between pitches, in a panel's way: it starts over
+  if (paused || drawerName || document.hidden) return;                            // paused, or a help / settings / history panel is open: it stands still
+  var before = Math.ceil(tm.left);
+  tm.left -= dt;
+  var after = Math.ceil(tm.left);
+  if (after !== before && after <= 5 && after >= 1) BTP.bgm.sfx('tick', (6 - after) / 5);
+  if (tm.left <= 0) { tm.left = limit; timerExpired(); }
+}
+function timerExpired() {
+  if (!canPlay()) return;
+  callPitch(true);
+}
+function pickName() {
+  var p = shown.repertoire.filter(function (r) { return r.key === sel.pitch; })[0], it = shown.intents.filter(function (r) { return r.key === sel.intent; })[0];
+  return (p ? p.name : '') + ' \u00B7 ' + BTP.duel.courseName(BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats)) + ' \u00B7 ' + (it ? it.label : '');
+}
+
+/* ---------------- pause ---------------- */
+function setPaused(on) {
+  on = !!on;
+  if (on === paused) return;
+  if (on && !canPause() && !anim) return;
+  if (on) { paused = true; pausedAt = performance.now(); $('pausev').innerHTML = '<div class="pv"><b>PAUSED</b><span>The timer and the pitch are stopped. The music keeps playing.</span><button type="button" id="resume-btn">RESUME</button></div>'; $('pausev').className = 'ov show'; $('resume-btn').onclick = function () { setPaused(false); }; }
+  else { pausedTotal += performance.now() - pausedAt; paused = false; $('pausev').className = 'ov'; $('pausev').innerHTML = ''; }
+  renderTop(); renderBottom();
+}
+
+/* ---------------- the step guide: where you are, and the one thing to do now ---------------- */
+function catchAdvice(cg) {
+  if (cg.quality === 'clean' || cg.quality === 'barely') return { word: 'SUCCESS', tone: 'good', note: cg.quality === 'clean' ? 'Clean catch!' : 'You held on, just barely' };
+  if (cg.dt == null) return { word: 'NO PRESS', tone: 'bad', note: 'Press SPACE once as the ball reaches the mitt' };
+  return cg.dt < 0 ? { word: 'TOO EARLY', tone: 'warn', note: 'Wait a little longer next time' } : { word: 'TOO LATE', tone: 'warn', note: 'Press a little sooner next time' };
+}
+function guideInfo() {
+  var st = shown;
+  if (!st || !st.situation || st.phase === 'start' || st.phase === 'intro' || st.phase === 'over' || modalOpen()) return null;
+  var duel = st.mode === 'duel', a = anim, limit = BTP.settings.timer(), cur = 1, title = '', sub = '', tone = '', pre = practice || (a && a.practice) ? 'PRACTICE \u00B7 ' : '';
+  var rule = limit > 0 ? 'Time up \u2192 your current pick is thrown (none picked: ' + BTP.duel.STANDARD + ')' : 'No timer. Pick the pitch, target and intent, then press Enter';
+  if (paused) return { cur: a ? 2 : 1, title: 'Paused', sub: 'Press P or RESUME to continue', tone: '' };
+  if (qteRun || (S && S.phase === 'qte')) return { cur: 2, title: 'Quick timing moment', sub: 'Follow the bar at the bottom of the screen', tone: 'go' };
+  if (!a) {
+    if (duelPh === 'locked') return { cur: 1, title: 'Call locked in', sub: 'BATTER: look at the screen, choose NORMAL or POWER, then click BATTER READY', tone: 'go' };
+    if (duel) return { cur: 1, title: 'CATCHER: choose the pitch, then LOCK IN', sub: 'BATTER: look away until the call is locked. ' + rule, tone: '' };
+    return { cur: 1, title: pre + '\u2460 Choose a pitch, then CALL PITCH', sub: practice ? 'No timer, and this pitch does not count' : rule, tone: '' };
+  }
+  var t = (clk() - a.t0) / 1000 / TS, cg = a.interactive ? catchG : null, d = a.duel;
+  if (cg && cg.resolved) {
+    var adv = catchAdvice(cg);
+    return { cur: 3, title: pre + adv.word + ' \u00B7 ' + adv.note, sub: (cg.detail ? cg.detail + ' \u00B7 ' : '') + (a.practice ? 'Next: the real game starts' : 'Next: choose the next pitch'), tone: adv.tone };
+  }
+  if (t < a.tRel) return { cur: 2, title: pre + '\u2461 The pitch is coming', sub: duel ? 'BATTER: aim the cursor over the ball\u2019s path \u00B7 CATCHER: get ready for SPACE' : 'Get ready: press SPACE when the ball reaches the mitt', tone: '' };
+  if (d && !d.sent) return { cur: 3, title: '\u2462 BATTER: click to swing \u00B7 CATCHER: SPACE at the mitt', sub: 'Your cursor\u2019s position and the click\u2019s timing decide the result', tone: 'go' };
+  if (cg) {
+    if (cg.pressT !== null) return { cur: 3, title: pre + 'SPACE pressed: waiting for the ball', sub: 'One press only', tone: 'go' };
+    return { cur: 3, title: pre + '\u2462 Press SPACE when the ball reaches the mitt', sub: 'One press only. Too early or too late is a miss', tone: 'go' };
+  }
+  if (a.script) return { cur: 3, title: 'In play: ' + plainLabel(a.l), sub: 'Watch the play. Next: choose the next pitch', tone: a.l.result === 'Out' ? 'good' : 'bad' };
+  if (a.l.result === 'Foul') return { cur: 3, title: 'Foul ball', sub: 'Next: choose the next pitch', tone: '' };
+  return { cur: 3, title: plainLabel(a.l), sub: 'Next: choose the next pitch', tone: '' };
+}
+var STEPS = ['Choose the pitch', 'The pitch', 'Catch it'];
+function updateGuide() {
+  var g = guideInfo(), el = $('guide');
+  if (!g) { if (lastGuide !== 'hide') { lastGuide = 'hide'; el.className = 'hide'; } return; }
+  var key = [g.cur, g.title, g.sub, g.tone].join('|');
+  if (key !== lastGuide) {
+    lastGuide = key; el.className = '';
+    $('g-steps').innerHTML = STEPS.map(function (n, i) { return '<span class="g-step' + (g.cur === i + 1 ? ' on' : (g.cur > i + 1 ? ' done' : '')) + '"><b>' + (i + 1) + '</b><span>' + n + '</span></span>'; }).join('');
+    var ti = $('g-title'); ti.textContent = g.title; ti.className = g.tone; $('g-sub').textContent = g.sub;
+  }
+  var limit = BTP.settings.timer(), txt, cls = '';
+  if (limit === 0) { txt = 'OFF'; cls = 'idle'; }
+  else if (paused) { txt = 'Paused'; cls = 'paused'; }
+  else if (practice || (anim && anim.practice)) { txt = 'OFF'; cls = 'idle'; }
+  else if (!timerEligible()) { txt = String(limit); cls = 'idle'; }
+  else { txt = String(Math.max(0, Math.ceil(tm.left))); if (tm.left <= 5) cls = 'low'; if (drawerName) cls += ' idle'; }
+  if (tm.shown !== txt + cls) { tm.shown = txt + cls; $('g-tn').textContent = txt; $('g-tmr').className = 'g-tmr ' + cls; }
+}
 
 /* ---------------- the little top-down board for balls that leave the catcher's view ---------------- */
 var MINI = { w: 250, h: 162, s: 0.53 };
@@ -690,10 +943,12 @@ function drawMini(a, st2) {
 }
 
 /* ---------------- the render loop ---------------- */
-function loop(now) {
+var viewCursor = '';
+function loop(rawNow) {
   requestAnimationFrame(loop);
   if (!ctx) return;
-  if (anim && anim.skip) { /* jump to the end */ }
+  timerTick(performance.now()); updateGuide();
+  var now = clk();
   var m = buildModel(now);
   var ab = m.aerialM ? (m.aerial || 0) : 0;
   if (ab >= 0.995) { ctx.clearRect(0, 0, W, H); BTP.renderAerial(ctx, W, H, m.aerialM); }
@@ -704,10 +959,12 @@ function loop(now) {
       ctx.save(); ctx.globalAlpha = ab; ctx.drawImage(aerialCv, 0, 0, W, H); ctx.restore();
     }
   }
-  $('mask').style.opacity = String(1 - 0.92 * ab);              // the mask fades while you watch the play from above
+  $('mask').style.opacity = String(S && S.mode === 'duel' ? 0 : 1 - 0.92 * ab);   // the mask fades while you watch the play from above (two players: never there, it would hide the cursor)
+  var cur = (anim && anim.duel && !anim.panelShown) ? 'none' : '';
+  if (cur !== viewCursor) { viewCursor = cur; $('view').style.cursor = cur; }
   if (anim && anim.done && !anim.catchPending) finishAnim();
 }
-function skipAnim() { if (anim && !catchActive()) { anim.done = true; } }
+function skipAnim() { if (anim && !catchActive() && (!anim.duel || anim.panelShown) && !paused) { anim.done = true; } }
 
 /* ---------------- setup ---------------- */
 function resize() {
@@ -729,12 +986,19 @@ function init() {
   window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(resize, 120); });
   var view = $('view');
   view.addEventListener('pointermove', function (e) {
+    if (S && S.mode === 'duel' && (anim || duelPh)) {                              // the batter's cursor follows the mouse
+      var pq = stageXY(e), q = BTP.unproject(pq.x, pq.y, BTP.ZONE.z);
+      if (q) cursorW = BTP.duel.clampCursor(q);
+      return;
+    }
     if (!canPlay()) { hover = null; return; }
     var p = stageXY(e); hover = zoneCellAt(p.x, p.y); view.style.cursor = hover ? 'pointer' : 'default';
   });
   view.addEventListener('pointerleave', function () { hover = null; });
   view.addEventListener('pointerdown', function (e) {
     BTP.bgm.start();
+    if (e.button !== 0) return;                                                    // only the left button swings or selects
+    if (anim && anim.duel) { duelClick(e); return; }
     if (anim) { skipAnim(); return; }
     if (!canPlay()) return;
     var p = stageXY(e), c = zoneCellAt(p.x, p.y);
@@ -743,13 +1007,18 @@ function init() {
   $('bottom').addEventListener('click', function (e) {
     BTP.bgm.start();
     var b = e.target.closest('button'); if (!b) return;
+    b.blur();                                                                      // a focused button would also react to Space / Enter later
+    if (b.disabled) return;
     if (b.dataset.pitch) { sel.pitch = b.dataset.pitch; renderBottom(); }
     else if (b.dataset.intent) { sel.intent = b.dataset.intent; renderBottom(); }
     else if (b.id === 'callbtn') callPitch();
   });
   $('top').addEventListener('click', function (e) {
     BTP.bgm.start();
-    var b = e.target.closest('button'); if (!b || !b.dataset.drawer) return;
+    var b = e.target.closest('button'); if (!b) return;
+    b.blur();
+    if (b.dataset.act === 'pause') { setPaused(!paused); return; }
+    if (!b.dataset.drawer) return;
     if (drawerName === b.dataset.drawer) closeDrawer(); else loadDrawer(b.dataset.drawer);
   });
   $('drawer').innerHTML = '<div class="dh"><b class="ttl" style="flex:1"></b><button class="t-btn" id="drawer-close">Close</button></div><div class="db"></div>';
@@ -759,14 +1028,18 @@ function init() {
   document.addEventListener('keydown', function (e) {
     BTP.bgm.start();
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.code === 'KeyP') { if (!e.repeat) setPaused(!paused); return; }
+    if (paused) { if (e.code === 'Escape') setPaused(false); if (e.code === 'Space' || e.code === 'Enter') e.preventDefault(); return; }
     if (catchActive()) {                                                          // during the pitch the only thing asked of you is Space
-      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(performance.now()); return; }
+      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(clk()); return; }
       return;
     }
     if (e.code === 'Space' || e.code === 'Enter') {
       if (qteRun) { e.preventDefault(); qteRun.hit(); return; }
-      if (anim) { e.preventDefault(); skipAnim(); return; }
-      if (e.code === 'Enter' && canPlay()) { e.preventDefault(); callPitch(); }
+      if (anim) { e.preventDefault(); skipAnim(); return; }                       // (never in a duel until the result is up: the batter uses the mouse)
+      if (duelPh) { e.preventDefault(); return; }
+      if (e.code === 'Enter' && canPlay() && !e.repeat) { e.preventDefault(); callPitch(); }
+      else if (e.code === 'Space') e.preventDefault();
       return;
     }
     if (e.code === 'Escape') { if (drawerName) closeDrawer(); return; }
@@ -778,21 +1051,26 @@ function init() {
     if (d) { e.preventDefault(); sel.cell = { row: clamp(sel.cell.row + d[0], 0, 2), col: clamp(sel.cell.col + d[1], 0, 2) }; updateTargetRead(); }
   });
   renderTop();
+  if (window.ResizeObserver) { var ro = new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(resize, 60); }); ro.observe($('stage')); }   // the guide strip comes and goes
   getState().then(onState, function () { toast('Could not reach the game server.', true); });
   requestAnimationFrame(loop);
 }
-function callPitch() {
+function callPitch(auto) {
   if (!canPlay()) return;
   var course = BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats);
+  var duel = S && S.mode === 'duel';
+  if (auto) toast(duel ? 'Time up: your current pick was locked in' : 'Time up: thrown ' + pickName(), false);
+  if (practice) { markers.T = markers.A = null; runPractice(course); return; }
+  if (duel) { lockCall(course); return; }
   markers.T = markers.A = null;
   setPanelCompact(true);
   act('/pitch', { pitch_type: sel.pitch, course: course, intent: sel.intent });
 }
-BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG }; };
-BTP.catchPress = function () { catchPress(performance.now()); };
+BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, tm: tm, duelPh: duelPh, paused: paused, practice: practice, cursorW: cursorW, clk: clk }; };
+BTP.catchPress = function () { catchPress(clk()); };
 BTP.setSlow = function (n) { TS = n; };      // for testing and demos
 BTP.finishAnim = function () { if (anim) finishAnim(); };
 BTP.sync = function () { return getState().then(onState); };
-BTP.model = function () { return buildModel(performance.now()); };
+BTP.model = function () { return buildModel(clk()); };
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

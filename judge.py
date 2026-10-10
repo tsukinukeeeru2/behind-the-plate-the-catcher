@@ -127,16 +127,19 @@ def _pressure_swing(batter, state):
     return (0.5 - batter.pressure_tolerance) * 0.12   # if he is weak he swings more / wavers more
 
 
-def judge_pitch(state, pitch_type, target_course="middle", rng=None, intent="strike",
-                frame_timing=None, tempo=0.0):
-    rng = rng or random
+def prepare_pitch(state, pitch_type, target_course="middle", rng=None, intent="strike", tempo=0.0):
+    """Steps 1-5 of judging a pitch: what the pitcher really threw, what the batter guesses, and whether it is in the zone.
 
+    The one-player game runs this and the swing back to back inside judge_pitch(). The two-player game runs it first, so the page knows
+    where the ball will cross the plate while the human batter is still choosing when to swing, then hands the result back
+    to judge_pitch(prepared=...). The random numbers are drawn in the same order either way.
+    """
+    rng = rng or random
     pitcher = state.pitcher
     batter = state.batter
     history = state.history
     family = family_of(pitch_type)
     guess_class2 = guess_class_of(pitch_type)          # two-way (fastball / off-speed)
-    fam_strength = batter.family_strength(family)      # the batter's strength against that family
 
     # 1. EXECUTION: request -> actual
     actual = pitcher.execute_pitch(pitch_type, target_course, intent, rng, tempo=tempo)
@@ -171,6 +174,30 @@ def judge_pitch(state, pitch_type, target_course="middle", rng=None, intent="str
     # walk_adj (the intent / setup pushes toward "more likely a ball") -> lowers the zone probability
     zone_chance -= (intent_adj["walk_adj"] + seq["walk_adj"])
     in_zone = rng.random() < max(0.03, min(0.97, zone_chance))
+    return {"pitch_type": pitch_type, "target_course": target_course, "intent": intent, "actual": actual, "guess": guess,
+            "call": call, "seq": seq, "intent_adj": intent_adj, "intent_dq": intent_dq, "timing": timing, "in_zone": in_zone}
+
+
+def judge_pitch(state, pitch_type, target_course="middle", rng=None, intent="strike",
+                frame_timing=None, tempo=0.0, prepared=None, human=None):
+    """Judge one pitch. human = None: the batter is the game's (a dice roll). human = a swing from swing.judge_swing() (or
+    {"swung": False}): the human batter's own input decides whether he swings and what the swing does."""
+    rng = rng or random
+
+    pitcher = state.pitcher
+    batter = state.batter
+    history = state.history
+    family = family_of(pitch_type)
+    guess_class2 = guess_class_of(pitch_type)          # two-way (fastball / off-speed)
+    fam_strength = batter.family_strength(family)      # the batter's strength against that family
+
+    pre = prepared or prepare_pitch(state, pitch_type, target_course, rng, intent, tempo)
+    actual, guess, call, seq = pre["actual"], pre["guess"], pre["call"], pre["seq"]
+    intent_adj, intent_dq, timing, in_zone = pre["intent_adj"], pre["intent_dq"], pre["timing"], pre["in_zone"]
+    actual_course = actual["actual_course"]
+    quality = actual["quality"]
+    if human is not None and human.get("swung"):
+        timing = human["timing"]                           # the human's own timing, not a roll
 
     dq_total = catcher_decision_quality(call, actual, batter, guess, guess_class2, timing,
                                         history, state, seq) + intent_dq
@@ -186,7 +213,7 @@ def judge_pitch(state, pitch_type, target_course="middle", rng=None, intent="str
     }
 
     def _pack(result, swung, batted_ball=None, fielding=None, play=None, framed=False):
-        return {
+        out = {
             "result": result, "timing": timing, "swung": swung, "in_zone": in_zone,
             "pitch_type": pitch_type, "target_course": target_course,
             "actual_course": actual_course, "intent": intent,
@@ -194,25 +221,52 @@ def judge_pitch(state, pitch_type, target_course="middle", rng=None, intent="str
             "batted_ball": batted_ball, "fielding": fielding, "play": play, "framed": framed,
             "_analysis": analysis,
         }
+        if human is not None:
+            out["human"] = {k: v for k, v in human.items() if k != "batted"}
+        return out
 
     # A pitchout is a pitch thrown well off the plate to go after a runner. Almost surely a ball, and the batter is not involved.
     if intent == "pitchout":
         in_zone = False
         return _pack("Ball", swung=False)
 
+    def _fair_ball(batted_ball):
+        """A ball in play: the defense, then the baserunners. (Shared by the dice batter and the human batter.)"""
+        fielding = resolve_batted_ball(batted_ball, state.defense, batter, rng=rng)
+        play = resolve_baserunning(batted_ball, fielding, state.runners, state.outs, batter, rng,
+                                   runner_speeds=getattr(state, "runner_speeds", None),
+                                   runner_moving=(getattr(state, "opp_tactic", None) == "hit_and_run"))
+        # Facts the Play Viewer (playview.py) needs to replay this ball. Display-only: nothing reads them for judging.
+        fielding["alignment"] = state.defense.alignment
+        fielding["bats"] = batter.bats
+        play["runners_before"] = list(state.runners)
+        analysis["alignment_helped"] = (
+            fielding["breakdown"]["alignment"] > 0 and fielding["result"] == "Out")
+        return _pack(play["batter_result"], True, batted_ball, fielding, play)
+
     # 6. SWING
-    swing_chance = (0.60 + 0.22 * (batter.aggression - 0.5)) if in_zone else batter.chase_rate
-    if state.strikes == 2:
-        swing_chance += 0.15 * (0.6 + 0.4 * (1 - batter.two_strike_ability))
-    if guess["class"] == guess_class2:
-        swing_chance += 0.10 * guess["class_strength"]
+    if human is not None:
+        # a human batter: he swings (or not) himself, and the cursor and the click decide the rest
+        swung = bool(human.get("swung"))
+        if swung:
+            if human["contact"] == "miss":
+                return _pack("Whiff", True)
+            if human["contact"] == "foul":
+                return _pack("Foul", True)
+            return _fair_ball(human["batted"])
     else:
-        swing_chance -= 0.10 * guess["class_strength"]
-    if guess["location"] != "any":
-        swing_chance += 0.06 * guess["loc_strength"] * zone_overlap(guess["location"], actual_course)
-    swing_chance += intent_adj["swing_adj"] + seq["swing_adj"]
-    swing_chance += _pressure_swing(batter, state)
-    swung = rng.random() < max(0.02, min(0.98, swing_chance))
+        swing_chance = (0.60 + 0.22 * (batter.aggression - 0.5)) if in_zone else batter.chase_rate
+        if state.strikes == 2:
+            swing_chance += 0.15 * (0.6 + 0.4 * (1 - batter.two_strike_ability))
+        if guess["class"] == guess_class2:
+            swing_chance += 0.10 * guess["class_strength"]
+        else:
+            swing_chance -= 0.10 * guess["class_strength"]
+        if guess["location"] != "any":
+            swing_chance += 0.06 * guess["loc_strength"] * zone_overlap(guess["location"], actual_course)
+        swing_chance += intent_adj["swing_adj"] + seq["swing_adj"]
+        swing_chance += _pressure_swing(batter, state)
+        swung = rng.random() < max(0.02, min(0.98, swing_chance))
 
     if not swung:
         if in_zone:
@@ -257,14 +311,4 @@ def judge_pitch(state, pitch_type, target_course="middle", rng=None, intent="str
     contact_bias += seq["contact_adj"] + intent_adj["contact_adj"]
     batted_ball = generate_batted_ball(batter, get_pitch(pitch_type), actual_course,
                                        timing, contact_bias=contact_bias, rng=rng)
-    fielding = resolve_batted_ball(batted_ball, state.defense, batter, rng=rng)
-    play = resolve_baserunning(batted_ball, fielding, state.runners, state.outs, batter, rng,
-                               runner_speeds=getattr(state, "runner_speeds", None),
-                               runner_moving=(getattr(state, "opp_tactic", None) == "hit_and_run"))
-    # Facts the Play Viewer (playview.py) needs to replay this ball. Display-only: nothing reads them for judging.
-    fielding["alignment"] = state.defense.alignment
-    fielding["bats"] = batter.bats
-    play["runners_before"] = list(state.runners)
-    analysis["alignment_helped"] = (
-        fielding["breakdown"]["alignment"] > 0 and fielding["result"] == "Out")
-    return _pack(play["batter_result"], swung, batted_ball, fielding, play)
+    return _fair_ball(batted_ball)

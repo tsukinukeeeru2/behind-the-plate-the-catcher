@@ -47,7 +47,7 @@ def _hit_extent(bb, batter, rng):
 
     # Home run: only a hard-hit fly ball / line drive that carried deep
     if h == "hard" and d == "deep" and t in ("fly", "line"):
-        hr_p = 0.10 + 0.30 * power
+        hr_p = 0.10 + 0.30 * power + getattr(bb, "bonus", 0.0)
         if bb.direction == "pull":
             hr_p += 0.08
         elif bb.direction == "oppo":

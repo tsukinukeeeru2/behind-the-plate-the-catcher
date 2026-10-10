@@ -106,6 +106,8 @@ BTP.bgm = (function () {
       sfxNoise(t, 0.12, 'lowpass', 380, 0.9 * k); sfxTone(t, 110, 45, 0.2, 0.8 * k, 'sine');
     } else if (name === 'dull') {               // a ball that only just stuck in the mitt: less snap, more thump
       sfxNoise(t, 0.08, 'lowpass', 900, 0.8 * k); sfxTone(t, 130, 60, 0.15, 0.7 * k, 'sine');
+    } else if (name === 'tick') {               // the call timer's last seconds: a light blip (higher and louder as time runs out)
+      sfxTone(t, 1250 + 500 * Math.min(1, k), 1100 + 400 * Math.min(1, k), 0.07, 0.22 + 0.14 * Math.min(1, k), 'square');
     } else if (name === 'grunt') {
       sfxTone(t, 180, 90, 0.2, 0.18 * k, 'sawtooth');
     }
