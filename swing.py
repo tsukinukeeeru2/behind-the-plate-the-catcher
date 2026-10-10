@@ -27,20 +27,31 @@ TIME_GOOD = 0.07                    # inside this it is called "Good", outside i
 MODES = {
     "normal": {"radius": 0.15, "window": 1.0, "power": 0.0, "label": "NORMAL"},
     "power": {"radius": 0.085, "window": 0.85, "power": 0.12, "label": "POWER"},
+    # the standard swing of the online game: no cursor (the page aims for you), one press of Space, a wide window for the timing
+    "auto": {"radius": 0.17, "window": 1.0, "power": 0.0, "label": "AUTO", "tmax": 0.20, "good": 0.09, "perfect": 0.04},
 }
+AUTO_AIM = 0.35                     # the automatic aim sits this fraction of the way from the zone's centre to the ball (the page applies it)
 
 
 def mode_of(name):
     return MODES.get(name, MODES["normal"])
 
 
-def timing_word(off):
-    """The batter's timing as the game's three words (and the one printed on screen)."""
-    if off < -TIME_GOOD:
-        return "early", "EARLY"
-    if off > TIME_GOOD:
-        return "late", "LATE"
-    return "on_time", "GOOD"
+def timing_word(off, m=None):
+    """The batter's timing as the game's three words (and the one printed on screen).
+
+    Returns (timing, label, grade): timing is early / on_time / late (what the game logic uses), label is what is shown
+    (EARLY / GOOD / LATE, and PERFECT in the standard swing), grade is perfect / good / early / late.
+    """
+    good = (m or {}).get("good", TIME_GOOD)
+    perfect = (m or {}).get("perfect")
+    if perfect is not None and abs(off) <= perfect:
+        return "on_time", "PERFECT", "perfect"
+    if off < -good:
+        return "early", "EARLY", "early"
+    if off > good:
+        return "late", "LATE", "late"
+    return "on_time", "GOOD", "good"
 
 
 def _clamp(x, lo, hi):
@@ -70,11 +81,11 @@ def judge_swing(dx, dy, off, mode, batter, rng=None):
     m = mode_of(mode)
     dist = math.hypot(dx, dy)
     reach = m["radius"] + BALL_R
-    te = abs(off) / (TIME_MAX * m["window"])             # 0 = perfectly timed .. 1 = at the limit
+    te = abs(off) / (m.get("tmax", TIME_MAX) * m["window"])   # 0 = perfectly timed .. 1 = at the limit
     e = dist / reach                                       # 0 = dead centre .. 1 = on the rim
-    timing, label = timing_word(off)
-    info = {"timing": timing, "timing_label": label, "off": round(off, 3), "dx": round(dx, 3), "dy": round(dy, 3),
-            "dist": round(dist, 3), "centre": round(_clamp(1.0 - e, 0.0, 1.0), 2), "mode": "power" if m is MODES["power"] else "normal",
+    timing, label, grade = timing_word(off, m)
+    info = {"timing": timing, "timing_label": label, "grade": grade, "off": round(off, 3), "dx": round(dx, 3), "dy": round(dy, 3),
+            "dist": round(dist, 3), "centre": round(_clamp(1.0 - e, 0.0, 1.0), 2), "mode": "power" if m is MODES["power"] else ("auto" if m is MODES["auto"] else "normal"),
             "contact": "miss", "batted": None}
     if te >= 1.0 or e > 1.0:
         return info

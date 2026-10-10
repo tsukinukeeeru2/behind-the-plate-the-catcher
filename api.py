@@ -69,7 +69,7 @@ def human_swing_info(h):
     dy = h["dy"]
     vert = "OVER THE TOP" if dy > 0.07 else ("UNDER IT" if dy < -0.07 else "")
     return {"swung": True, "timing": h["timing"], "label": h["timing_label"], "off": h["off"], "ahead": round(-h["off"] * 3.2, 3),
-            "dy": dy, "dx": h["dx"], "vert": vert, "human": True, "centre": h["centre"], "mode": h["mode"],
+            "dy": dy, "dx": h["dx"], "vert": vert, "human": True, "centre": h["centre"], "mode": h["mode"], "grade": h.get("grade"),
             "contact": h["contact"], "pos": swing_rules.position_words(h["dx"], dy)}
 
 
@@ -162,6 +162,12 @@ def _batter_json(b):
             "ops": b.ops, "scouting": b.scouting_note()}
 
 
+def is_catchable(session):
+    """True while the pitch ended in the mitt, no other catching game covered it, and the catch has not been made yet."""
+    return bool(session.state.can_apply_catch() and session.last_catch is None
+                and not any(k in _BLOCK_KINDS for k in session.pitch_qtes))
+
+
 def _outcome_json(session):
     o, call = session.last_outcome, session.last_call
     if not o or not call:
@@ -190,8 +196,7 @@ def _outcome_json(session):
         "catch": session.last_catch,
     }
     # the mitt game applies when the pitch ended in the mitt and no other catching game (a block, a throw) already covered it
-    out["catchable"] = bool(session.state.can_apply_catch() and session.last_catch is None
-                            and not any(k in _BLOCK_KINDS for k in out["qtes"]))
+    out["catchable"] = is_catchable(session)
     if bb is not None and fielding and play:
         key = len(session.state.pitch_log)
         out["batted"] = {
@@ -248,7 +253,9 @@ def build_state(session, qte_specs):
     plan = None
     if getattr(session, "plan", None):
         pl = session.plan["prepared"]
-        plan = {"seq": session.plan["seq"], "pitch_type": session.plan["pitch_type"],
+        pt = session.plan["pitch_type"]
+        plan = {"seq": session.plan["seq"], "pitch_type": pt, "velocity": velocity_of(pt), "family": family_of(pt),
+                "move": list(PITCH_MOVE.get(pt, (0.35, 0.0))),            # what the ball does in the air (the page needs it to fly the same pitch on both screens)
                 "actual_course": pl["actual"]["actual_course"], "in_zone": bool(pl["in_zone"]),
                 "missed": bool(pl["actual"]["missed"])}
     return dict(base, phase=phase, mode=getattr(session, "mode", "solo"), plan=plan,

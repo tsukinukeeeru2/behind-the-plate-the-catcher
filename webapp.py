@@ -37,6 +37,7 @@ import random
 import re
 import socketserver
 import threading
+import time
 import traceback
 import urllib.parse
 import webbrowser
@@ -47,12 +48,13 @@ from constants import COURSE_SHORT
 from defense import ALIGNMENTS
 import qte
 from engine import begin_at_bat, prepare_call, resolve_pitch_flow, save_game_log
+import rooms
 import swing as swing_rules
 from fielders import POSITIONS, position_fit, weakest_fielder
 from lineup import load_lineup_file
 from match_state import generate_random_situation
 import playview
-from api import PITCH_MOVE, build_state
+from api import PITCH_MOVE, build_state, is_catchable
 from stadium import render_stadium_page
 from pitch_data import pitch_name, repertoire_options, velocity_of
 from strategy import (PITCH_INTENTS, build_analysis, build_postgame_report, catcher_rating, grade_reads,
@@ -238,6 +240,9 @@ class GameSession:
 
 
 SESSION = GameSession()
+ROOMS = rooms.Registry()          # online rooms (see rooms.py); every room has its own GameSession
+ROOM_TIMERS = (0, 10, 15, 20, 30)
+_JOIN_FAILS = []                  # when the last wrong invite codes were tried
 
 
 def _e(text):
@@ -754,7 +759,7 @@ def render_start_screen(session):
   <form method="post" action="/start" style="margin-top:1.4em;">
     <div class="modepick" role="radiogroup" aria-label="Players">
       <label><input type="radio" name="mode" value="solo" checked> <b>1 player</b> <span class="dim">you catch, the game bats</span></label>
-      <label><input type="radio" name="mode" value="duel"> <b>2 players</b> <span class="dim">catcher (keyboard) vs batter (mouse), one PC</span></label>
+      <label><input type="radio" name="mode" value="online"> <b>2 players online</b> <span class="dim">catcher vs batter on two PCs, with an invite code</span></label>
     </div>
     <button class="primary big" type="submit" name="scenario" value="random">START GAME</button>
     <div class="startopts">
@@ -1879,29 +1884,206 @@ def render_panel(session, name):
     return None
 
 
-def _advance_pitch_gen(answer):
+def start_pitch2p(session, pitch_type, course, intent):
+    """Throw a pitch in a two-player game: decide what really happens (but not the swing). Returns True if it was thrown."""
+    state = session.state
+    if (session.mode != "duel" or session.plan is not None or state is None
+            or pitch_type not in repertoire_options(state.pitcher)
+            or course not in COURSE_SHORT or intent not in PITCH_INTENTS):
+        return False
+    session.last_batter_bats = state.batter.bats
+    session.last_call = {"pitch_type": pitch_type, "target_course": course, "intent": intent}
+    tempo = session.next_tempo
+    session.next_tempo = 0.0
+    session.plan = {"prepared": prepare_call(state, pitch_type, course, intent, session.rng, tempo=tempo),
+                    "pitch_type": pitch_type, "course": course, "intent": intent, "seq": session.event_seq + 1}
+    return True
+
+
+def finish_swing(session, form):
+    """Judge the thrown pitch with the batter's swing (form: swung, dx, dy, off, mode). No swing = he took it."""
+    plan, state = session.plan, session.state
+    if plan is None or session.pitch_gen is not None:
+        return False
+    human = {"swung": False}
+    if form.get("swung") == "1":
+        try:
+            dx, dy, off = (max(-1.0, min(1.0, float(form.get(k, "0")))) for k in ("dx", "dy", "off"))
+        except ValueError:
+            dx = dy = off = None
+        if dx is not None and all(v == v for v in (dx, dy, off)):          # (NaN is not a number)
+            human = swing_rules.judge_swing(dx, dy, off, form.get("mode"), state.batter, session.rng)
+            human["swung"] = True
+    session.plan = None
+    session.pitch_qtes = []
+    session.pitch_gen = resolve_pitch_flow(state, plan["pitch_type"], plan["course"], plan["intent"], session.rng,
+                                           prepared=plan["prepared"], human=human)
+    _advance_pitch_gen(None, session)
+    while session.pending_qte is not None and session.pending_qte[0] in ("frame", "change_signs"):
+        _advance_pitch_gen(None if session.pending_qte[0] == "frame" else 0.0, session)    # (the page does not ask the player about these)
+    return True
+
+
+def apply_catch_result(session, quality):
+    state = session.state
+    if quality in ("clean", "barely", "miss") and session.last_catch is None and state.can_apply_catch():
+        res = state.apply_catch(quality, session.rng)
+        session.next_tempo = {"clean": 0.10, "barely": 0.02, "miss": -0.10}[quality]
+        session.last_catch = dict(res, quality=quality)
+        if res["message"]:
+            session.messages = session.messages + [">>> " + res["message"]]
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Online rooms: what each player may see and do, and how the room moves from one pitch to the next
+# ---------------------------------------------------------------------------
+def _new_room_session():
+    sess = GameSession()
+    sess.mode = "duel"
+    return sess
+
+
+def room_view(room, role):
+    """The game as ONE of the two players may see it: the batter never gets the catcher's choices before the pitch is thrown."""
+    now = rooms.now_ms()
+    st = build_state(room.session, _QTE_SPEC)
+    st["mode"] = "duel"
+    if room.phase != "pitch":
+        st["plan"] = None                                  # the pitch is only shown to the batter once it has been thrown
+    if role == "batter":
+        st["repertoire"], st["intents"], st["qte"] = [], [], None
+        st["can_walk"] = st["can_change"] = False
+        if st.get("phase") == "qte":
+            st["phase"] = "play"                           # the catcher's own rhythm game is none of his business
+    pz = room.paused
+    st["room"] = {
+        "code": rooms.pretty(room.code), "role": role, "phase": room.phase, "creator": room.creator_role,
+        "joined": {r: r in room.tokens for r in rooms.ROLES},
+        "connected": {r: (r in room.tokens and room.connected(r, now)) for r in rooms.ROLES},
+        "ready": dict(room.ready),
+        "paused": ({"reason": pz["reason"], "role": pz["role"], "you": pz["role"] == role} if pz else None),
+        "start_at": room.start_at, "server_now": now, "call_left": room.call_left(now), "call_limit": room.call_limit,
+        "ver": room.ver, "pitch_seq": room.pitch_seq, "resolved": room.resolved_seq is not None, "catch_done": room.catch_done,
+    }
+    return st
+
+
+def _room_allows(room, role, path):
+    if room.paused:
+        return False
+    if path in ("/pitch2p", "/walk", "/change", "/alignment", "/swap", "/cancel_swap", "/memo"):
+        return role == "catcher" and room.phase == "call"
+    if path == "/swing":
+        return role == "batter" and room.phase == "pitch"
+    if path in ("/catch", "/qte"):
+        return role == "catcher" and room.phase in ("pitch", "resolve")
+    return False                                           # /start, /newgame, /menu ... are never a room player's business
+
+
+def _room_check_resolved(room):
+    sess = room.session
+    if (room.phase == "pitch" and room.resolved_seq is None and sess.event_seq == room.pitch_seq
+            and sess.pitch_gen is None and sess.pending_qte is None):
+        room.note_resolved(room.pitch_seq, needs_catch=is_catchable(sess))
+
+
+def _room_progress(room):
+    """When both screens have finished showing the pitch (or one has gone quiet for too long), the next call begins."""
+    if room.phase == "resolve" and not room.paused and (room.both_acked() or rooms.now_ms() > room.resolved_at + rooms.ACK_TIMEOUT_MS):
+        if room.session.state.is_over():
+            room.phase = "over"
+            room.bump()
+        else:
+            room.begin_call(room.call_limit)
+
+
+def _room_after(room, role, path):
+    sess = room.session
+    if path == "/pitch2p" and sess.plan is not None and room.phase == "call":
+        room.begin_pitch(sess.plan["seq"])
+    elif path in ("/swing", "/qte"):
+        _room_check_resolved(room)
+    elif path == "/catch" and room.phase == "pitch" and room.resolved_seq is not None and (sess.last_catch is not None or not is_catchable(sess)):
+        room.note_catch()
+
+
+def _room_start(room):
+    sess = room.session
+    sess.start_new_game(mode="duel")
+    sess.showing_intro = False
+    sess.tutorial_skipped = True
+    room.begin_call(room.call_limit)
+
+
+def room_tick():
+    """Once a second: notice players who dropped out, and keep a stalled room moving (call it with the request lock held)."""
+    now = rooms.now_ms()
+    for room in list(ROOMS.rooms.values()):
+        if room.phase in ("lobby", "ready", "over"):
+            continue
+        if not room.paused:
+            gone = [r for r in rooms.ROLES if r not in room.tokens or not room.connected(r, now)]
+            if gone:
+                room.pause(gone[0], "disconnect")
+                continue
+        if room.paused:
+            continue
+        sess = room.session
+        if room.phase == "call":
+            left = room.call_left(now)
+            if left is not None and left < -rooms.CALL_GRACE_MS / 1000.0:              # nobody chose in time: the standard call
+                first = next(iter(repertoire_options(sess.state.pitcher)))
+                if start_pitch2p(sess, first, "mid_mid", "strike"):
+                    room.begin_pitch(sess.plan["seq"])
+        elif room.phase == "pitch":
+            if room.resolved_seq is None:
+                if sess.plan is not None and room.start_at and now > room.start_at + rooms.SWING_TIMEOUT_MS:
+                    finish_swing(sess, {"swung": "0"})                                    # the batter never answered: he let it go by
+                    _room_check_resolved(room)
+            elif not room.catch_done and now > room.resolved_at + rooms.CATCH_TIMEOUT_MS:
+                apply_catch_result(sess, "miss")                                          # the catcher never answered: not pressing is a miss
+                room.note_catch()
+        elif room.phase == "resolve":
+            _room_progress(room)
+
+
+def _room_watch():
+    while True:
+        time.sleep(1.0)
+        try:
+            with _LOCK:
+                ROOMS.sweep()
+                room_tick()
+        except Exception:   # noqa: BLE001 -- the watcher must never die
+            traceback.print_exc()
+
+
+def _advance_pitch_gen(answer, session=None):
     """Advance the in-progress resolve_pitch_flow generator by one step.
     If the next QTE arrives, push it to pending_qte. When it finishes, store the result in SESSION."""
-    gen = SESSION.pitch_gen
+    sess = session or SESSION
+    gen = sess.pitch_gen
     if gen is None:
         return
     try:
-        SESSION.pending_qte = gen.send(answer)          # (kind, payload)
-        SESSION.pitch_qtes.append(SESSION.pending_qte[0])
+        sess.pending_qte = gen.send(answer)          # (kind, payload)
+        sess.pitch_qtes.append(sess.pending_qte[0])
     except StopIteration as stop:
-        SESSION.pitch_gen = None
-        SESSION.pending_qte = None
+        sess.pitch_gen = None
+        sess.pending_qte = None
         outcome, messages = stop.value
-        SESSION.messages = messages
-        SESSION.reaction = outcome.get("reaction")
+        sess.messages = messages
+        sess.reaction = outcome.get("reaction")
         # The end of an at-bat (strikeout/walk/hit/out) is attached by the engine to the last entry of pitch_log,
         # so copy it onto outcome too, for _catcher_line, which looks at the result of the last pitch.
-        if SESSION.state is not None and SESSION.state.pitch_log:
+        if sess.state is not None and sess.state.pitch_log:
             outcome.setdefault("at_bat_end",
-                               SESSION.state.pitch_log[-1].get("at_bat_end"))
-        SESSION.last_outcome = outcome
-        SESSION.last_catch = None
-        SESSION.event_seq += 1
+                               sess.state.pitch_log[-1].get("at_bat_end"))
+        sess.last_outcome = outcome
+        sess.last_catch = None
+        sess.event_seq += 1
 
 
 # ---------------------------------------------------------------------------
@@ -1944,9 +2126,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _state_obj(self):
+        ctx = getattr(self, "_ctx", None)
+        return room_view(ctx[0], ctx[1]) if ctx else build_state(SESSION, _QTE_SPEC)
+
+    def _room_lookup(self):
+        room = ROOMS.get(self.headers.get("X-Room") or "")
+        role = room.role_of(self.headers.get("X-Token")) if room else None
+        return (room, role) if role else (None, None)
+
     def _redirect(self, path="/"):
         if self._wants_json():
-            self._send_json(build_state(SESSION, _QTE_SPEC))
+            ctx = getattr(self, "_ctx", None)
+            if ctx and self.command == "POST":
+                _room_after(ctx[0], ctx[1], self.path)
+            self._send_json(self._state_obj())
             return
         if path == "/" and "/classic" in (self.headers.get("Referer") or ""):
             path = "/classic"          # the classic page's own forms stay on the classic page
@@ -1961,15 +2155,58 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {k: v[0] for k, v in parsed.items()}
 
     def do_GET(self):
+        if self.path.split("?")[0] == "/room/poll":
+            self._room_poll()
+            return
         self._guarded(self._handle_get)
+
+    def _room_poll(self):
+        """Long poll: answer as soon as the room has changed since `since` (or after a short wait), with this player's view of the game.
+        Every answer also tells the room this player is still here."""
+        try:
+            since = int(urllib.parse.parse_qs(self.path.partition("?")[2]).get("since", ["0"])[0])
+        except ValueError:
+            since = 0
+        with _LOCK:
+            room, role = self._room_lookup()
+            if room is not None:
+                room.touch(role)
+        if room is None:
+            self._send_json({"ok": False, "error": "no_room"}, status=403)
+            return
+        if room.ver == since:
+            room.wait_for_change(since, 1.5)                    # (without the request lock: others keep being served)
+        with _LOCK:
+            room.touch(role)
+            self._ctx = (room, role)
+            try:
+                view = room_view(room, role)
+            finally:
+                self._ctx = None
+        self._send_json(view)
 
     def do_POST(self):
         self._guarded(self._handle_post)
 
     def _guarded(self, handler):
-        """One request at a time. If anything unexpected happens, show a recovery page instead of a dead connection."""
+        """One request at a time. If anything unexpected happens, show a recovery page instead of a dead connection.
+
+        A request that carries an online room's code and token (X-Room / X-Token) is answered from that room's own game: for the
+        length of the request the module's SESSION is that room's session (safe, because only one request runs at a time).
+        """
+        global SESSION
         with _LOCK:
+            saved = None                           # (only a room request swaps SESSION, and only that one puts it back)
+            self._ctx = None
             try:
+                if self.headers.get("X-Room") and not self.path.startswith(("/room/create", "/room/join", "/room/time")):
+                    room, role = self._room_lookup()
+                    if room is None:
+                        self._send_json({"ok": False, "error": "no_room"}, status=403)
+                        return
+                    room.touch(role)
+                    self._ctx = (room, role)
+                    saved, SESSION = SESSION, room.session
                 handler()
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -1980,6 +2217,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._send_html(_page(_ERROR_BODY), status=500)
                 except OSError:
                     pass
+            finally:
+                if saved is not None:
+                    SESSION = saved
 
     def _handle_get(self):
         path = self.path.split("?")[0]
@@ -1988,7 +2228,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/classic":
             self._send_html(_page(render_page(SESSION)))
         elif path == "/api/state":
-            self._send_json(build_state(SESSION, _QTE_SPEC))
+            self._send_json(self._state_obj())
+        elif path == "/room/time":
+            self._send_json({"t": rooms.now_ms()})
         elif path.startswith("/api/panel/"):
             html_text = render_panel(SESSION, path[len("/api/panel/"):])
             if html_text is None:
@@ -2000,49 +2242,92 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_pitch2p(self, form, state):
         """Two-player mode, step one: the catcher's call is locked in and the pitch is thrown. Nobody knows the result yet:
-        the page animates the flight while the batter decides when and where to swing, then posts /swing."""
-        pitch_type = form.get("pitch_type")
-        course = form.get("course", "mid_mid")
-        intent = form.get("intent", "strike")
-        if (SESSION.mode != "duel" or SESSION.plan is not None
-                or pitch_type not in repertoire_options(state.pitcher)
-                or course not in COURSE_SHORT or intent not in PITCH_INTENTS):
-            self._redirect()
-            return
-        SESSION.last_batter_bats = state.batter.bats
-        SESSION.last_call = {"pitch_type": pitch_type, "target_course": course, "intent": intent}
-        tempo = SESSION.next_tempo
-        SESSION.next_tempo = 0.0
-        SESSION.plan = {"prepared": prepare_call(state, pitch_type, course, intent, SESSION.rng, tempo=tempo),
-                        "pitch_type": pitch_type, "course": course, "intent": intent, "seq": SESSION.event_seq + 1}
+        the page animates the flight while the batter decides when to swing, then posts /swing."""
+        start_pitch2p(SESSION, form.get("pitch_type"), form.get("course", "mid_mid"), form.get("intent", "strike"))
         self._redirect()
 
     def _handle_swing(self, form, state):
         """Two-player mode, step two: the batter's swing (or no swing) arrives and the pitch is judged with it."""
-        plan = SESSION.plan
-        if plan is None or SESSION.pitch_gen is not None:
-            self._redirect()
-            return
-        human = {"swung": False}
-        if form.get("swung") == "1":
+        finish_swing(SESSION, form)
+        self._redirect()
+
+    def _handle_room_post(self, form):
+        path = self.path
+        if path == "/room/create":
+            role = form.get("role") if form.get("role") in rooms.ROLES else "catcher"
+            room = ROOMS.create(_new_room_session, role)
+            if room is None:
+                self._send_json({"ok": False, "error": "busy"})
+                return
             try:
-                dx, dy, off = (max(-1.0, min(1.0, float(form.get(k, "0")))) for k in ("dx", "dy", "off"))
+                limit = int(form.get("timer", "15"))
             except ValueError:
-                dx = dy = off = None
-            if dx is not None and all(v == v for v in (dx, dy, off)):          # (NaN is not a number)
-                human = swing_rules.judge_swing(dx, dy, off, form.get("mode"), state.batter, SESSION.rng)
-                human["swung"] = True
-        SESSION.plan = None
-        SESSION.pitch_qtes = []
-        SESSION.pitch_gen = resolve_pitch_flow(state, plan["pitch_type"], plan["course"], plan["intent"], SESSION.rng,
-                                               prepared=plan["prepared"], human=human)
-        _advance_pitch_gen(None)
-        while self._wants_json() and SESSION.pending_qte is not None and SESSION.pending_qte[0] == "frame":
-            _advance_pitch_gen(None)
+                limit = 15
+            room.call_limit = limit if limit in ROOM_TIMERS else 15
+            token = room.join(role)
+            self._ctx = (room, role)
+            self._send_json({"ok": True, "code": rooms.pretty(room.code), "token": token, "role": role, "view": room_view(room, role)})
+            self._ctx = None
+            return
+        if path == "/room/join":
+            now = time.time()
+            _JOIN_FAILS[:] = [t for t in _JOIN_FAILS if now - t < 60]
+            if len(_JOIN_FAILS) >= 20:                      # someone is guessing codes: slow everyone down for a minute
+                self._send_json({"ok": False, "error": "slow_down"})
+                return
+            room = ROOMS.get(form.get("code", ""))
+            if room is None:
+                _JOIN_FAILS.append(now)
+                self._send_json({"ok": False, "error": "not_found" if rooms.clean_code(form.get("code", "")) else "bad_code"})
+                return
+            role = room.free_role()
+            if role is None:
+                self._send_json({"ok": False, "error": "full"})
+                return
+            token = room.join(role)
+            self._ctx = (room, role)
+            self._send_json({"ok": True, "code": rooms.pretty(room.code), "token": token, "role": role, "view": room_view(room, role)})
+            self._ctx = None
+            return
+        ctx = getattr(self, "_ctx", None)
+        if not ctx:
+            self._send_json({"ok": False, "error": "no_room"}, status=403)
+            return
+        room, role = ctx
+        if path == "/room/ready":
+            if room.set_ready(role, form.get("ready", "1") == "1"):
+                _room_start(room)
+        elif path == "/room/pause":
+            room.set_manual_pause(role, form.get("on") == "1")
+        elif path == "/room/ack":
+            try:
+                room.ack(role, int(form.get("seq", "-1")))
+            except ValueError:
+                pass
+            _room_progress(room)
+        elif path == "/room/leave":
+            room.tokens.pop(role, None)
+            room.last_seen.pop(role, None)
+            room.ready[role] = False
+            if not room.tokens:
+                ROOMS.drop(room.code)
+            elif room.phase == "ready":
+                room.phase = "lobby"
+                room.ready = {"catcher": False, "batter": False}
+            room.bump()
+            self._send_json({"ok": True})
+            return
         self._redirect()
 
     def _handle_post(self):
         form = self._read_form()
+        if self.path.startswith("/room/"):
+            self._handle_room_post(form)
+            return
+        ctx = getattr(self, "_ctx", None)
+        if ctx and not _room_allows(ctx[0], ctx[1], self.path):
+            self._redirect()                       # a player of an online room may only do what his side may do right now
+            return
 
         if self.path == "/start":
             SESSION.start_new_game(**_start_options(form))
@@ -2134,13 +2419,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path == "/catch":
-            quality = form.get("quality")
-            if quality in ("clean", "barely", "miss") and SESSION.last_catch is None and state.can_apply_catch():
-                res = state.apply_catch(quality, SESSION.rng)
-                SESSION.next_tempo = {"clean": 0.10, "barely": 0.02, "miss": -0.10}[quality]
-                SESSION.last_catch = dict(res, quality=quality)
-                if res["message"]:
-                    SESSION.messages = SESSION.messages + [">>> " + res["message"]]
+            apply_catch_result(SESSION, form.get("quality"))
             self._redirect()
             return
 
@@ -2263,6 +2542,7 @@ def main():
                       " (if it does not connect, use the IP shown by ipconfig / ifconfig)")
             except OSError:
                 pass
+        threading.Thread(target=_room_watch, daemon=True).start()
         if not args.no_browser:
             threading.Timer(0.6, webbrowser.open, args=(url,)).start()
         try:

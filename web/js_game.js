@@ -31,6 +31,14 @@ var tm = { left: BTP.settings.timer(), shown: -1, lastNow: 0, lowSec: -1 };    /
 var practice = false;       // the practice pitch: no timer, not counted, nothing sent to the server
 var lastGuide = '';
 function clk() { var n = performance.now(); return n - pausedTotal - (paused ? n - pausedAt : 0); }   // the game clock (stops while paused)
+// the game clock at the moment a key was PRESSED (the event's own time stamp), not at the moment this page got round to handling it
+function evClk(e) { var n = performance.now(), ts = e && e.timeStamp; if (!(ts > 0) || Math.abs(ts - n) > 2000) ts = n; return Math.min(ts, n) - pausedTotal; }
+// online play (two PCs, an invite code): see rooms.py and js_online.js
+var net = BTP.net, roomInfo = null, roomRecv = 0, autoFired = false, rvKey = '', netLost = false, onlineStarted = null;
+var batPractice = null;     // the batter's practice swings, played on this PC alone before the online game starts: { n: how many pitches so far }
+function online() { return !!(net.room && roomInfo); }
+function myRole() { return net.room ? net.room.role : null; }
+function rfetch(url, opts) { return net.room ? net.fetch(url, opts) : fetch(url, opts); }
 var TS = parseFloat(new URLSearchParams(location.search).get('slow')) || 1;     // ?slow=3 plays the pitch animations three times slower
 
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
@@ -38,14 +46,19 @@ function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&
 /* ---------------- talking to the server ---------------- */
 function parseJSON(r) { return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { throw new Error('bad response'); } }); }
 function post(path, data) {
+  if (net.room) return net.post(path, data);
   var body = data ? new URLSearchParams(data).toString() : '';
   return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Fetch': '1' }, body: body }).then(parseJSON);
 }
-function getState() { return fetch('/api/state', { cache: 'no-store' }).then(parseJSON); }
+function getState() { return rfetch('/api/state', { cache: 'no-store' }).then(parseJSON); }
 function act(path, data) {
   if (busy) return Promise.resolve();
   busy = true;
-  return post(path, data).then(function (ns) { busy = false; onState(ns); }, function () {
+  return post(path, data).then(function (ns) {
+    busy = false;
+    if (ns && ns.error === 'no_room') { onRoomGone(); return; }
+    if (ns && ns.room) { net.view = ns; net.ver = ns.room.ver; onRoomView(ns, true); } else onState(ns);
+  }, function () {
     busy = false; toast('Something went wrong. Reloading the game state...', true);
     getState().then(onState, function () {});
   });
@@ -93,12 +106,18 @@ function renderTop() {
     '<span class="t-sep"></span><span class="t-grp">' + diamond(s.runners) + (s.fast_runner ? '<span class="t-warn">STEAL</span>' : '') + '</span>' +
     '<span class="t-sep"></span><span class="t-grp">B ' + pips(s.balls, 4, 'b') + ' S ' + pips(s.strikes, 3, 's') + ' OUT ' + pips(s.outs, 3, 'o') + '</span>' +
     '<span class="t-sep"></span><span class="t-grp">' + (st.pitcher.throws === 'R' ? 'RHP' : 'LHP') + ' <b>' + st.pitcher.pitches + '</b> pitches' + tire + '</span>' +
-    '<span class="t-spacer"></span>' +
+    roomChip() + '<span class="t-spacer"></span>' +
     '<button class="t-btn' + (paused ? ' on' : '') + '" id="pause-btn" data-act="pause" title="Pause / resume (P)"' + (canPause() ? '' : ' disabled') + '>' + (paused ? 'Resume' : 'Pause') + '</button>' +
     ['history', 'defense', 'bench', 'settings', 'help'].map(function (n) {
       return '<button class="t-btn' + (drawerName === n ? ' on' : '') + '" data-drawer="' + n + '">' + { history: 'History', defense: 'Defense', bench: 'Notes', settings: 'Settings', help: 'Help' }[n] + '</button>';
     }).join('') + audioControls();
   bindAudio();
+}
+function roomChip() {
+  if (!net.room || !roomInfo) return '';
+  var me = roomInfo.role, op = me === 'catcher' ? 'batter' : 'catcher', c = roomInfo.connected;
+  return '<span class="t-sep"></span><span class="t-grp t-room"><b>' + esc(roomInfo.code) + '</b> You: <b>' + me.toUpperCase() + '</b><i class="lb-dot ' + (c[me] && !netLost ? 'on' : '') + '"></i>' +
+    ' ' + op + '<i class="lb-dot ' + (c[op] ? 'on' : '') + '"></i></span>';
 }
 function audioControls() {
   var muted = BTP.bgm.isMuted();
@@ -126,24 +145,35 @@ function renderSide() {
   }).join('');
   $('mapbox').innerHTML = '<div class="cap">Pitches to him</div>' + BTP.hud.pitchMap(items, b.bats) + '<div class="recent">' + (recent || 'No pitches yet') + '</div>';
 }
+function renderBatterBottom() {
+  var st = shown, l = st && st.last, h = '';
+  if (l && l.duel && !batPractice) {
+    var sw = l.swing;
+    h = sw.swung ? '<b class="gr-' + esc(sw.grade || 'good') + '">' + esc(sw.label) + '</b> <span class="bt-dim">(' + (sw.off < 0 ? '' : '+') + Math.round(sw.off * 1000) + ' ms)</span> &rarr; ' + esc(plainLabel(l)) : '<b>Took it</b> <span class="bt-dim">&rarr;</span> ' + esc(plainLabel(l));
+  } else h = '<span class="bt-dim">No swings yet.</span>';
+  $('bottom').innerHTML = '<div class="b-row"><span class="b-label">You</span><span class="rolechip">BATTER</span>' +
+    '<span class="bt-help">Press <b>Space</b> the moment the two rings overlap. No press = you take the pitch. One swing per pitch.</span><span class="modebadge ' + (anim ? 'catch' : 'call') + '">' + (anim ? '\u25CF SWING' : '\u25CF WAIT') + '</span></div>' +
+    '<div class="b-row"><span class="b-label">Last</span><span class="bt-last">' + h + '</span><span class="bt-dim" style="margin-left:auto">PERFECT &bull; GOOD &bull; EARLY &bull; LATE</span></div>';
+}
 function renderBottom() {
   var st = shown;
-  if (!st || !st.repertoire) { $('bottom').innerHTML = ''; return; }
+  if ((online() && roomInfo.role === 'batter') || batPractice) { renderBatterBottom(); return; }
+  if (!st || !st.repertoire || !st.repertoire.length) { $('bottom').innerHTML = ''; return; }
   if (!sel.pitch || !st.repertoire.some(function (p) { return p.key === sel.pitch; })) sel.pitch = st.repertoire[0].key;
-  var canCall = canPlay(), duel = st.mode === 'duel', hide = duel && (duelPh || anim), dis = canCall ? '' : ' disabled';     // only what you can do right now is clickable
+  var canCall = canPlay(), duel = st.mode === 'duel', hide = duel && !net.room && (duelPh || anim), dis = canCall ? '' : ' disabled';     // only what you can do right now is clickable
   var h = '<div class="b-row"><span class="b-label">Pitch</span>' + st.repertoire.map(function (p, i) {
     return '<button class="pbtn' + (hide ? ' hid' : (sel.pitch === p.key ? ' sel' : '')) + '" data-pitch="' + p.key + '"' + dis + '>' + arcSvg(p.move) + esc(p.name) +
       ' <span class="v">' + p.velocity + '</span> <span class="k">' + (i + 1) + '</span></button>';
   }).join('') + '<span class="target-read" id="targetread"></span><span class="modebadge ' + (catchActive() ? 'catch' : 'call') + '">' + (catchActive() ? '\u25CF CATCH' : '\u25CF CALL') + '</span></div>' +
   '<div class="b-row"><span class="b-label">Intent</span>' + st.intents.map(function (it) {
     return '<button class="ibtn' + (!hide && sel.intent === it.key ? ' sel' : '') + '" data-intent="' + it.key + '" title="' + esc(it.desc) + '"' + dis + '>' + esc(it.label) + '</button>';
-  }).join('') + '<button class="callbtn" id="callbtn"' + (canCall ? '' : ' disabled') + '>' + (duel ? 'LOCK IN CALL' : 'CALL PITCH') + '</button></div>';
+  }).join('') + '<button class="callbtn" id="callbtn"' + (canCall ? '' : ' disabled') + '>' + (duel && !net.room ? 'LOCK IN CALL' : 'CALL PITCH') + '</button></div>';
   $('bottom').innerHTML = h;
   updateTargetRead();
 }
 function updateTargetRead() {
   var el = $('targetread'); if (!el || !shown || !shown.batter) return;
-  if (shown.mode === 'duel' && (duelPh || anim)) { el.innerHTML = 'The call is <b>hidden</b> from the batter'; return; }
+  if (shown.mode === 'duel' && !net.room && (duelPh || anim)) { el.innerHTML = 'The call is <b>hidden</b> from the batter'; return; }
   if (!canPlay()) { el.innerHTML = 'Wait for the pitch to finish'; return; }
   var key = BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats);
   var names = { in_hi: 'High-In', mid_hi: 'High', out_hi: 'High-Out', in_mid: 'In', mid_mid: 'Middle', out_mid: 'Out', in_lo: 'Low-In', mid_lo: 'Low', out_lo: 'Low-Out' };
@@ -151,8 +181,11 @@ function updateTargetRead() {
 }
 function catchActive() { return !!(anim && anim.interactive && catchG && !catchG.resolved); }
 function renderAll() { renderTop(); renderSide(); renderBottom(); }
-function canPlay() { return !!(shown && S && S.phase === 'play' && !anim && !qteRun && !busy && !modalOpen() && !duelPh && !paused); }
-function canPause() { return !!(shown && S && S.phase === 'play' && !qteRun && !modalOpen()); }
+function canPlay() {
+  return !!(shown && S && S.phase === 'play' && !anim && !qteRun && !busy && !modalOpen() && !duelPh && !paused && !batPractice &&
+            (!net.room || (roomInfo && roomInfo.role === 'catcher' && roomInfo.phase === 'call' && !roomInfo.paused)));
+}
+function canPause() { return !!(shown && S && S.phase === 'play' && !qteRun && !modalOpen() && !batPractice && (!net.room || (roomInfo && roomInfo.phase !== 'lobby' && roomInfo.phase !== 'ready'))); }
 function modalOpen() { return $('modal').classList.contains('open'); }
 
 /* ---------------- the state machine ---------------- */
@@ -160,18 +193,57 @@ function onState(ns) {
   S = ns;
   if (anim) {
     pendingState = ns;
-    var d = anim.duel;
-    if (d && d.sent && !d.resolved && ns.phase !== 'qte' && ns.last && ns.last.seq === anim.l.seq) { closeQTE(); resolveDuel(anim, ns); }     // the rhythm game that held the pitch is over
+    var a0 = anim, d = a0.duel;
+    if (d && d.sent && !d.resolved && ns.phase !== 'qte' && ns.last && ns.last.seq === a0.l.seq) { closeQTE(); resolveDuel(a0, ns); }     // the rhythm game that held the pitch is over
+    else if (a0.online === 'catcher' && ns.phase === 'qte' && d && !d.resolved && ns.qte) { d.qte = true; openQTE(ns.qte); }                 // the catcher's own rhythm game
+    if (a0.online === 'batter' && a0.waitCatch && ns.last && ns.last.seq === a0.l.seq && ns.last.catch) resumeAfterCatch(a0, ns);            // the catcher has made his catch: now the result is final
+    if (a0.online && !a0.practice && ns.room && ns.room.start_at && ns.room.pitch_seq === a0.l.seq && !ns.room.paused && ns.room.start_at !== a0.startAt) {
+      a0.startAt = ns.room.start_at; a0.t0 = net.perfOf(a0.startAt);                                        // stay on the server's clock
+    }
     return;
   }
   if (!shown) { shown = ns; lastSeq = ns.last ? ns.last.seq : null; }
+  if (ns.room) {                                                                    // online: a pitch is animated from the room's start time, never from a result
+    closeQTE();
+    if (ns.phase === 'qte' && roomInfo && roomInfo.role === 'catcher') { openQTE(ns.qte); return; }
+    if (ns.room.phase === 'pitch' && ns.plan && ns.phase === 'play' && !batPractice) {
+      if (onlineStarted !== ns.plan.seq) { onlineStarted = ns.plan.seq; startOnlineAnim(ns); }
+      return;
+    }
+    if (ns.last) lastSeq = ns.last.seq;
+    settle(ns);
+    return;
+  }
   if (ns.phase !== 'play') { duelPh = null; lockedCall = null; hideHandoff(); }
   if (ns.phase === 'qte') { openQTE(ns.qte); return; }
   closeQTE();
-  if (ns.mode === 'duel' && ns.plan && ns.phase === 'play') { startDuelAnim(ns); return; }                // a pitch was thrown: the batter may swing
   if (ns.last && ns.last.seq !== lastSeq) { lastSeq = ns.last.seq; startPitchAnim(ns); return; }
   settle(ns);
 }
+function onRoomView(v, changed) {
+  var r = v.room;
+  if (!r) return;
+  var first = !roomInfo;
+  roomInfo = r; roomRecv = performance.now();
+  if (first) { pausedTotal = 0; closeModal(); }
+  if (r.phase !== 'call') autoFired = false;
+  var key = [r.phase, r.joined.catcher, r.joined.batter, r.connected.catcher, r.connected.batter, netLost].join('|');
+  if (key !== rvKey) { rvKey = key; renderTop(); }
+  applyOnlinePause(r);
+  if (r.phase === 'lobby' || r.phase === 'ready') { if (!batPractice) { S = v; net.showRoom(v); } return; }
+  net.hideLobby();
+  if (!changed) return;                                                              // only the clock moved
+  onState(v);
+}
+function onConn(ok) { netLost = !ok; applyOnlinePause(roomInfo); renderTop(); }
+function onLeftRoom() {
+  roomInfo = null; rvKey = ''; netLost = false; onlineStarted = null; anim = null; catchG = null; shown = null; S = null; pendingState = null;
+  paused = false; pausedTotal = 0; batPractice = null; $('pausev').className = 'ov'; $('pausev').innerHTML = ''; $('pausev').dataset.k = ''; $('pbar').className = 'ov';
+  $('readpanel').className = 'ov'; panelOpen = false; $('banner').className = 'ov'; $('catchhint').className = 'ov'; closeModal(); closeQTE();
+  renderAll();
+  getState().then(onState, function () {});
+}
+function onRoomGone() { toast('That room is no longer there.', true); onLeftRoom(); }
 function settle(ns) {
   shown = ns;
   if (ns.mode === 'duel' && !ns.plan) { duelPh = (duelPh === 'locked') ? duelPh : null; }
@@ -197,8 +269,13 @@ function openModal(name) {
   var mb = $('modal-body'), md = $('modal');
   if (md.dataset.name === name && md.classList.contains('open')) return;
   md.dataset.name = name;
-  fetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
+  rfetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
     mb.innerHTML = html + (name === 'start' && !window.BTP_STATIC ? '<p style="text-align:center;margin:6px 0 0"><a id="back-classic" href="/classic">Use the classic page layout instead</a></p>' : '');
+    if (net.room && name === 'report') {                                          // online: there is no "play again" button, only leaving the room
+      Array.prototype.forEach.call(mb.querySelectorAll('form'), function (f) { f.remove(); });
+      mb.insertAdjacentHTML('beforeend', '<div style="text-align:center;margin-top:8px"><button type="button" class="ho-ready" id="leave-room" style="width:auto;padding:10px 28px">LEAVE THE ROOM</button></div>');
+      $('leave-room').onclick = function () { net.leave(); };
+    }
     md.classList.add('open'); md.scrollTop = 0; mb.scrollTop = 0;
     renderBottom();
   });
@@ -215,6 +292,10 @@ function interceptForms(container) {
     var data = {}; fd.forEach(function (v, k) { data[k] = v; });
     var path = new URL(f.action, location.href).pathname;
     BTP.bgm.start();
+    if (path === '/start' && data.mode === 'online') {                              // two players, two PCs: the lobby, not a local game
+      if (window.BTP_STATIC) { toast('Online play needs the Python server (python webapp.py --host 0.0.0.0). The browser-only page is for one player.', true); return; }
+      closeModal(); net.openMenu(); return;
+    }
     act(path, data);
   });
 }
@@ -238,8 +319,14 @@ function loadDrawer(name) {
   dr.querySelector('.dh .ttl').textContent = titles[name] || name;
   var db = dr.querySelector('.db');
   if (name === 'help') {
-    db.innerHTML = BTP.duel.helpHTML(S && S.mode);
+    db.innerHTML = BTP.duel.helpHTML(net.room ? 'online-' + myRole() : (S && S.mode));
     var pb = $('hp-practice'); if (pb) pb.onclick = function () { closeDrawer(); try { practiceNow(); } catch (e) {} };
+    renderTop(); return;
+  }
+  if (name === 'settings' && net.room) {
+    var lim = roomInfo ? roomInfo.call_limit : 0;
+    db.innerHTML = '<div class="hp"><div class="hp-box"><b>Call timer</b><p>' + (lim ? 'This room gives the catcher ' + lim + ' seconds to choose a pitch. When it runs out, the current pick is thrown.' : 'This room has no call timer.') + ' It was chosen when the room was created, so it is the same for both of you.</p></div>' +
+      '<div class="hp-box"><b>Swing</b><p>There is one standard swing: press Space when the rings overlap. The page aims for you.</p></div></div>';
     renderTop(); return;
   }
   if (name === 'settings') {
@@ -249,7 +336,7 @@ function loadDrawer(name) {
     });
     renderTop(); return;
   }
-  fetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
+  rfetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
     if (drawerName === name) db.innerHTML = html;
   });
   renderTop();
@@ -357,7 +444,8 @@ function mittPx(x, y) { return mittAtWorld(x, y); }
 function fillResult(a, ns, l) {
   var res = l.result, script = l.batted ? l.batted.script : null;
   a.l = l; a.ns = ns; a.script = script;
-  if (!a.duel) { a.swung = l.swung; a.tContact = a.tHitZ + (l.swung ? l.swing.off : 0); }   // early (-) or late (+), in seconds: the engine's own judgement of the swing
+  var pending = l.result === 'Pending';                                       // (online: the swing has not been judged yet)
+  if (!a.duel || (a.online === 'catcher' && !pending)) { a.swung = l.swung; a.tContact = a.tHitZ + (l.swung ? l.swing.off : 0); }   // early (-) or late (+), in seconds: the engine's own judgement of the swing
   var tAfter = a.tCatch + 1.5;
   if (script) tAfter = a.tContact + script.duration - 0.2 + 0.5;
   else if (res === 'Foul') tAfter = a.tContact + 2.2;
@@ -367,9 +455,16 @@ function fillResult(a, ns, l) {
     a.foul = { vx: side * (9 + fr() * 5), vy: 9 + fr() * 4, vz: 2 + fr() * 7 };
   }
   a.caught = !script && res !== 'Foul';                                       // the mitt takes it unless the bat does
-  a.interactive = !!(l.catchable && ns.phase === 'play');                     // you catch it yourself when the pitch ended in the mitt
-  a.tAfter = a.interactive ? Infinity : tAfter;                               // with a catch, it ends once your catch is decided
-  a.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? a.tContact + 1.2 : (a.interactive ? Infinity : a.tCatch + 0.45));
+  a.interactive = !!(l.catchable && ns.phase === 'play' && a.online !== 'batter');     // you catch it yourself when the pitch ended in the mitt
+  a.tAfter = (a.interactive || (pending && a.online)) ? Infinity : tAfter;    // with a catch, it ends once your catch is decided
+  a.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? a.tContact + 1.2 : ((a.interactive || (pending && a.online)) ? Infinity : a.tCatch + 0.45));
+  a.waitCatch = false;
+  if (a.online === 'batter' && !pending && !a.practice && l.catchable && !l.catch) { a.waitCatch = true; a.tAfter = Infinity; a.panelAt = Infinity; }   // the batter sees the final call once the catcher has caught it
+}
+function resumeAfterCatch(a, ns) {
+  var t = (clk() - a.t0) / 1000 / TS;
+  a.waitCatch = false; a.ns = ns; a.l = ns.last; pendingState = ns;
+  a.tAfter = Math.max(t, a.tCatch) + 1.7; a.panelAt = Math.max(t, a.tCatch) + 0.5;
 }
 function makeCatchG(a, ns) {
   var p0 = mittPlane(sel.cell);
@@ -381,7 +476,7 @@ function startPitchAnim(ns, opts) {
   opts = opts || {};
   var l = opts.l || ns.last, prev = shown, bats = prev.batter.bats, lefty = prev.pitcher.throws === 'L', duel = !!opts.duel;
   var rep = null; prev.repertoire.forEach(function (p) { if (p.key === l.pitch_type) rep = p; });
-  rep = rep || { key: l.pitch_type, velocity: 90, move: [0.3, 0], family: 'fastball' };
+  rep = opts.rep || rep || { key: l.pitch_type, velocity: 90, move: [0.3, 0], family: 'fastball' };
   var rnd = BTP.rng(l.seq * 977 + 13);
   var Rp = BTP.releasePoint(lefty), Pt = pitchTarget(l, bats, rnd);
   // the game decided where this pitch ended up (its control error is already in that spot); we find the throw that gets there
@@ -389,23 +484,29 @@ function startPitchAnim(ns, opts) {
   var path = BTP.phys.solve([Rp.x, Rp.y, Rp.z], [Pt.x, Pt.y], rep.velocity * BTP.phys.MPH, spin);
   var tRel = BTP.DELIVERY.release, S_ = BALL_TIME_SCALE;
   var tPlate = tRel + path.tPlate * S_, tCatch = tRel + BTP.phys.timeAtZ(path, CATCH_Z) * S_;
-  var tHitZ = tRel + BTP.phys.timeAtZ(path, 0.22) * S_;                       // the bat meets the ball just over the front of the plate
+  var zc = 0.22;                                                              // the bat meets the ball just over the front of the plate...
+  if (opts.online) {                                                          // ...online: an inside pitch is met out in front of the plate, an outside one is let come deep
+    var ins = (bats === 'R' ? -Pt.x : Pt.x) / 0.2159;
+    zc = clamp(0.22 + 0.9 * ins, -0.40, 1.0);
+  }
+  var tHitZ = tRel + BTP.phys.timeAtZ(path, zc) * S_;
   var tx = BTP.cellCenter(sel.cell.row, sel.cell.col);                        // where the mitt was set
   var atCatch = BTP.phys.at(path, BTP.phys.timeAtZ(path, CATCH_Z));
   var mittT = mittScreen(tx.x, tx.y), mittA = mittAtWorld(atCatch.x, atCatch.y) || mittT;
   var pts = [];                                                               // the whole path, kept for the faint trace afterwards
   for (var q = 0; q <= 40; q++) { var pp = BTP.phys.at(path, path.tPlate * q / 40); pts.push([pp.x, pp.y, pp.z]); }
-  anim = { t0: clk(), tRel: tRel, tPlate: tPlate, tCatch: tCatch, tHitZ: tHitZ, tContact: Infinity, swingDur: duel ? BTP.duel.SWING_DUR : 0.52, scale: S_,
+  anim = { t0: (opts.online && opts.startAt) ? net.perfOf(opts.startAt) : clk(), online: opts.online || null, startAt: opts.startAt || null, zc: zc, tRel: tRel, tPlate: tPlate, tCatch: tCatch, tHitZ: tHitZ, tContact: Infinity, swingDur: duel ? BTP.duel.SWING_DUR : 0.52, scale: S_,
            path: path, R: Rp, Pt: Pt, bats: bats, lefty: lefty, l: l, script: null, foul: null, caught: true, swung: false,
            mittT: mittT, mittA: mittA, tAfter: 0, spin: rnd() * 6, trail: [], pathPts: pts, banner: -1, rep: rep, done: false, ns: ns,
            snd: {}, tArr: tPlate, interactive: false, rules: ns.catch_rules, difficulty: ns.difficulty, atCatch: atCatch, spinVec: spin,
            catchPending: false, panelShown: false, practice: !!opts.practice, holdAt: Infinity, duel: null,
-           contactAt: BTP.phys.at(path, BTP.phys.timeAtZ(path, 0.22)) };
+           contactAt: BTP.phys.at(path, BTP.phys.timeAtZ(path, zc)) };
   if (duel) {
-    anim.duel = { mode: swingMode, tClose: tHitZ - BTP.duel.LAG + BTP.duel.TIME_MAX, sent: false, resolved: false, swing: null, lastNow: null, qte: false };
+    anim.duel = { mode: opts.online ? 'auto' : swingMode, tClose: tHitZ - BTP.duel.LAG + (opts.online ? BTP.duel.AUTO.max : BTP.duel.TIME_MAX),
+                  sent: opts.online === 'catcher', resolved: false, swing: null, lastNow: null, qte: false };
     anim.holdAt = tCatch - 0.03;                                              // the picture waits here until the swing has been judged
   }
-  anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
+  anim.markT = opts.online === 'batter' ? null : { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
   fillResult(anim, ns, l);
   catchG = null;
   if (anim.interactive) makeCatchG(anim, ns);
@@ -424,6 +525,77 @@ function startDuelAnim(ns) {
   duelPh = 'throwing'; hideHandoff();
   startPitchAnim(Object.assign({}, ns, { last: l0 }), { l: l0, duel: true });
 }
+function startOnlineAnim(ns) {
+  var plan = ns.plan, role = roomInfo.role;
+  var l0 = { seq: plan.seq, pitch_type: plan.pitch_type, actual_course: plan.actual_course, in_zone: plan.in_zone, framed: false, swung: false,
+             result: 'Pending', batted: null, catchable: true, timing: null, swing: { swung: false }, missed: plan.missed };
+  startPitchAnim(Object.assign({}, ns, { last: l0 }), { l: l0, duel: true, online: role, startAt: ns.room.start_at,
+                                                         rep: { key: plan.pitch_type, velocity: plan.velocity, move: plan.move, family: plan.family } });   // (the batter's page has no list of pitches: the plan says how fast and how it moves)
+  markers.T = markers.A = null;
+}
+// the page aims for the batter: the cursor sits part of the way from the middle of the zone toward the ball, so a pitch down the middle
+// is met squarely, an edge pitch less so, and a ball off the plate hardly at all (low pitches become grounders, high ones fly balls)
+function autoAim(a) {
+  var Z = BTP.ZONE, b = a.contactAt, k = 0.35;
+  return { dx: k * (0 - b.x), dy: k * ((Z.y0 + Z.y1) / 2 - b.y) };
+}
+// Space: one swing per pitch, timed on the server's clock (this PC's clock plus the measured offset), so the connection's delay does not count against him
+function batterSwing(pressedAt) {
+  var a = anim, d = a && a.duel;
+  if (!d || paused || d.sent || a.online !== 'batter') return;
+  var t = ((pressedAt == null ? clk() : pressedAt) - a.t0) / 1000 / TS;
+  if (t < a.tRel - 0.35 || t > d.tClose) return;                                   // before the rings start, or too late to touch it: nothing
+  var off = t + BTP.duel.LAG - a.tHitZ, aim = autoAim(a);
+  d.swing = { cx: 0, cy: 0, dx: aim.dx, dy: aim.dy, off: off, t: t };
+  a.swung = true; a.tContact = t + BTP.duel.LAG; a.holdAt = Math.min(a.holdAt, a.tContact);
+  if (a.practice) { practiceResolve(a, d.swing); return; }
+  duelSend(a, d.swing);
+}
+function practiceResolve(a, swing) {                                                 // the practice has no server: it only tells you how the timing was
+  var d = a.duel, hit = swing && Math.abs(swing.off) <= BTP.duel.AUTO.max;
+  d.sent = d.resolved = true;
+  a.caught = !hit; a.interactive = false; a.panelShown = true;
+  a.tAfter = (swing ? a.tContact : a.tCatch) + 1.5; a.panelAt = Infinity;
+  a.practiceInfo = swing ? { g: BTP.duel.gradeOf(swing.off), off: swing.off, hit: hit } : { take: true };
+  renderBottom();
+}
+var PRACTICE_SET = [
+  { key: 'four_seam', name: 'Four-seam', velocity: 95, family: 'fastball', move: [0.10, 0.05], course: 'in_mid', note: 'a fast pitch on the inside: the rings close quickly, and early' },
+  { key: 'curveball', name: 'Curveball', velocity: 78, family: 'breaking', move: [0.88, -0.30], course: 'out_mid', note: 'a slow curve on the outside: the rings take longer, and the mark comes late' },
+  { key: 'four_seam', name: 'Four-seam', velocity: 95, family: 'fastball', move: [0.10, 0.05], course: 'out_mid', note: 'a fast pitch on the outside: quick rings, but a later mark' },
+  { key: 'curveball', name: 'Curveball', velocity: 78, family: 'breaking', move: [0.88, -0.30], course: 'in_mid', note: 'a slow curve on the inside' },
+  { key: 'changeup', name: 'Changeup', velocity: 84, family: 'offspeed', move: [0.58, 0.40], course: 'mid_mid', note: 'a change-up down the middle' },
+  { key: 'slider', name: 'Slider', velocity: 85, family: 'breaking', move: [0.50, -0.55], course: 'mid_lo', note: 'a slider, low' }];
+function practiceShown() {
+  return { phase: 'play', mode: 'duel', difficulty: 'normal', seq: 0, started: true,
+    situation: { inning: 'Practice', our: 0, opp: 0, start_our: 0, start_opp: 0, outs: 0, balls: 0, strikes: 0, runners: [false, false, false], runners_text: 'Bases empty', fast_runner: false },
+    batter: { name: '1 Practice batter', bats: 'R', type: 'Warm-up', avg: 0.3, obp: 0.35, slg: 0.45, ops: 0.8, scouting: 'Find the timing. Nothing here counts.', spot: 1, next: { name: '2 Next', bats: 'R', ops: 0.7 } },
+    pitcher: { throws: 'R', pitches: 0, fatigue: 0 }, repertoire: PRACTICE_SET.map(function (p) { return { key: p.key, name: p.name, velocity: p.velocity, family: p.family, move: p.move }; }),
+    intents: [], alignment: 'standard', last: null, reads: [], pitch_map: [], history: [], catch_rules: { time: [0.12, 0.24] }, catch_stats: {}, can_walk: false, can_change: false, messages: [], plan: null };
+}
+function startBatPractice() {
+  batPractice = { n: 0 }; net.hideLobby();
+  shown = practiceShown(); S = shown;
+  $('pbar').innerHTML = '<span>PRACTICE \u00B7 nothing here counts</span><button type="button" id="pb-back">Back to the lobby</button>'; $('pbar').className = 'ov show';
+  $('pb-back').onclick = endBatPractice;
+  lastGuide = ''; renderAll(); setTimeout(nextBatPractice, 400);
+}
+function nextBatPractice() {
+  if (!batPractice || anim) return;
+  var p = PRACTICE_SET[batPractice.n % PRACTICE_SET.length];
+  shown.batter.bats = batPractice.n % 2 === 0 ? 'R' : 'L';                        // (a left-hander has the inside and outside the other way round)
+  batPractice.note = p.note; batPractice.k = batPractice.n % PRACTICE_SET.length + 1; batPractice.n++;
+  var l = { seq: -batPractice.n, pitch_type: p.key, actual_course: p.course, in_zone: true, framed: false, swung: false, result: 'Pending', batted: null,
+            catchable: true, timing: null, swing: { swung: false }, missed: false };
+  startPitchAnim(Object.assign({}, shown, { last: l, phase: 'play' }), { l: l, duel: true, online: 'batter', practice: true, startAt: net.serverNow() + 900 });
+  markers.T = markers.A = null;
+}
+function endBatPractice() {
+  batPractice = null; anim = null; catchG = null; pendingState = null; $('pbar').className = 'ov'; $('banner').className = 'ov';
+  shown = null; S = net.view; lastGuide = ''; renderAll();
+  net.lobbyKey = ''; if (net.view) net.showRoom(net.view);
+}
+
 function duelSend(a, swing) {
   var d = a.duel;
   if (d.sent) return;
@@ -448,14 +620,18 @@ function duelClick(e) {
   duelSend(a, d.swing);
 }
 function resolveDuel(a, ns2) {
-  if (anim !== a) { onState(ns2); return; }
+  if (anim !== a) { if (ns2.room) onRoomView(ns2, true); else onState(ns2); return; }
   var d = a.duel;
   if (d.resolved) return;
   S = ns2; pendingState = ns2;
   if (ns2.phase === 'qte') { d.qte = true; openQTE(ns2.qte); return; }        // a rhythm game (a throw, a block) comes first, as in the one-player game
-  if (!ns2.last || ns2.last.seq !== a.l.seq) { getState().then(function (ns3) { S = ns3; pendingState = ns3; a.done = true; }, function () { a.done = true; }); return; }
+  if (!ns2.last || ns2.last.seq !== a.l.seq) {
+    if (a.online) return;                                                         // the result is not in yet: it arrives with the next update from the room
+    getState().then(function (ns3) { S = ns3; pendingState = ns3; a.done = true; }, function () { a.done = true; }); return;
+  }
   d.resolved = true; lastSeq = ns2.last.seq;
   fillResult(a, ns2, ns2.last);
+  if (a.online) { net.view = ns2.room ? ns2 : net.view; if (ns2.room) { roomInfo = ns2.room; roomRecv = performance.now(); } }
   if (!a.interactive) { catchG = null; a.hintState = null; $('catchhint').className = 'ov'; }
   renderBottom();
 }
@@ -565,7 +741,13 @@ function restorePanel(ns) {                                                     
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data); $('readpanel').className = 'ov show compact'; panelOpen = true;
 }
 function finishAnim() {
-  var ns = pendingState || S, wasPractice = anim && anim.practice; pendingState = null; anim = null; catchG = null; duelPh = null;
+  var a1 = anim, ns = pendingState || S, wasPractice = anim && anim.practice; pendingState = null; anim = null; catchG = null; duelPh = null;
+  if (a1 && a1.online && a1.practice) {                                            // the batter's practice: the next practice pitch follows
+    $('banner').className = 'ov'; lastGuide = ''; renderBottom();
+    if (batPractice) setTimeout(nextBatPractice, 900);
+    return;
+  }
+  if (a1 && a1.online && a1.l && a1.l.seq != null) post('/room/ack', { seq: a1.l.seq }).then(function (v) { if (v && v.room) { net.view = v; net.ver = v.room.ver; onRoomView(v, true); } }, function () {});   // this screen has finished showing the pitch
   if (wasPractice) { practice = false; BTP.store.set('btp_practiced', '1'); toast('Practice done. The real game starts now: pick your first pitch.', false); }
   $('catchhint').className = 'ov';
   $('banner').className = 'ov';
@@ -644,7 +826,8 @@ function buildModel(now) {
     a.duel.lastNow = now;
   }
   var t = (now - a.t0) / 1000 / TS;
-  if (a.duel && !a.duel.sent && t >= a.duel.tClose) duelSend(a, null);             // nobody swung in time: he took it
+  if (a.duel && !a.duel.sent && t >= a.duel.tClose) { if (a.practice) practiceResolve(a, null); else duelSend(a, null); }     // nobody swung in time: he took it
+  if (a.waitCatch && t > a.tCatch + 12) resumeAfterCatch(a, a.ns);                 // (the catcher never answered: carry on)
   var l = a.l;
   function once(name, cond, fn) { if (cond && !a.snd[name]) { a.snd[name] = 1; fn(); } }
   // the pitcher's whole-body delivery, in real time
@@ -733,7 +916,7 @@ function buildModel(now) {
       m.shake = [Math.sin(shakeAge * 220) * amp, Math.cos(shakeAge * 260) * amp * 0.8];
     }
   }
-  if (a.duel && t < a.tCatch - 0.12) m.mittHidden = true;                          // two players: the mitt must not show where the ball is going, nor hide the cursor
+  if (a.duel && t < a.tCatch - (a.online === 'batter' ? 0.05 : 0.12)) m.mittHidden = true;                          // two players: the mitt must not show where the ball is going, nor hide the cursor
   if (!a.marked && t >= a.tPlate) { a.marked = true; markers.T = a.markT; markers.A = a.markA; }
   m.zone.markT = markers.T; m.zone.markA = markers.A;
   m.zone.enabled = false; m.zone.sel = null; m.zone.hover = null;
@@ -790,10 +973,24 @@ function buildModel(now) {
     }
   }
   m.ball = ball;
-  if (a.duel) {                                                                    // the batter's cursor: aim before the swing, frozen where it was at the swing
+  if (a.duel && a.online === 'batter') {   // the batter's rings: closing on the mark, then his verdict
+    var A = BTP.duel.AUTO, tOv = a.tHitZ - BTP.duel.LAG, tSt = a.tRel - 0.35, dsw = a.duel.swing;
+    var ru = Math.min(V.W, V.H), ringY = V.H - Math.min(V.H * 0.28, 160);
+    if (!dsw && !a.duel.sent && t >= tSt && t <= tOv + 0.30) {
+      var u = clamp((tOv - t) / (tOv - tSt), 0, 1), rt = Math.max(30, ru * 0.05), R0 = rt + ru * 0.25, near = Math.abs(t - tOv);
+      m.rings = { x: V.W / 2, y: ringY, rt: rt, r: t <= tOv ? rt + (R0 - rt) * u : rt * (1 - 0.5 * clamp((t - tOv) / 0.3, 0, 1)),
+                  alpha: t <= tOv ? clamp((t - tSt) / 0.15, 0, 1) : clamp(1 - (t - tOv) / 0.3, 0, 1), band: near <= A.perfect ? 'perfect' : (near <= A.good ? 'good' : 'far'),
+                  label: a.practice ? 'Press Space when the rings overlap' : '' };
+    }
+    if (dsw) {
+      var ct2 = t - dsw.t, miss = Math.abs(dsw.off) > A.max, gg = BTP.duel.gradeOf(dsw.off);
+      if (ct2 >= 0 && ct2 < 1.8) m.swingGrade = { x: V.W / 2, y: ringY - 6, g: gg, sub: (dsw.off < 0 ? '' : '+') + Math.round(dsw.off * 1000) + ' ms' + (miss ? ' \u00B7 swing and miss' : ''), alpha: clamp((1.8 - ct2) / 0.5, 0, 1) };
+    }
+  }
+  if (a.duel && !a.online) {                                                       // hot seat (not offered any more): the batter's cursor, aim before the swing, frozen where it was at the swing
     var dd = a.duel, md = BTP.duel.MODES[dd.mode], ccx = dd.swing ? dd.swing.cx : cursorW.x, ccy = dd.swing ? dd.swing.cy : cursorW.y, pc = P(ccx, ccy, 0);
     var ct = t - a.tContact;
-    if (pc && (dd.swing ? ct < 1.8 : t < a.tCatch + 0.5)) {
+    if (!a.online && pc && (dd.swing ? ct < 1.8 : t < a.tCatch + 0.5)) {
       var cur = { x: pc.x, y: pc.y, r: md.radius * pc.s, mode: dd.mode, alpha: 1 };
       if (!dd.swing) { cur.label = md.label + ' SWING'; cur.alpha = clamp(1 - (t - a.tCatch - 0.1) / 0.35, 0, 1); }
       else {
@@ -828,10 +1025,21 @@ function buildModel(now) {
 
 
 /* ---------------- the call timer ---------------- */
+function onlineTimer(now) {
+  var r = roomInfo;
+  if (r.phase !== 'call' || r.call_left == null) { tm.left = r.call_limit || 0; return; }
+  var before = Math.ceil(tm.left);
+  tm.left = r.call_left - ((r.paused || netLost) ? 0 : (now - roomRecv) / 1000);   // the room's own count, carried forward by this PC's clock
+  var after = Math.ceil(tm.left);
+  if (after !== before && after <= 5 && after >= 1 && !paused) BTP.bgm.sfx('tick', (6 - after) / 5);
+  if (tm.left <= 0 && r.role === 'catcher' && canPlay() && !autoFired && !paused) { autoFired = true; callPitch(true); }
+}
 function timerEligible() {
+  if (net.room) return !!(roomInfo && roomInfo.phase === 'call' && roomInfo.call_limit > 0);
   return !!(S && S.phase === 'play' && shown && !anim && !qteRun && !busy && !modalOpen() && !duelPh && !practice && BTP.settings.timer() > 0);
 }
 function timerTick(now) {
+  if (net.room) { if (roomInfo) onlineTimer(now); return; }
   var dt = tm.lastNow ? Math.min(0.25, (now - tm.lastNow) / 1000) : 0, limit = BTP.settings.timer();
   tm.lastNow = now;
   if (!timerEligible()) { tm.left = limit; tm.lowSec = -1; return; }              // between pitches, in a panel's way: it starts over
@@ -852,8 +1060,30 @@ function pickName() {
 }
 
 /* ---------------- pause ---------------- */
+// online: the pause belongs to the room. This PC freezes when the server says the room is paused (or when its own connection is lost)
+function applyOnlinePause(r) {
+  var want = !!(r && r.paused) || netLost;
+  if (want && !paused) { paused = true; pausedAt = performance.now(); }
+  else if (!want && paused) { paused = false; if (anim && anim.online && !anim.practice && r && r.start_at) { anim.t0 = net.perfOf(r.start_at); anim.startAt = r.start_at; } }
+  var el = $('pausev'), html = '';
+  if (netLost) html = '<div class="pv"><b>CONNECTION LOST</b><span>Trying to reconnect. The game is paused, and nothing is lost.</span></div>';
+  else if (r && r.paused) {
+    var who = r.paused.role === r.role ? 'You' : (r.paused.role === 'catcher' ? 'The catcher' : 'The batter');
+    html = r.paused.reason === 'disconnect' ?
+      '<div class="pv"><b>' + (r.paused.role === r.role ? 'CONNECTION LOST' : 'OPPONENT DISCONNECTED') + '</b><span>The game is paused until ' + (r.paused.role === r.role ? 'you are' : 'they are') + ' back. The timer and the pitch are stopped.</span><button type="button" id="leave-btn2">LEAVE THE ROOM</button></div>' :
+      '<div class="pv"><b>PAUSED</b><span>' + who + ' paused the game. The timer and the pitch are stopped.</span>' + (r.paused.you ? '<button type="button" id="resume-btn">RESUME</button>' : '') + '</div>';
+  }
+  if (html) { if (el.dataset.k !== html) { el.innerHTML = html; el.dataset.k = html; } el.className = 'ov show'; var rb = $('resume-btn'); if (rb) rb.onclick = function () { setPaused(false); }; var lb = $('leave-btn2'); if (lb) lb.onclick = function () { net.leave(); }; }
+  else if (el.className.indexOf('show') >= 0 && !(paused && !net.room)) { el.className = 'ov'; el.innerHTML = ''; el.dataset.k = ''; }
+}
 function setPaused(on) {
   on = !!on;
+  if (net.room) {
+    if (on === paused || !roomInfo) return;
+    if (on && !canPause() && !anim) return;
+    net.post('/room/pause', { on: on ? '1' : '0' }).then(function (v) { if (v && v.room) { net.view = v; net.ver = v.room.ver; onRoomView(v, true); } }, function () {});
+    return;
+  }
   if (on === paused) return;
   if (on && !canPause() && !anim) return;
   if (on) { paused = true; pausedAt = performance.now(); $('pausev').innerHTML = '<div class="pv"><b>PAUSED</b><span>The timer and the pitch are stopped. The music keeps playing.</span><button type="button" id="resume-btn">RESUME</button></div>'; $('pausev').className = 'ov show'; $('resume-btn').onclick = function () { setPaused(false); }; }
@@ -867,9 +1097,63 @@ function catchAdvice(cg) {
   if (cg.dt == null) return { word: 'NO PRESS', tone: 'bad', note: 'Press SPACE once as the ball reaches the mitt' };
   return cg.dt < 0 ? { word: 'TOO EARLY', tone: 'warn', note: 'Wait a little longer next time' } : { word: 'TOO LATE', tone: 'warn', note: 'Press a little sooner next time' };
 }
+function swingAdvice(sw) {
+  var g = BTP.duel.gradeOf(sw.off), miss = Math.abs(sw.off) > BTP.duel.AUTO.max;
+  return { word: g.word, key: g.key, miss: miss, note: BTP.duel.gradeAdvice(g, miss) };
+}
+function timeRuleOnline(r) { return r.call_limit > 0 ? 'The catcher has ' + r.call_limit + ' s to choose. Time up \u2192 the current pick is thrown (none picked: ' + BTP.duel.STANDARD + ')' : 'No timer in this room'; }
+function practiceGuide() {
+  var a = anim, n = batPractice;
+  var pre = 'PRACTICE \u00B7 ';
+  if (!a) return { cur: 1, title: pre + 'Next pitch coming...', sub: 'Nothing here counts', tone: '' };
+  var d = a.duel, t = (clk() - a.t0) / 1000 / TS, tone = '';
+  if (d && d.swing) { var adv = swingAdvice(d.swing); return { cur: 3, title: pre + adv.word + ' \u00B7 ' + (d.swing.off < 0 ? '' : '+') + Math.round(d.swing.off * 1000) + ' ms', sub: adv.note, tone: adv.key === 'perfect' ? 'go' : (adv.key === 'good' ? 'good' : 'warn') }; }
+  if (a.practiceInfo && a.practiceInfo.take) return { cur: 3, title: pre + 'You let it go by', sub: 'Press Space when the rings overlap. Next pitch coming...', tone: 'warn' };
+  if (t < a.tRel - 0.35) return { cur: 2, title: pre + 'Press Space when the rings overlap', sub: 'Pitch ' + n.k + ': ' + (n.note || ''), tone: 'go' };
+  return { cur: 3, title: pre + 'Press Space when the rings overlap', sub: 'Pitch ' + n.k + ': ' + (n.note || ''), tone: 'go' };
+}
+function onlineGuide(st) {
+  var r = roomInfo, me = r.role, a = anim, opp = me === 'catcher' ? 'batter' : 'catcher';
+  if (netLost) return { cur: a ? 2 : 1, title: 'Connection lost', sub: 'Trying to reconnect. The game is paused and nothing is lost', tone: 'bad' };
+  if (r.paused) return { cur: a ? 2 : 1, title: r.paused.reason === 'disconnect' ? (r.paused.role === me ? 'Connection lost' : 'The ' + opp + ' disconnected') : 'Paused', sub: 'The game is paused. The timer and the pitch are stopped', tone: 'warn' };
+  if (st.phase === 'over') return null;
+  if (me === 'batter') {
+    if (!a) {
+      if (r.phase === 'call') return { cur: 1, title: 'Waiting for the catcher\u2019s call', sub: 'Then the rings appear. Press SPACE the moment they overlap. ' + (r.call_limit > 0 ? 'The call timer is running.' : ''), tone: '' };
+      return { cur: 3, title: 'Waiting for the other screen to finish...', sub: 'The next call starts when both of you are ready', tone: '' };
+    }
+    var t = (clk() - a.t0) / 1000 / TS, d = a.duel;
+    if (d && d.swing) {
+      var adv = swingAdvice(d.swing);
+      if (a.l && a.l.result !== 'Pending' && a.panelShown) return { cur: 3, title: adv.word + ' \u00B7 ' + plainLabel(a.l), sub: adv.note, tone: adv.key === 'perfect' ? 'go' : (adv.key === 'good' ? 'good' : 'warn') };
+      return { cur: 3, title: adv.word + ' \u00B7 ' + (d.swing.off < 0 ? '' : '+') + Math.round(d.swing.off * 1000) + ' ms', sub: adv.note, tone: adv.key === 'perfect' ? 'go' : (adv.key === 'good' ? 'good' : 'warn') };
+    }
+    if (d && !d.sent && t < a.tRel - 0.35) return { cur: 2, title: '\u2461 The pitch is coming', sub: 'Get ready: press SPACE when the rings overlap', tone: '' };
+    if (d && !d.sent) return { cur: 3, title: '\u2462 Press SPACE when the rings overlap', sub: 'One press per pitch. No press = you take it', tone: 'go' };
+    if (a.l && a.l.result !== 'Pending') return { cur: 3, title: 'You took it \u00B7 ' + plainLabel(a.l), sub: 'Next: wait for the catcher\u2019s call', tone: '' };
+    return { cur: 3, title: 'You let it go by', sub: 'Waiting for the result...', tone: '' };
+  }
+  // the catcher
+  if (!a) {
+    if (r.phase === 'call') return { cur: 1, title: '\u2460 Choose a pitch, then CALL PITCH', sub: timeRuleOnline(r), tone: '' };
+    return { cur: 3, title: 'Waiting for the batter\u2019s screen to finish...', sub: 'The next call starts when both of you are ready', tone: '' };
+  }
+  var t2 = (clk() - a.t0) / 1000 / TS, cg = a.interactive ? catchG : null, d2 = a.duel;
+  if (cg && cg.resolved) { var ad = catchAdvice(cg); return { cur: 3, title: ad.word + ' \u00B7 ' + ad.note, sub: (cg.detail ? cg.detail + ' \u00B7 ' : '') + 'Next: choose the next pitch when the play ends', tone: ad.tone }; }
+  if (t2 < a.tRel) return { cur: 2, title: '\u2461 The pitch is coming', sub: 'Get ready: press SPACE when the ball reaches the mitt', tone: '' };
+  if (cg) {
+    if (cg.pressT !== null) return { cur: 3, title: 'SPACE pressed: waiting for the ball', sub: 'One press only', tone: 'go' };
+    return { cur: 3, title: '\u2462 Press SPACE when the ball reaches the mitt', sub: 'One press only. Too early or too late is a miss', tone: 'go' };
+  }
+  if (d2 && !d2.resolved) return { cur: 3, title: 'The batter is swinging...', sub: 'Get ready to press SPACE if it reaches the mitt', tone: '' };
+  if (a.script) return { cur: 3, title: 'In play: ' + plainLabel(a.l), sub: 'Watch the play. Next: choose the next pitch', tone: a.l.result === 'Out' ? 'good' : 'bad' };
+  return { cur: 3, title: plainLabel(a.l), sub: 'Next: choose the next pitch', tone: '' };
+}
 function guideInfo() {
   var st = shown;
+  if (batPractice && st) return practiceGuide();
   if (!st || !st.situation || st.phase === 'start' || st.phase === 'intro' || st.phase === 'over' || modalOpen()) return null;
+  if (online()) return onlineGuide(st);
   var duel = st.mode === 'duel', a = anim, limit = BTP.settings.timer(), cur = 1, title = '', sub = '', tone = '', pre = practice || (a && a.practice) ? 'PRACTICE \u00B7 ' : '';
   var rule = limit > 0 ? 'Time up \u2192 your current pick is thrown (none picked: ' + BTP.duel.STANDARD + ')' : 'No timer. Pick the pitch, target and intent, then press Enter';
   if (paused) return { cur: a ? 2 : 1, title: 'Paused', sub: 'Press P or RESUME to continue', tone: '' };
@@ -894,17 +1178,18 @@ function guideInfo() {
   if (a.l.result === 'Foul') return { cur: 3, title: 'Foul ball', sub: 'Next: choose the next pitch', tone: '' };
   return { cur: 3, title: plainLabel(a.l), sub: 'Next: choose the next pitch', tone: '' };
 }
-var STEPS = ['Choose the pitch', 'The pitch', 'Catch it'];
+var STEPS = ['Choose the pitch', 'The pitch', 'Catch it'], STEPS_BAT = ['Wait for the call', 'The pitch', 'Swing'];
 function updateGuide() {
   var g = guideInfo(), el = $('guide');
   if (!g) { if (lastGuide !== 'hide') { lastGuide = 'hide'; el.className = 'hide'; } return; }
   var key = [g.cur, g.title, g.sub, g.tone].join('|');
   if (key !== lastGuide) {
     lastGuide = key; el.className = '';
-    $('g-steps').innerHTML = STEPS.map(function (n, i) { return '<span class="g-step' + (g.cur === i + 1 ? ' on' : (g.cur > i + 1 ? ' done' : '')) + '"><b>' + (i + 1) + '</b><span>' + n + '</span></span>'; }).join('');
+    var stepNames = (batPractice || (online() && roomInfo.role === 'batter')) ? STEPS_BAT : STEPS;
+    $('g-steps').innerHTML = stepNames.map(function (n, i) { return '<span class="g-step' + (g.cur === i + 1 ? ' on' : (g.cur > i + 1 ? ' done' : '')) + '"><b>' + (i + 1) + '</b><span>' + n + '</span></span>'; }).join('');
     var ti = $('g-title'); ti.textContent = g.title; ti.className = g.tone; $('g-sub').textContent = g.sub;
   }
-  var limit = BTP.settings.timer(), txt, cls = '';
+  var limit = net.room && roomInfo ? roomInfo.call_limit : BTP.settings.timer(), txt, cls = '';
   if (limit === 0) { txt = 'OFF'; cls = 'idle'; }
   else if (paused) { txt = 'Paused'; cls = 'paused'; }
   else if (practice || (anim && anim.practice)) { txt = 'OFF'; cls = 'idle'; }
@@ -1029,9 +1314,13 @@ function init() {
     BTP.bgm.start();
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (e.code === 'KeyP') { if (!e.repeat) setPaused(!paused); return; }
-    if (paused) { if (e.code === 'Escape') setPaused(false); if (e.code === 'Space' || e.code === 'Enter') e.preventDefault(); return; }
+    if (paused) { if (e.code === 'Escape' && !net.room) setPaused(false); if (e.code === 'Space' || e.code === 'Enter') e.preventDefault(); return; }
+    if ((online() && roomInfo.role === 'batter') || batPractice) {                // the batter's one key: Space swings (one press per pitch; holding it does nothing)
+      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) batterSwing(evClk(e)); return; }
+      if (e.code === 'Enter') { e.preventDefault(); return; }
+    }
     if (catchActive()) {                                                          // during the pitch the only thing asked of you is Space
-      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(clk()); return; }
+      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(evClk(e)); return; }
       return;
     }
     if (e.code === 'Space' || e.code === 'Enter') {
@@ -1050,23 +1339,30 @@ function init() {
     var d = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.code];
     if (d) { e.preventDefault(); sel.cell = { row: clamp(sel.cell.row + d[0], 0, 2), col: clamp(sel.cell.col + d[1], 0, 2) }; updateTargetRead(); }
   });
+  net.onView = onRoomView; net.onConn = onConn;
+  net.hooks = { practice: startBatPractice, left: onLeftRoom, gone: onRoomGone, back: function () { getState().then(onState, function () {}); } };
   renderTop();
   if (window.ResizeObserver) { var ro = new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(resize, 60); }); ro.observe($('stage')); }   // the guide strip comes and goes
-  getState().then(onState, function () { toast('Could not reach the game server.', true); });
+  if (!window.BTP_STATIC && net.restore()) {                                         // this tab was in an online room: go back to it
+    net.syncClock(6).then(function () { net.startPolling(); });
+  } else getState().then(onState, function () { toast('Could not reach the game server.', true); });
   requestAnimationFrame(loop);
 }
 function callPitch(auto) {
   if (!canPlay()) return;
   var course = BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats);
   var duel = S && S.mode === 'duel';
-  if (auto) toast(duel ? 'Time up: your current pick was locked in' : 'Time up: thrown ' + pickName(), false);
+  if (auto) toast(duel || online() ? 'Time up: your current pick was locked in' : 'Time up: thrown ' + pickName(), false);
   if (practice) { markers.T = markers.A = null; runPractice(course); return; }
+  if (online()) { markers.T = markers.A = null; setPanelCompact(true); act('/pitch2p', { pitch_type: sel.pitch, course: course, intent: sel.intent }); return; }   // online: the call goes straight to the room
   if (duel) { lockCall(course); return; }
   markers.T = markers.A = null;
   setPanelCompact(true);
   act('/pitch', { pitch_type: sel.pitch, course: course, intent: sel.intent });
 }
-BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, tm: tm, duelPh: duelPh, paused: paused, practice: practice, cursorW: cursorW, clk: clk }; };
+BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, tm: tm, duelPh: duelPh, paused: paused, practice: practice, cursorW: cursorW, clk: clk,
+    swingAt: function (dt) { var a = anim; if (!a) return null; batterSwing(a.t0 + (a.tHitZ - BTP.duel.LAG + dt) * 1000 * TS); return a.duel && a.duel.swing; } };   // (for the tests: press at an exact moment relative to the overlap)
+}; 
 BTP.catchPress = function () { catchPress(clk()); };
 BTP.setSlow = function (n) { TS = n; };      // for testing and demos
 BTP.finishAnim = function () { if (anim) finishAnim(); };

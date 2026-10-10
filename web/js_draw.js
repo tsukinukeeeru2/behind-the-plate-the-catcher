@@ -387,6 +387,8 @@ BTP.renderFrame = function (ctx, scene, m) {
   drawZone(ctx, m.zone);
   if (m.cursor) BTP.drawMeatCursor(ctx, m.cursor);                       // the batter's cursor (two players)
   if (m.hudRing) BTP.drawHudRing(ctx, m.hudRing);
+  if (m.rings) BTP.drawSwingRings(ctx, m.rings);                           // the batter's timing rings (online)
+  if (m.swingGrade) BTP.drawSwingGrade(ctx, m.swingGrade.x, m.swingGrade.y, m.swingGrade.g, m.swingGrade.sub, m.swingGrade.alpha);
   // the timing ring: it closes on the mitt as the ball arrives (a cue for the easier difficulties only)
   if (m.ring) {
     ctx.strokeStyle = m.ring.gold ? 'rgba(255,214,90,.95)' : 'rgba(255,255,255,.7)'; ctx.lineWidth = m.ring.gold ? 4 : 2.5;

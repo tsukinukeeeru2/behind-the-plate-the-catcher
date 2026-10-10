@@ -105,18 +105,27 @@ D.timeRule = function (limit) {
 
 /* ---------- compact help: everything fits in the drawer without scrolling ---------- */
 D.helpHTML = function (mode) {
-  var steps = '<div class="hp-steps"><div><b>1</b><span>Choose the pitch</span><i>pitch &middot; target &middot; intent, then <kbd>Enter</kbd></i></div>' +
-    '<div><b>2</b><span>The pitch</span><i>watch the ball come in</i></div>' +
-    '<div><b>3</b><span>Catch it</span><i>press <kbd>Space</kbd> once as it reaches the mitt</i></div></div>';
-  var keys = '<div class="hp-keys"><span><kbd>1</kbd>-<kbd>9</kbd> pitch</span><span><kbd>&larr;&uarr;&darr;&rarr;</kbd> target</span><span><kbd>Enter</kbd> call</span><span><kbd>Space</kbd> catch</span><span><kbd>P</kbd> pause</span></div>';
-  var duel = '<div class="hp-box"><b>Two players, one PC</b><p><u>Catcher</u> (keyboard): pick the call, press <kbd>Enter</kbd>, then <kbd>Space</kbd> to catch. ' +
-    '<u>Batter</u> (mouse): look away while the call is chosen. After the call is locked, pick NORMAL or POWER and click <b>BATTER READY</b>. ' +
-    'Move the cursor over the ball&rsquo;s path and left-click to swing: the cursor&rsquo;s position and the click&rsquo;s timing decide the result.</p></div>';
-  var solo = '<div class="hp-box"><b>Reading the batter</b><p>After each pitch you see where the ball and the bat went and whether he was early, on time or late. It only reports what happened.</p></div>';
-  return '<div class="hp">' + steps + keys + (mode === 'duel' ? duel : solo) +
-    '<div class="hp-box"><b>Timer</b><p>You have a set time to choose. When it runs out your current pick is thrown (nothing picked: the standard call). ' +
-    'Change it in <b>Settings</b>. It stops while a panel is open or the game is paused.</p></div>' +
-    '<div class="hp-row"><button class="t-btn" id="hp-practice" type="button">Try the practice pitch</button></div></div>';
+  var role = mode === 'online-catcher' ? 'catcher' : (mode === 'online-batter' ? 'batter' : null);
+  var keys, steps;
+  if (role === 'batter') {
+    steps = '<div class="hp-steps"><div><b>1</b><span>Wait for the call</span><i>the catcher chooses; you cannot see it</i></div>' +
+      '<div><b>2</b><span>The pitch</span><i>two rings appear and start closing</i></div>' +
+      '<div><b>3</b><span>Swing</span><i>press <kbd>Space</kbd> the moment they overlap</i></div></div>';
+    keys = '<div class="hp-keys"><span><kbd>Space</kbd> swing (one per pitch)</span><span><kbd>P</kbd> pause</span></div>';
+  } else {
+    steps = '<div class="hp-steps"><div><b>1</b><span>Choose the pitch</span><i>pitch &middot; target &middot; intent, then <kbd>Enter</kbd></i></div>' +
+      '<div><b>2</b><span>The pitch</span><i>watch the ball come in</i></div>' +
+      '<div><b>3</b><span>Catch it</span><i>press <kbd>Space</kbd> once as it reaches the mitt</i></div></div>';
+    keys = '<div class="hp-keys"><span><kbd>1</kbd>-<kbd>9</kbd> pitch</span><span><kbd>&larr;&uarr;&darr;&rarr;</kbd> target</span><span><kbd>Enter</kbd> call</span><span><kbd>Space</kbd> catch</span><span><kbd>P</kbd> pause</span></div>';
+  }
+  var extra;
+  if (role === 'batter') extra = '<div class="hp-box"><b>Timing</b><p>The rings close on a fixed mark at the speed of the real pitch: quick for a fastball, slower for a changeup. Inside pitches are met earlier and outside ones later, and the rings already account for that. <b>PERFECT</b> is the centre, <b>GOOD</b> is close, <b>EARLY</b> / <b>LATE</b> are weak or foul, and far off is a miss. The page aims the bat for you.</p></div>' +
+    '<div class="hp-box"><b>Online</b><p>Your press is timed on the shared game clock, so a slow connection does not cost you. If either player drops out, the game pauses.</p></div>';
+  else if (role === 'catcher') extra = '<div class="hp-box"><b>Calling for a human batter</b><p>Your call is hidden from the batter until the pitch is thrown, then it is revealed. The batter times a swing with Space, so a fastball on the inside and a changeup on the outside really are different problems for him.</p></div>' +
+    '<div class="hp-box"><b>Timer</b><p>The room\u2019s call timer starts when both players are ready. When it runs out your current pick is thrown (none picked: the standard call). It stops while the game is paused or someone is disconnected.</p></div>';
+  else extra = '<div class="hp-box"><b>Reading the batter</b><p>After each pitch you see where the ball and the bat went and whether he was early, on time or late. It only reports what happened.</p></div>' +
+    '<div class="hp-box"><b>Timer</b><p>You have a set time to choose. When it runs out your current pick is thrown (nothing picked: the standard call). Change it in <b>Settings</b>. It stops while a panel is open or the game is paused.</p></div>';
+  return '<div class="hp">' + steps + keys + extra + (role ? '' : '<div class="hp-row"><button class="t-btn" id="hp-practice" type="button">Try the practice pitch</button></div>') + '</div>';
 };
 
 D.settingsHTML = function () {

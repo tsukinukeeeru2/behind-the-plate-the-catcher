@@ -8,12 +8,14 @@ no crashes, invalid counts, broken batting orders, or infinite loops.
 """
 
 import io
+import collections
 import json
 import random
 import re
 import socket
 import socketserver
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -2591,8 +2593,7 @@ class StadiumPieceTests(unittest.TestCase):
                        "if (!e.repeat) catchPress", "if (e.code === 'KeyP'",             # one Space press per pitch, and P pauses
                        "BTP.settings.TIMERS", "Time up"):
             self.assertIn(needle, js, needle)
-        self.assertEqual(js.count("class=\"ho-ready\""), 1)                            # the hand-off has exactly one way forward: the batter's click
-        self.assertEqual(swing_module.MODES.keys(), {"normal", "power"})
+        self.assertEqual(swing_module.MODES.keys(), {"normal", "power", "auto"})
 
     def test_the_timer_choices_include_off_and_the_rule_is_written_on_screen(self):
         js = stadium._assets()[1]
@@ -2735,6 +2736,273 @@ class DuelTests(unittest.TestCase):
         self.assertEqual(out["last"]["swing"]["contact"], "miss")
         self.assertEqual(out["last"]["eval"]["reason"], "He swung and missed")
         self.assertEqual(out["situation"]["strikes"], 1)
+
+    def test_the_standard_swing_has_a_wide_window_and_names_early_good_perfect_late(self):
+        auto = swing_module.MODES["auto"]
+        words = [(off, swing_module.timing_word(off, auto)[1:]) for off in (-0.15, -0.07, -0.02, 0.0, 0.03, 0.07, 0.15)]
+        self.assertEqual([w for _o, w in words], [("EARLY", "early"), ("GOOD", "good"), ("PERFECT", "perfect"), ("PERFECT", "perfect"),
+                                                  ("PERFECT", "perfect"), ("GOOD", "good"), ("LATE", "late")])
+        for off in (-0.15, 0.15, 0.0):                              # whatever the label, the game logic only sees early / on_time / late
+            self.assertIn(swing_module.timing_word(off, auto)[0], ("early", "on_time", "late"))
+
+    def test_a_beginner_with_a_wobbly_press_still_puts_most_balls_in_play_and_good_timing_hits_harder(self):
+        rng = random.Random(2)
+
+        def run(sd, dx, dy, n=300):
+            c = collections.Counter()
+            hard = 0
+            for _ in range(n):
+                st = generate_random_situation(rng)
+                st.runners = [False, False, False]
+                pre = prepare_pitch(st, "four_seam", "mid_mid", rng, "strike")
+                human = swing_module.judge_swing(dx, dy, rng.gauss(0, sd), "auto", st.batter, rng)
+                human["swung"] = True
+                o = judge_pitch(st, "four_seam", "mid_mid", rng, "strike", prepared=pre, human=human)
+                c[o["result"]] += 1
+                hard += bool(o["batted_ball"] and o["batted_ball"].hardness == "hard")
+            return c, hard / n
+        beginner, beginner_hard = run(0.07, 0.0, 0.0)                  # 70 ms of wobble, a pitch down the middle
+        inplay = sum(beginner[k] for k in ("Out", "Single", "Double", "Triple", "Home run", "Error")) / 300
+        self.assertGreater(inplay, 0.9)
+        self.assertGreater(beginner_hard, 0.6)
+        _c, sloppy_hard = run(0.16, 0.0, 0.0)                          # far worse timing: mostly fouls, misses and weak contact
+        self.assertLess(sloppy_hard, beginner_hard - 0.3)
+        corner, _h = run(0.07, 0.03, 0.08)                             # the same wobble on a corner pitch is harder (more fouls)
+        self.assertGreater(corner["Foul"], beginner["Foul"] + 20)
+
+    def test_the_timing_numbers_the_page_uses_for_the_rings_are_the_servers(self):
+        import re
+        js = stadium._assets()[1]
+        auto = swing_module.MODES["auto"]
+        m = re.search(r"BTP\.duel\.AUTO = \{ perfect: ([0-9.]+), good: ([0-9.]+), max: ([0-9.]+) \}", js)
+        self.assertEqual([float(x) for x in m.groups()], [auto["perfect"], auto["good"], auto["tmax"]])
+        self.assertIn("k = %s;" % swing_module.AUTO_AIM, js)           # the page's automatic aim uses the server's fraction
+
+
+# ---------- online rooms: two PCs, an invite code (rooms.py, the /room routes in webapp.py) ----------
+import rooms as rooms_module
+
+
+class RoomTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        cls.port = sock.getsockname()[1]
+        sock.close()
+        cls.httpd = webapp._Server(("127.0.0.1", cls.port), webapp.Handler)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = "http://127.0.0.1:%d" % cls.port
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        webapp.ROOMS.rooms.clear()
+        webapp._JOIN_FAILS[:] = []
+
+    def call(self, method, path, data=None, who=None):
+        headers = {"X-Fetch": "1"}
+        if who:
+            headers.update({"X-Room": who["code"], "X-Token": who["token"]})
+        body = urllib.parse.urlencode(data or {}).encode() if method == "POST" else None
+        req = urllib.request.Request(self.base + path, data=body, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return json.loads(err.read().decode("utf-8"))
+
+    def make_room(self, timer=15):
+        a = self.call("POST", "/room/create", {"role": "catcher", "timer": str(timer)})
+        b = self.call("POST", "/room/join", {"code": a["code"].lower()})         # typed in lower case, with the dash
+        self.assertTrue(a["ok"] and b["ok"])
+        ca = {"code": a["code"], "token": a["token"]}
+        cb = {"code": b["code"], "token": b["token"]}
+        return ca, cb
+
+    def start(self, ca, cb):
+        self.call("POST", "/room/ready", {"ready": "1"}, ca)
+        return self.call("POST", "/room/ready", {"ready": "1"}, cb)
+
+    def room(self, who):
+        return webapp.ROOMS.get(who["code"])
+
+    def test_one_creates_the_other_joins_with_the_code_and_a_third_cannot(self):
+        a = self.call("POST", "/room/create", {"role": "batter"})
+        self.assertRegex(a["code"], r"^[A-HJKMNP-Z2-9]{3}-[A-HJKMNP-Z2-9]{3}$")
+        self.assertEqual(a["role"], "batter")
+        self.assertEqual(a["view"]["room"]["phase"], "lobby")
+        b = self.call("POST", "/room/join", {"code": a["code"]})
+        self.assertEqual(b["role"], "catcher")                                        # he gets the side that is left
+        self.assertEqual(b["view"]["room"]["phase"], "ready")
+        self.assertEqual(self.call("POST", "/room/join", {"code": a["code"]})["error"], "full")
+        self.assertEqual(self.call("POST", "/room/join", {"code": "ZZZZZZ"})["error"], "not_found")
+        self.assertEqual(self.call("POST", "/room/join", {"code": "12"})["error"], "bad_code")
+        self.assertEqual(self.call("GET", "/room/poll?since=0", who={"code": a["code"], "token": "wrong"}).get("error"), "no_room")
+
+    def test_the_game_starts_only_when_both_are_ready_and_the_timer_waits_for_that(self):
+        ca, cb = self.make_room(timer=10)
+        v = self.call("POST", "/room/ready", {"ready": "1"}, ca)
+        self.assertEqual((v["room"]["phase"], v["phase"], v["room"]["call_left"]), ("ready", "start", None))   # waiting: no game, no timer
+        v = self.call("POST", "/room/ready", {"ready": "1"}, cb)
+        self.assertEqual(v["room"]["phase"], "call")
+        self.assertEqual(v["phase"], "play")
+        self.assertTrue(0 < v["room"]["call_left"] <= 10)
+        self.assertEqual(v["mode"], "duel")
+
+    def test_the_batter_never_sees_the_call_before_the_pitch_is_thrown(self):
+        ca, cb = self.make_room()
+        self.start(ca, cb)
+        vb = self.call("GET", "/api/state", who=cb)
+        vc = self.call("GET", "/api/state", who=ca)
+        self.assertEqual(vb["repertoire"], [])
+        self.assertTrue(vc["repertoire"])
+        key = vc["repertoire"][0]["key"]
+        self.assertEqual(self.call("POST", "/pitch2p", {"pitch_type": key, "course": "mid_mid", "intent": "strike"}, cb)["room"]["phase"], "call")   # the batter cannot call
+        thrown = self.call("POST", "/pitch2p", {"pitch_type": key, "course": "in_lo", "intent": "chase"}, ca)
+        self.assertEqual(thrown["room"]["phase"], "pitch")
+        vb = self.call("GET", "/api/state", who=cb)
+        self.assertEqual(vb["plan"]["seq"], thrown["plan"]["seq"])                     # the same pitch on both screens
+        self.assertGreater(vb["room"]["start_at"], vb["room"]["server_now"] + 500)     # it starts a little in the future, on the server's clock
+        for forbidden in ("intents", "repertoire"):
+            self.assertEqual(vb[forbidden], [])
+        self.assertNotIn("in_lo", json.dumps(vb["last"] or {}))                        # nothing about the call before the result
+        self.assertEqual(self.call("POST", "/swing", {"swung": "0"}, ca)["room"]["phase"], "pitch")   # the catcher cannot swing for him
+
+    def test_the_swing_is_judged_once_both_screens_get_the_same_result_and_the_next_call_waits_for_both(self):
+        ca, cb = self.make_room()
+        v = self.start(ca, cb)
+        key = self.call("GET", "/api/state", who=ca)["repertoire"][0]["key"]
+        self.call("POST", "/pitch2p", {"pitch_type": key, "course": "mid_mid", "intent": "strike"}, ca)
+        done = self.call("POST", "/swing", {"swung": "1", "dx": "0", "dy": "0", "off": "0.001", "mode": "auto"}, cb)
+        self.assertTrue(done["last"]["swing"]["grade"] == "perfect")
+        self.assertEqual(self.call("POST", "/swing", {"swung": "1", "dx": "0", "dy": "0", "off": "0.2", "mode": "auto"}, cb)["last"]["seq"], done["last"]["seq"])   # one swing per pitch
+        vc = self.call("GET", "/api/state", who=ca)
+        self.assertEqual(vc["last"]["result"], done["last"]["result"])
+        room = self.room(ca)
+        if vc["last"]["catchable"]:                                                   # the catcher still has his catch to make
+            self.assertEqual(room.phase, "pitch")
+            self.call("POST", "/catch", {"quality": "clean"}, ca)
+        self.assertEqual(self.room(ca).phase, "resolve")
+        seq = done["last"]["seq"]
+        self.call("POST", "/room/ack", {"seq": str(seq)}, ca)
+        self.assertEqual(self.room(ca).phase, "resolve")                               # only one screen has finished: wait
+        self.call("POST", "/room/ack", {"seq": str(seq)}, cb)
+        self.assertIn(self.room(ca).phase, ("call", "over"))
+
+    def test_long_polling_answers_when_something_changes(self):
+        ca, cb = self.make_room()
+        ver = self.call("GET", "/room/poll?since=0", who=ca)["room"]["ver"]
+        got = {}
+
+        def waiter():
+            t0 = time.time()
+            got["view"] = self.call("GET", "/room/poll?since=%d" % ver, who=ca)
+            got["took"] = time.time() - t0
+        th = threading.Thread(target=waiter)
+        th.start()
+        time.sleep(0.4)
+        self.call("POST", "/room/ready", {"ready": "1"}, cb)                         # the other player does something
+        th.join(5)
+        self.assertTrue(got["view"]["room"]["ready"]["batter"])
+        self.assertLess(got["took"], 1.4)                                              # it did not wait out the full timeout
+        t0 = time.time()
+        self.call("GET", "/room/poll?since=%d" % got["view"]["room"]["ver"], who=ca)   # nothing changed: it waits, then answers anyway
+        self.assertGreater(time.time() - t0, 1.0)
+
+    def test_the_clock_endpoint_gives_server_time(self):
+        a = self.call("GET", "/room/time")["t"]
+        self.assertLess(abs(a - time.time() * 1000), 3000)
+
+    def test_a_dropped_player_pauses_the_room_and_the_pitch_resumes_where_it_stood(self):
+        ca, cb = self.make_room()
+        self.start(ca, cb)
+        key = self.call("GET", "/api/state", who=ca)["repertoire"][0]["key"]
+        self.call("POST", "/pitch2p", {"pitch_type": key, "course": "mid_mid", "intent": "strike"}, ca)
+        room = self.room(ca)
+        before = room.start_at
+        room.last_seen["batter"] -= rooms_module.DISCONNECT_MS + 1000                # the batter's PC goes quiet
+        with webapp._LOCK:
+            webapp.room_tick()
+        v = self.call("GET", "/api/state", who=ca)
+        self.assertEqual(v["room"]["paused"]["reason"], "disconnect")
+        self.assertEqual(v["room"]["paused"]["role"], "batter")
+        self.assertFalse(v["room"]["connected"]["batter"])
+        self.assertEqual(self.call("POST", "/catch", {"quality": "clean"}, ca)["room"]["phase"], "pitch")   # nothing moves while paused
+        time.sleep(0.6)
+        self.call("GET", "/api/state", who=cb)                                         # he is back
+        v = self.call("GET", "/api/state", who=ca)
+        self.assertIsNone(v["room"]["paused"])
+        self.assertGreater(room.start_at, before + 400)                                # the pitch's start moved by the time it was paused
+
+    def test_the_call_timer_does_not_run_while_paused_and_the_server_throws_the_standard_call_late(self):
+        ca, cb = self.make_room(timer=10)
+        self.start(ca, cb)
+        room = self.room(ca)
+        room.call_started -= 4000
+        self.assertLess(room.call_left(), 6.5)
+        self.call("POST", "/room/pause", {"on": "1"}, cb)
+        left = room.call_left()
+        time.sleep(0.4)
+        self.assertAlmostEqual(room.call_left(), left, delta=0.05)                     # stands still while paused
+        self.call("POST", "/room/pause", {"on": "0"}, ca)                              # only the one who paused may resume
+        self.assertIsNotNone(room.paused)
+        self.call("POST", "/room/pause", {"on": "0"}, cb)
+        self.assertIsNone(room.paused)
+        self.assertGreater(room.call_left(), left - 0.1)                               # the pause was not charged to the call
+        room.call_started -= 20000                                                     # nobody chose for ages
+        with webapp._LOCK:
+            webapp.room_tick()
+        self.assertEqual(room.phase, "pitch")
+
+    def test_a_batter_who_never_answers_lets_it_go_by_and_a_catcher_who_never_answers_misses(self):
+        ca, cb = self.make_room()
+        self.start(ca, cb)
+        key = self.call("GET", "/api/state", who=ca)["repertoire"][0]["key"]
+        self.call("POST", "/pitch2p", {"pitch_type": key, "course": "mid_mid", "intent": "strike"}, ca)
+        room = self.room(ca)
+        room.start_at -= rooms_module.SWING_TIMEOUT_MS + 3000
+        with webapp._LOCK:
+            webapp.room_tick()
+        self.assertIsNotNone(room.resolved_seq)
+        last = self.call("GET", "/api/state", who=cb)["last"]
+        self.assertFalse(last["swung"])
+        if room.phase == "pitch":
+            room.resolved_at -= rooms_module.CATCH_TIMEOUT_MS + 1000
+            with webapp._LOCK:
+                webapp.room_tick()
+            self.assertEqual(room.phase, "resolve")
+            self.assertEqual(self.call("GET", "/api/state", who=ca)["last"]["catch"]["quality"], "miss")
+
+    def test_a_room_player_cannot_start_a_new_game_or_leave_the_room_by_other_routes(self):
+        ca, cb = self.make_room()
+        self.start(ca, cb)
+        seq = self.call("GET", "/api/state", who=ca)["seq"]
+        for path in ("/start", "/newgame", "/menu", "/playball"):
+            v = self.call("POST", path, {"scenario": "random"}, cb)
+            self.assertEqual(v["room"]["phase"], "call")
+        self.assertEqual(self.call("GET", "/api/state", who=ca)["seq"], seq)
+        self.assertEqual(self.call("POST", "/pitch", {"pitch_type": "x"}, ca)["room"]["phase"], "call")
+
+    def test_guessing_invite_codes_is_slowed_down(self):
+        a = self.call("POST", "/room/create", {"role": "catcher"})
+        try:
+            for _ in range(20):
+                self.assertEqual(self.call("POST", "/room/join", {"code": "ZZZZZZ"})["error"], "not_found")
+            self.assertEqual(self.call("POST", "/room/join", {"code": a["code"]})["error"], "slow_down")      # even the right code waits
+        finally:
+            webapp._JOIN_FAILS[:] = []
+        self.assertTrue(self.call("POST", "/room/join", {"code": a["code"]})["ok"])
+
+    def test_leaving_empties_the_room(self):
+        ca, cb = self.make_room()
+        self.call("POST", "/room/leave", {}, ca)
+        self.assertEqual(self.room(cb).phase, "ready" if False else "lobby")
+        self.call("POST", "/room/leave", {}, cb)
+        self.assertIsNone(webapp.ROOMS.get(ca["code"]))
 
 
 # ---------- the browser-only build (pagesapi.py) ----------

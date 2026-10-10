@@ -10,7 +10,7 @@ import os
 from bgm_js import MUSIC_CORE
 
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_aerial.js", "js_draw.js", "js_hud.js", "js_catch.js", "js_duel.js", "js_game.js")
+_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_aerial.js", "js_draw.js", "js_hud.js", "js_catch.js", "js_duel.js", "js_online.js", "js_game.js")
 _cache = {}
 
 
@@ -44,6 +44,8 @@ _BODY = """
     <div id="readpanel" class="ov"></div>
     <div id="catchhint" class="ov"></div>
     <div id="handoff" class="ov"></div>
+    <div id="lobby" class="ov"></div>
+    <div id="pbar" class="ov"></div>
     <div id="pausev" class="ov"></div>
     <canvas id="mini" class="ov" width="250" height="162" aria-label="Top-down view of the play"></canvas>
     <div id="banner" class="ov"></div>
