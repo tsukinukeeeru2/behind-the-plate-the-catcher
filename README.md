@@ -10,6 +10,10 @@ Pure Python, **zero dependencies** (standard library only). Play it in your brow
 
 ---
 
+## Play it in the browser (no install)
+
+The `docs/` folder is a browser-only build: the Python game runs inside your browser through Pyodide, so there is nothing to install or host. It is the same game code as `python webapp.py`. Turn on GitHub Pages for this repository (Settings, Pages, deploy from branch `main`, folder `/docs`) and open the page. The first load downloads Pyodide (about 10 MB). After changing the game, run `python build_pages.py` to rebuild `docs/`.
+
 ## Play it (30 seconds)
 
 You only need Python 3.11 or newer (tested on 3.11 and 3.14). Nothing to install.
@@ -29,7 +33,7 @@ Your browser opens at `http://127.0.0.1:8765` (use `--no-browser` to stop that, 
 Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** timing games, **click the stage** to skip an animation.
 The old page-style layout is still available at `/classic`. Terminal version: `python main.py` (Enter = pitch, `d` = defense, `m` = note a read, `w` = intentional walk, `p` = pitching change, `q` = quit).
 
-Run the tests: `python tests.py` (190 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
+Run the tests: `python tests.py` (192 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
 
 ![The start screen](screenshots/stadium_start.png)
 

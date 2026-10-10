@@ -176,7 +176,7 @@ function openModal(name) {
   if (md.dataset.name === name && md.classList.contains('open')) return;
   md.dataset.name = name;
   fetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
-    mb.innerHTML = html + (name === 'start' ? '<p style="text-align:center;margin:6px 0 0"><a id="back-classic" href="/classic">Use the classic page layout instead</a></p>' : '');
+    mb.innerHTML = html + (name === 'start' && !window.BTP_STATIC ? '<p style="text-align:center;margin:6px 0 0"><a id="back-classic" href="/classic">Use the classic page layout instead</a></p>' : '');
     md.classList.add('open'); md.scrollTop = 0; mb.scrollTop = 0;
     renderBottom();
   });

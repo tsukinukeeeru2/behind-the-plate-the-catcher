@@ -2546,5 +2546,33 @@ class StadiumPieceTests(unittest.TestCase):
         self.assertIn("'X-Fetch'", js)
 
 
+# ---------- the browser-only build (pagesapi.py) ----------
+import pagesapi
+
+
+class BrowserBuildTests(unittest.TestCase):
+    def test_requests_are_answered_in_memory_with_the_same_rules(self):
+        webapp.SESSION = webapp.GameSession(seed=5)
+        out = json.loads(pagesapi.handle("GET", "/api/state"))
+        self.assertEqual(out["status"], 200)
+        self.assertEqual(json.loads(out["body"])["phase"], "start")
+        hdr = json.dumps({"X-Fetch": "1", "Content-Type": "application/x-www-form-urlencoded"})
+        started = json.loads(json.loads(pagesapi.handle("POST", "/start", "scenario=random", hdr))["body"])
+        self.assertEqual(started["phase"], "intro")
+        played = json.loads(json.loads(pagesapi.handle("POST", "/playball", "", hdr))["body"])
+        self.assertEqual(played["phase"], "play")
+        key = played["repertoire"][0]["key"]
+        res = json.loads(json.loads(pagesapi.handle("POST", "/pitch", "pitch_type=%s&course=mid_mid&intent=strike" % key, hdr))["body"])
+        self.assertIn(res["phase"], ("play", "qte", "over"))
+        panel = json.loads(pagesapi.handle("GET", "/api/panel/history"))
+        self.assertEqual(panel["status"], 200)
+        self.assertEqual(json.loads(pagesapi.handle("GET", "/api/panel/nope"))["status"], 404)
+
+    def test_the_static_page_carries_the_loader_and_the_zip_has_the_game(self):
+        page = webapp.render_stadium_page(webapp._classic_css(), static=True)
+        self.assertIn("loadPyodide", page)
+        self.assertNotIn("loadPyodide", webapp.render_stadium_page(webapp._classic_css()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

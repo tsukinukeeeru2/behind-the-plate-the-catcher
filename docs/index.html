@@ -1,0 +1,2810 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Behind the Plate — A Catcher's Game</title>
+<style>
+:root {
+  --bg:#0b111c; --bg-2:#0f1826; --panel:#141f30; --panel-2:#1b2a40;
+  --line:#27374f; --line-2:#324660;
+  --ink:#e9eef7; --muted:#93a1b8; --faint:#5f6f88;
+  --accent:#3fa9ff; --accent-ink:#06121f;
+  --good:#2fd08a; --bad:#ff6060; --warn:#f4b942;
+  --grass:#2f8046; --dirt:#b07b3e;
+  --r:14px; --r-sm:9px;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 30px rgba(0,0,0,.28);
+}
+* { box-sizing:border-box; }
+html { -webkit-text-size-adjust:100%; font-size:17.5px; }
+@media (max-width:520px) { html { font-size:16px; } }
+body {
+  margin:0; padding:0 0 4em; background:var(--bg); color:var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+               "Yu Gothic UI", "Segoe UI", "Noto Sans JP", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; line-height:1.5;
+  background-image:
+    radial-gradient(1100px 500px at 78% -8%, rgba(63,169,255,.10), transparent 60%),
+    radial-gradient(900px 500px at -6% 108%, rgba(47,208,138,.07), transparent 60%);
+  background-attachment:fixed;
+}
+.wrap { max-width:1120px; margin:0 auto; padding:0 18px; }
+a { color:var(--accent); }
+h1, h2, h3, h4 { margin:0; }
+button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px;
+}
+
+/* --- Brand bar --- */
+.brand { display:flex; align-items:baseline; gap:.6em; padding:.85em 0 .55em; }
+.brand .mark { font-weight:800; letter-spacing:.16em; font-size:.92em;
+  color:var(--ink); text-transform:uppercase; }
+.brand .mark .dot { color:var(--accent); }
+.brand .sub { color:var(--faint); font-size:.72em; letter-spacing:.14em; text-transform:uppercase; }
+
+/* --- Scoreboard strip (sticky) --- */
+.scorebar {
+  position:sticky; top:0; z-index:20;
+  background:linear-gradient(180deg, #0c1622, #0a121c);
+  border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.03);
+  padding:.55em .9em; margin-bottom:1.1em;
+}
+.sb-row { display:flex; align-items:center; gap:.75em 1.15em; flex-wrap:wrap; }
+.sb-team { display:flex; align-items:baseline; gap:.4em; }
+.sb-team .abbr { font-size:.68em; letter-spacing:.14em; color:var(--muted); text-transform:uppercase; }
+.sb-team .run { font-size:1.5em; font-weight:800; line-height:1; }
+.sb-team.lead .run { color:var(--good); }
+.sb-inning { font-weight:800; letter-spacing:.05em; color:#9fd4ff; padding:0 .1em; }
+.sb-sep { width:1px; align-self:stretch; background:var(--line); }
+.sb-grp { display:flex; align-items:center; gap:.5em; font-size:.82em; color:var(--muted); }
+.sb-grp b { color:var(--ink); }
+.pip { display:inline-block; width:.62em; height:.62em; border-radius:50%; margin:0 1px;
+        background:transparent; border:1.5px solid var(--faint); vertical-align:middle; }
+.pip.on { border-color:transparent; }
+.pip.b.on { background:var(--warn); } .pip.s.on { background:var(--accent); }
+.pip.o.on { background:var(--bad); }
+.warnpill { font-size:.72em; font-weight:800; letter-spacing:.06em; color:#fff;
+  background:var(--bad); border-radius:1em; padding:.12em .6em;
+  animation:pulse 1.3s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.45; } }
+.mini-diamond { vertical-align:middle; }
+.mini-diamond .base { fill:#22344c; stroke:var(--line-2); stroke-width:2; }
+.mini-diamond .base.on { fill:var(--warn); stroke:var(--warn); }
+.mini-diamond .base.fast { fill:var(--accent); stroke:var(--accent); }
+
+/* --- Cards --- */
+.card {
+  background:linear-gradient(180deg, var(--panel), var(--bg-2));
+  border:1px solid var(--line); border-radius:var(--r);
+  padding:1.05em 1.15em; margin-bottom:1.1em; box-shadow:var(--shadow);
+}
+.card > h2, .card > h3 {
+  font-size:.72em; color:var(--muted); font-weight:700; letter-spacing:.14em;
+  text-transform:uppercase; margin-bottom:.7em;
+}
+.card > h2 { font-size:.9em; color:var(--ink); }
+.grid2 { display:grid; grid-template-columns:1.08fr 1fr; gap:1.1em; align-items:start; }
+.grid2.gcols { grid-template-columns:1fr 1.02fr; }
+.eyebrow { font-size:.7em; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+  font-weight:700; margin:.9em 0 .35em; }
+.eyebrow:first-child { margin-top:0; }
+
+/* --- Field diagram --- */
+.field { position:relative; width:100%; aspect-ratio:1.7; border-radius:12px; overflow:hidden;
+  border:1px solid var(--line);
+  background:
+    radial-gradient(130% 100% at 50% 120%, #4aa862 0%, #388f52 45%, #2c7a43 74%, #256b3b 100%); }
+.field svg { position:absolute; inset:0; width:100%; height:100%; }
+.field .align-badge { position:absolute; left:8px; top:8px; font-size:.66em; font-weight:800;
+  letter-spacing:.08em; text-transform:uppercase; color:#eaf6ee;
+  background:rgba(6,16,10,.6); border:1px solid rgba(255,255,255,.18);
+  border-radius:1em; padding:.2em .7em; }
+.posbtn { position:absolute; transform:translate(-50%,-50%); }
+.posbtn form { margin:0; }
+.posbtn button {
+  width:66px; padding:.34em .2em .3em; border-radius:10px;
+  border:1px solid rgba(255,255,255,.28); background:rgba(9,18,12,.72);
+  color:#eef6f0; font-size:.72em; line-height:1.28; cursor:pointer; text-align:center;
+  backdrop-filter:blur(2px); box-shadow:0 4px 12px rgba(0,0,0,.35);
+  transition:transform .12s, box-shadow .12s, border-color .12s;
+  border-top:2px solid var(--tier, #6fd39a);
+}
+.posbtn button:hover { transform:translateY(-2px); box-shadow:0 8px 18px rgba(0,0,0,.45); }
+.posbtn button b { display:block; font-size:1.08em; letter-spacing:.04em; }
+.posbtn button .fit { color:#bfe8cd; font-size:.9em; }
+.posbtn.selected button { border-color:#ffd35a; box-shadow:0 0 0 2px #ffd35a, 0 8px 18px rgba(0,0,0,.5); }
+.posbtn.weak button { border-top-color:var(--bad); box-shadow:0 0 0 1.5px rgba(255,96,96,.7); }
+.field .homeplate { position:absolute; left:50%; bottom:3%; transform:translateX(-50%);
+  color:#eef6f0; font-size:.7em; text-align:center; letter-spacing:.06em; }
+.field-legend { font-size:.78em; color:var(--muted); margin-top:.55em; }
+@media (max-width:520px) { .posbtn button { width:52px; padding:.26em .12em; font-size:.64em; } }
+@media (max-width:380px) { .posbtn button { width:44px; font-size:.58em; } }
+
+/* --- Batter card --- */
+.batter-head { display:flex; align-items:center; gap:.7em; }
+.batter-num { width:2.1em; height:2.1em; flex:none; border-radius:50%; display:grid; place-items:center;
+  background:var(--panel-2); border:1px solid var(--line-2); font-weight:800; }
+.batter-head .name { font-size:1.18em; font-weight:800; letter-spacing:.02em; }
+.hand { font-size:.66em; font-weight:800; letter-spacing:.08em; padding:.15em .5em; border-radius:.5em;
+  background:var(--panel-2); border:1px solid var(--line-2); color:var(--muted); }
+.hand.L { color:#8fd0ff; border-color:#2b5b82; }
+.hand.R { color:#ffcf8f; border-color:#7a5a2c; }
+.tag { display:inline-block; font-size:.7em; padding:.12em .55em; border-radius:1em;
+  background:var(--panel-2); border:1px solid var(--line-2); color:var(--muted); }
+.slash { display:flex; gap:1.1em; font-size:.82em; color:var(--muted); margin:.6em 0 .1em; }
+.slash b { color:var(--ink); font-weight:700; }
+.scout { font-size:.85em; color:var(--muted); }
+.myread { font-size:.82em; color:#e59ad8; margin-top:.35em; }
+.batter-mini { display:flex; justify-content:space-between; gap:.6em; font-size:.8em; color:var(--muted);
+  padding:.42em .1em; border-top:1px dashed var(--line); }
+.batter-mini:first-of-type { margin-top:.5em; }
+
+/* --- Reaction (face) --- */
+.reaction { text-align:center; padding:.7em 0 .3em; }
+.reaction .face { font-size:2.5em; font-weight:800; line-height:1.1;
+  text-shadow:0 2px 12px rgba(0,0,0,.4); }
+.reaction .text { color:var(--muted); margin-top:.25em; font-size:.92em; }
+.rc-jammed .face, .rc-out_front .face, .rc-frustrated .face { color:var(--bad); }
+.rc-surprised .face { color:#c58bff; }
+.rc-confident .face, .rc-locked_in .face { color:var(--good); }
+.rc-comfortable .face { color:var(--warn); }
+.rc-defensive .face, .rc-uncertain .face { color:var(--accent); }
+.rc-neutral .face { color:var(--muted); }
+
+/* --- Strike zone --- */
+.zonewrap { display:flex; gap:1.5em; flex-wrap:wrap; align-items:flex-start; }
+.zone-shadow { display:inline-block; padding:12px; border:1px dashed var(--line-2); border-radius:12px;
+  background:radial-gradient(120% 120% at 50% 50%, rgba(63,169,255,.06), transparent 72%); }
+.zone { display:grid; grid-template-columns:repeat(3,58px); grid-template-rows:repeat(3,58px); gap:5px; }
+.zone .cell { position:relative; border:1px solid var(--line-2); border-radius:7px;
+  background:var(--panel-2); }
+.zone label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-size:.76em; color:var(--muted); cursor:pointer; border-radius:7px;
+  transition:background .1s, color .1s; }
+.zone label:hover { background:rgba(63,169,255,.14); color:var(--ink); }
+.zone input { position:absolute; opacity:0; pointer-events:none; }
+.zone input:checked + label { background:var(--accent); color:var(--accent-ink); font-weight:800; }
+.marker { position:absolute; width:23px; height:23px; border-radius:50%; display:flex;
+  align-items:center; justify-content:center; font-size:.7em; font-weight:800; pointer-events:none; }
+.marker.target { top:3px; left:3px; background:transparent; color:#bcd8f2;
+  border:2px solid var(--accent); box-shadow:0 0 0 1px rgba(0,0,0,.3); }
+.marker.actual { bottom:3px; right:3px; background:var(--bad); color:#fff;
+  border:2px solid var(--bg); }
+.marker.actual.ontarget { background:var(--good); }
+.zone-key { font-size:.78em; color:var(--muted); }
+.zone-key .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin:0 .3em 0 .1em;
+  vertical-align:middle; }
+
+/* --- Chips (pitch type / intent) --- */
+.callgrid { display:flex; flex-wrap:wrap; gap:1.4em 1.8em; align-items:flex-start; margin-top:.3em; }
+.callgrid-zone { flex:0 0 auto; }
+.callgrid-intent { flex:1 1 200px; min-width:200px; }
+.chiprow { display:flex; flex-wrap:wrap; gap:.45em; }
+.chiprow input { position:absolute; opacity:0; pointer-events:none; }
+.chiprow label { border:1px solid var(--line-2); border-radius:999px; padding:.42em .9em;
+  font-size:.86em; cursor:pointer; background:var(--panel-2); color:var(--ink);
+  transition:background .1s, border-color .1s, transform .1s; user-select:none; }
+.chiprow label:hover { border-color:var(--accent); }
+.chiprow label .v { color:var(--muted); font-size:.86em; margin-left:.35em; }
+.chiprow input:checked + label { background:var(--accent); color:var(--accent-ink); border-color:var(--accent);
+  font-weight:800; }
+.chiprow input:checked + label .v { color:var(--accent-ink); opacity:.75; }
+
+/* --- Pitch trajectory image (rough) --- */
+.parc { vertical-align:middle; margin-right:.35em; }
+.parc .pz { fill:none; stroke:var(--line-2); stroke-width:1; }
+.parc .pl { fill:none; stroke:var(--muted); stroke-width:2.2; stroke-linecap:round; }
+.parc .pb { fill:var(--muted); }
+.chiprow input:checked + label .parc .pl,
+.chiprow input:checked + label .parc .pb { stroke:var(--accent-ink); fill:var(--accent-ink); }
+.chiprow input:checked + label .parc .pz { stroke:rgba(6,18,31,.4); }
+
+/* --- Term tooltips (for people who do not know baseball. Explained on hover / tap) --- */
+.term { border-bottom:1px dotted var(--muted); cursor:help; position:relative; outline:none; }
+.term.badge { border:1px solid var(--line-2); border-radius:50%; display:inline-flex;
+  align-items:center; justify-content:center; width:1.4em; height:1.4em; font-size:.72em;
+  font-weight:800; color:var(--muted); background:var(--panel-2); vertical-align:middle;
+  margin-left:.35em; line-height:1; }
+.term.badge:hover, .term:focus.badge { color:var(--accent); border-color:var(--accent); }
+.term::after {
+  content:attr(data-tip); position:absolute; left:0; top:calc(100% + .45em); z-index:60;
+  width:min(20em, 74vw); white-space:normal; text-align:left;
+  background:#0c1826; color:var(--ink); border:1px solid var(--line-2); border-radius:9px;
+  padding:.6em .75em; font-size:.8rem; font-weight:400; line-height:1.5; letter-spacing:0;
+  text-transform:none; box-shadow:0 10px 30px rgba(0,0,0,.55);
+  opacity:0; visibility:hidden; transform:translateY(-3px);
+  transition:opacity .12s ease, transform .12s ease; pointer-events:none;
+}
+.term:hover::after, .term:focus::after { opacity:1; visibility:visible; transform:translateY(0); }
+@media (max-width:560px) { .term::after { left:auto; right:0; } }
+
+/* --- Receive rhythm game (framing a borderline pitch) --- */
+.rg-wrap { text-align:center; padding:.4em 0 .2em; }
+.rg-call { color:var(--muted); font-size:.95em; margin:.2em 0 .1em; }
+.rg-call b { color:var(--ink); }
+.rg-track { position:relative; height:48px; max-width:440px; margin:1.2em auto .4em;
+  border-radius:10px; background:linear-gradient(90deg,#18243c,#24344f,#18243c);
+  border:1px solid var(--line-2); overflow:hidden; cursor:pointer;
+  touch-action:manipulation; user-select:none; }
+.rg-target { position:absolute; top:0; bottom:0; left:41%; width:18%;
+  background:rgba(47,208,138,.20);
+  border-left:2px solid var(--good); border-right:2px solid var(--good); }
+.rg-target .core { position:absolute; top:0; bottom:0; left:50%; width:2px;
+  margin-left:-1px; background:var(--good); opacity:.8; }
+.rg-marker { position:absolute; top:-3px; bottom:-3px; width:5px; margin-left:-2.5px; left:0;
+  background:var(--accent); border-radius:3px; box-shadow:0 0 14px var(--accent); }
+.rg-hint { color:var(--muted); font-size:.9em; margin:.55em 0; }
+.rg-key { display:inline-block; border:1px solid var(--line-2); border-radius:6px;
+  padding:.02em .55em; font-weight:800; color:var(--ink); background:var(--panel-2); }
+.rg-verdict { font-size:1.45em; font-weight:800; letter-spacing:.06em; min-height:1.4em; margin:.35em 0; }
+.rg-verdict.perfect { color:var(--good); }
+.rg-verdict.good { color:var(--warn); }
+.rg-verdict.miss { color:var(--bad); }
+.qte-dirs { display:flex; gap:.7em; justify-content:center; margin:.9em 0 .2em; }
+.qte-dirs button { font-weight:800; padding:.7em 1.5em; font-size:1.05em; }
+.qte-announce { text-align:center; font-size:2em; font-weight:800; letter-spacing:.1em;
+  min-height:1.35em; margin:.25em 0; color:var(--accent);
+  opacity:0; transform:scale(.75); transition:opacity .12s ease, transform .14s ease; }
+.qte-announce.show { opacity:1; transform:scale(1); }
+.qte-label { text-align:center; font-weight:800; font-size:1.2em; margin:.35em 0 0;
+  color:var(--ink); min-height:1.4em; }
+.catcher-line { font-size:1.15em; font-weight:800; letter-spacing:.02em; margin:.5em 0;
+  padding:.4em .7em; border-radius:.5em; border-left:4px solid; }
+.catcher-line.ok { color:var(--good); border-left-color:var(--good); background:rgba(47,208,138,.10); }
+.catcher-line.ng { color:var(--bad); border-left-color:var(--bad); background:rgba(255,96,96,.10); }
+.good-call-line { margin:.4em 0; font-size:.92em; }
+.gc-badge { display:inline-block; font-weight:800; font-size:.9em; color:var(--good);
+  border:1px solid var(--good); border-radius:.4em; padding:.05em .5em; margin-right:.4em;
+  background:rgba(47,208,138,.10); }
+.tut-list { list-style:none; padding:0; margin:.7em 0 .3em; text-align:left; }
+.tut-list li { padding:.4em .1em; border-bottom:1px solid var(--line); font-size:.92em; }
+.tut-list li:last-child { border-bottom:none; }
+.tut-list li.done { color:var(--good); }
+.tut-list li.now { color:var(--accent); font-weight:700; }
+.prev-strip { font-size:.85em; font-weight:700; margin:.1em 0 .4em; }
+/* --- Return tempo (at the very top of the pitch-call screen. The same format as the other rhythm games, three times) --- */
+.tempo-box { border:1px solid var(--accent); border-radius:10px; padding:.75em .95em;
+  margin-bottom:1em; background:rgba(63,169,255,.08); }
+.tempo-head { display:flex; align-items:baseline; gap:.9em; flex-wrap:wrap; }
+.tempo-react { font-size:.95em; }
+#tempo-track { margin:.6em auto .3em; }
+#tempo-label { font-weight:800; color:var(--accent); }
+
+/* --- Buttons --- */
+button, .btn {
+  padding:.55em 1.05em; border-radius:var(--r-sm); border:1px solid var(--line-2);
+  background:var(--panel-2); cursor:pointer; font-size:.9em; color:var(--ink);
+  transition:background .12s, border-color .12s, transform .1s; font-family:inherit;
+}
+button:hover { border-color:var(--accent); }
+button:active { transform:translateY(1px); }
+button.primary { background:linear-gradient(180deg, #4fb2ff, #2f97ec); color:var(--accent-ink);
+  border-color:transparent; font-weight:800; letter-spacing:.03em;
+  box-shadow:0 6px 18px rgba(63,169,255,.28); }
+button.primary:hover { filter:brightness(1.06); }
+button.big { font-size:1.05em; padding:.8em 1.9em; }
+select { padding:.5em .7em; border-radius:var(--r-sm); border:1px solid var(--line-2);
+  background:var(--panel-2); color:var(--ink); font-family:inherit; font-size:.9em; }
+.form-actions { display:flex; flex-wrap:wrap; gap:.6em; align-items:center; }
+
+/* --- The last pitch --- */
+.resultline { display:inline-block; font-size:1.2em; font-weight:800; letter-spacing:.03em;
+  padding:.28em .85em; border-radius:.6em; margin:.5em 0;
+  background:var(--panel-2); border:1px solid var(--line-2); border-left-width:4px; }
+.resultline .eyebrow { display:inline; font-size:.55em; opacity:.7; letter-spacing:.14em; }
+.resultline.r-out { color:var(--good); border-left-color:var(--good); background:rgba(47,208,138,.10); }
+.resultline.r-hit { color:var(--bad); border-left-color:var(--bad); background:rgba(255,96,96,.10); }
+.resultline.r-ball { color:var(--warn); border-left-color:var(--warn); background:rgba(244,185,66,.10); }
+.resultline.r-strike { color:var(--accent); border-left-color:var(--accent); background:rgba(63,169,255,.10); }
+.callline { font-size:.9em; color:var(--muted); margin:.15em 0; }
+.callline b { color:var(--ink); }
+.msglist { margin-top:.7em; border-top:1px solid var(--line); padding-top:.5em; }
+.msg { padding:.14em 0; font-size:.9em; color:var(--muted); }
+.msg::before { content:"▸ "; color:var(--faint); }
+.msg.bad { color:var(--bad); }
+.msg.good { color:var(--good); }
+
+/* --- Pitch history --- */
+.tablescroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+table.history { width:100%; min-width:340px; border-collapse:collapse; font-size:.86em; }
+table.history th { text-align:left; color:var(--muted); font-weight:700; padding:.3em .5em;
+  border-bottom:1px solid var(--line); white-space:nowrap; letter-spacing:.03em; }
+table.history td { padding:.36em .5em; border-bottom:1px solid var(--line); white-space:nowrap; }
+table.history tr:last-child td { border-bottom:none; }
+.rdot { display:inline-block; width:.55em; height:.55em; border-radius:50%; margin-right:.45em;
+  vertical-align:middle; }
+.res-strike { color:var(--accent); } .res-strike .rdot { background:var(--accent); }
+.res-ball { color:var(--warn); } .res-ball .rdot { background:var(--warn); }
+.res-hit { color:var(--bad); font-weight:700; } .res-hit .rdot { background:var(--bad); }
+.res-out { color:var(--good); } .res-out .rdot { background:var(--good); }
+.framed-mark { color:var(--accent); font-size:.82em; }
+
+/* --- Spray chart --- */
+pre.spray { background:var(--bg); border:1px solid var(--line); color:#9fe3b6;
+  padding:.7em .9em; border-radius:8px; font-size:.9em; line-height:1.35; overflow-x:auto; }
+
+/* --- Hints / tactic warnings --- */
+.hint { background:rgba(244,185,66,.09); border:1px solid #6a5320; border-radius:10px;
+  padding:.75em 1em; font-size:.88em; color:#f0d9a6; margin-bottom:1.1em; }
+.tactic-alert { background:rgba(255,96,96,.10); border:1px solid #7a2b2b; border-radius:12px;
+  padding:.8em 1em; margin-bottom:1.1em; color:#ffc9c9; font-weight:600; }
+.tactic-alert b { color:#fff; }
+
+/* --- Stat tiles / meters --- */
+.report-hero { text-align:center; padding:1.4em 1em 1.2em; }
+.report-hero .headline { font-size:1.5em; font-weight:800; letter-spacing:.02em; margin:.15em 0; }
+.report-hero .score { font-size:1.05em; color:var(--muted); }
+.rating-card { display:flex; gap:1.1em; align-items:center; }
+.rating-card .grade { font-size:3.6em; font-weight:900; line-height:1; width:1.3em; text-align:center;
+  border:3px solid currentColor; border-radius:14px; padding:.1em 0; }
+.g-S { color:#ffd35a; } .g-A { color:var(--good); } .g-B { color:var(--accent); }
+.g-C { color:var(--muted); } .g-D { color:var(--bad); }
+.badge-chip { display:inline-block; font-size:.78em; font-weight:700; margin:.15em .3em .15em 0; padding:.15em .7em;
+  border-radius:999px; border:1px solid var(--accent); color:var(--accent); }
+.again { display:flex; gap:.6em; flex-wrap:wrap; align-items:center; margin-top:1em; }
+.again form { margin:0; }
+.report-stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(96px,1fr)); gap:.65em; }
+.stat { background:var(--panel-2); border:1px solid var(--line-2); border-radius:10px;
+  padding:.7em .5em; text-align:center; }
+.stat .n { font-size:1.7em; font-weight:800; line-height:1; }
+.stat .label { font-size:.68em; color:var(--muted); letter-spacing:.06em; text-transform:uppercase;
+  margin-top:.3em; }
+.meter { height:8px; border-radius:5px; background:var(--panel-2); border:1px solid var(--line-2);
+  overflow:hidden; margin:.35em 0 .1em; }
+.meter > span { display:block; height:100%; background:linear-gradient(90deg,#2f97ec,#3fd0a0); }
+.meter.bad > span { background:linear-gradient(90deg,#f4b942,#ff6060); }
+.kv { display:flex; justify-content:space-between; font-size:.85em; color:var(--muted); }
+.kv b { color:var(--ink); }
+.split2 { display:grid; grid-template-columns:1fr 1fr; gap:.8em; }
+.split2 .box { background:var(--panel-2); border:1px solid var(--line-2); border-radius:10px; padding:.7em .8em; }
+.split2 .box .cap { font-size:.7em; letter-spacing:.08em; text-transform:uppercase; font-weight:800; }
+.split2 .box.unlucky .cap { color:var(--good); }
+.split2 .box.lucky .cap { color:var(--bad); }
+.split2 .box p { font-size:.85em; margin:.3em 0; }
+.calllist p { font-size:.88em; margin:.28em 0; color:var(--ink); }
+.calllist p .num { color:var(--muted); }
+
+.dim { color:var(--faint); }
+.center { text-align:center; }
+
+@media (max-width:720px) {
+  .grid2, .grid2.gcols, .split2 { grid-template-columns:1fr; }
+  .callgrid { gap:1.1em; }
+  .callgrid-zone, .callgrid-intent { flex:1 1 100%; min-width:0; }
+  .zone { grid-template-columns:repeat(3,52px); grid-template-rows:repeat(3,52px); }
+  .sb-team .run { font-size:1.3em; }
+}
+.startopts { display:flex; gap:1em; justify-content:center; flex-wrap:wrap; margin-top:1em;
+  font-size:.85em; color:var(--muted); }
+.startopts input, .startopts select { background:var(--panel-2); color:var(--ink); border:1px solid var(--line-2);
+  border-radius:8px; padding:.35em .6em; font:inherit; }
+.drills { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px,1fr)); gap:.6em; text-align:left; }
+.drill { display:flex; flex-direction:column; gap:.25em; align-items:flex-start; padding:.7em .8em; }
+.drill .dim { font-size:.78em; font-weight:400; }
+.bgm-btn { margin-left:auto; font-size:.72em; letter-spacing:.06em; padding:.3em .8em;
+  border-radius:999px; color:var(--muted); }
+</style>
+<style>/* The 3D stadium page. Loaded after the classic page's CSS, so it overrides the few global rules it must. */
+html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#04070b; font-size:15px;
+  background-image:none; }
+#app { position:fixed; inset:0; display:flex; flex-direction:column; min-height:0; color:var(--ink);
+  font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif;
+  user-select:none; -webkit-user-select:none; }
+#app button { font:inherit; }
+
+/* ---------- top HUD ---------- */
+#top { flex:none; display:flex; align-items:center; gap:14px; padding:6px 12px; min-height:44px;
+  background:linear-gradient(180deg,#0d1622,#09111b); border-bottom:1px solid #1d2b3f; z-index:5; }
+.t-brand { font-weight:800; letter-spacing:.16em; font-size:12px; color:#cfe0f5; white-space:nowrap; }
+.t-brand i { color:var(--accent); font-style:normal; }
+.t-score { display:flex; align-items:baseline; gap:8px; white-space:nowrap; }
+.t-score .abbr { font-size:10px; letter-spacing:.14em; color:var(--muted); }
+.t-score .run { font-size:24px; font-weight:800; line-height:1; }
+.t-score .run.lead { color:var(--good); }
+.t-inning { font-weight:800; color:#9fd4ff; letter-spacing:.05em; font-size:13px; }
+.t-sep { width:1px; align-self:stretch; background:#1d2b3f; margin:2px 0; }
+.t-grp { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); white-space:nowrap; }
+.t-grp b { color:var(--ink); }
+.t-pips { display:inline-flex; gap:3px; }
+.t-pip { width:9px; height:9px; border-radius:50%; border:1.5px solid #4c5d78; }
+.t-pip.on.b { background:var(--warn); border-color:var(--warn); }
+.t-pip.on.s { background:var(--accent); border-color:var(--accent); }
+.t-pip.on.o { background:var(--bad); border-color:var(--bad); }
+.t-diamond { width:30px; height:26px; }
+.t-diamond .base { fill:#22344c; stroke:#3b5272; stroke-width:2; }
+.t-diamond .base.on { fill:var(--warn); stroke:var(--warn); }
+.t-spacer { flex:1; }
+.t-btn { background:#13202f; border:1px solid #28405c; color:#cfe0f5; border-radius:8px; padding:5px 11px;
+  font-size:12px; font-weight:700; cursor:pointer; letter-spacing:.03em; }
+.t-btn:hover { border-color:var(--accent); }
+.t-btn.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+.t-vol { display:flex; align-items:center; gap:6px; }
+.t-vol input[type=range] { width:74px; accent-color:var(--accent); }
+.t-warn { color:var(--warn); font-weight:700; }
+
+/* ---------- the stage: the 3D view and everything laid over it ---------- */
+#stage { position:relative; flex:1 1 auto; min-height:0; overflow:hidden; background:#0a1018; }
+#stage canvas { position:absolute; left:0; top:0; width:100%; height:100%; display:block; }
+#view { cursor:crosshair; }
+#mask { pointer-events:none; }
+.ov { position:absolute; pointer-events:none; z-index:3; }
+#batterbox { left:14px; top:12px; width:252px; padding:11px 13px; border-radius:12px;
+  background:rgba(7,12,20,.66); border:1px solid rgba(120,160,210,.26); backdrop-filter:blur(3px); font-size:13px; }
+#batterbox .nm { font-size:19px; font-weight:800; display:flex; align-items:center; gap:8px; }
+#batterbox .nm > span:first-child { display:inline-grid; place-items:center; width:1.5em; height:1.5em; border-radius:50%; background:#1b2a40; font-size:.85em; }
+#batterbox .hand { font-size:11px; }
+#batterbox .sl { display:grid; grid-template-columns:1fr 1fr; gap:2px 10px; color:var(--muted); margin:7px 0 5px; font-size:14px; }
+#batterbox .sl b { color:var(--ink); font-size:15px; }
+#batterbox .sc { color:#c7d5e8; font-size:12.5px; line-height:1.4; }
+#batterbox .nx { color:var(--faint); font-size:11.5px; margin-top:7px; }
+#mapbox { right:14px; top:12px; width:178px; padding:8px 8px 6px; border-radius:12px; text-align:center; background:rgba(7,12,20,.66);
+  border:1px solid rgba(120,160,210,.26); backdrop-filter:blur(3px); }
+#mapbox .cap { font-size:10.5px; letter-spacing:.14em; color:var(--muted); text-transform:uppercase; font-weight:700; }
+#mapbox .pitchmap { width:100%; height:auto; display:block; }
+#mapbox .recent { text-align:left; font-size:11.5px; color:#b9c8dd; line-height:1.5; margin-top:2px; }
+#mapbox .recent b { color:var(--ink); }
+.glass { font-size:12px; }
+.res.r-good, .r-good { color:var(--good); } .res.r-bad, .r-bad { color:var(--bad); } .res.r-neutral, .r-neutral { color:#dce8f8; }
+.tag-good { color:var(--good); } .tag-risky { color:var(--warn); } .tag-fair { color:#9fb2cc; }
+
+/* the read panel: the batter's face, where the ball and the bat went, the timing, what you have seen */
+#readpanel { left:50%; top:12px; transform:translateX(-50%); width:min(800px, calc(100% - 600px)); display:none; z-index:4;
+  padding:10px 14px; border-radius:14px; background:rgba(7,12,20,.80); border:1px solid rgba(120,160,210,.32); backdrop-filter:blur(3px);
+  grid-template-columns:128px 170px 1fr; gap:14px; align-items:center; }
+#readpanel.show { display:grid; }
+#readpanel.compact { display:flex; width:auto; max-width:min(720px, calc(100% - 600px)); padding:6px 14px; gap:0; }
+#readpanel .rp-mini { display:none; align-items:center; gap:12px; white-space:nowrap; overflow:hidden; }
+#readpanel.compact .rp-mini { display:flex; }
+#readpanel.compact .rp-face, #readpanel.compact .rp-zone, #readpanel.compact .rp-main { display:none; }
+.rp-face .portrait { width:128px; height:auto; display:block; }
+.rp-say { font-size:11.5px; color:#b9c8dd; text-align:center; line-height:1.3; margin-top:2px; min-height:2.6em; }
+.rp-zone .zonepic { width:170px; height:auto; display:block; }
+.rp-vert { text-align:center; font-size:11px; font-weight:800; letter-spacing:.1em; color:#ffd57a; min-height:1.2em; }
+.rp-head { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+.rp-timing { font-size:32px; font-weight:900; letter-spacing:.05em; line-height:1; text-shadow:0 2px 10px rgba(0,0,0,.5); }
+.rp-timing.t-late, .rp-timing.late { color:#ff9a5a; } .rp-timing.t-early, .rp-timing.early { color:#6ab8ff; }
+.rp-timing.t-on_time, .rp-timing.on_time { color:#7be0a8; } .rp-timing.t-took, .rp-timing.took { color:#cfe0f5; }
+.rp-result { font-size:22px; font-weight:800; }
+#readpanel.compact .rp-timing { font-size:20px; } #readpanel.compact .rp-result { font-size:17px; }
+.rp-line { display:flex; gap:8px; align-items:baseline; font-size:13px; margin-top:6px; flex-wrap:wrap; }
+.rp-k { font-size:10px; letter-spacing:.14em; color:var(--faint); font-weight:800; width:46px; flex:none; }
+.rp-why { color:#b9c8dd; font-size:12px; }
+.rp-sub { font-size:10px; letter-spacing:.16em; color:var(--faint); font-weight:800; margin-top:9px; }
+.rp-reads { margin:3px 0 0; padding-left:16px; font-size:13px; color:#dbe7f7; line-height:1.45; }
+.rp-none { font-size:12px; color:var(--faint); margin-top:3px; }
+.rp-chip { font-size:12px; font-weight:800; padding:2px 10px; border-radius:999px; border:1px solid currentColor; }
+.cq-clean { color:#ffd65a; } .cq-barely { color:#ffa05a; } .cq-miss { color:#ff6a6a; } .cq-auto { color:#9fb2cc; }
+
+#catchhint { left:50%; bottom:14px; transform:translateX(-50%); padding:7px 18px; border-radius:999px; font-size:14px; font-weight:800; letter-spacing:.05em;
+  color:#fff; background:rgba(8,16,28,.85); border:2px solid #ffd65a; opacity:0; transition:opacity .12s; white-space:nowrap; z-index:6; }
+#catchhint.show { opacity:1; animation:pulsehint 0.8s ease-in-out infinite; }
+#catchhint b { color:#ffd65a; }
+@keyframes pulsehint { 0%,100% { box-shadow:0 0 0 0 rgba(255,214,90,.4); } 50% { box-shadow:0 0 0 8px rgba(255,214,90,0); } }
+.modebadge { font-size:11px; font-weight:900; letter-spacing:.14em; padding:3px 11px; border-radius:999px; margin-left:auto; white-space:nowrap; }
+.modebadge.call { color:#9fd4ff; border:1px solid #2f6fa0; } .modebadge.catch { color:#1a1200; background:#ffd65a; }
+#banner { left:50%; top:84px; transform:translateX(-50%); text-align:center; opacity:0; transition:opacity .18s;
+  min-width:260px; }
+#banner.show { opacity:1; }
+#banner .big { font-size:clamp(26px, 5.4vh, 54px); font-weight:900; letter-spacing:.05em; line-height:1.05;
+  text-shadow:0 2px 0 rgba(0,0,0,.55), 0 6px 22px rgba(0,0,0,.5); }
+#banner .big.r-gold { color:#ffd65a; } #banner .big.r-warn { color:#ffa05a; }
+#banner .big.r-good { color:#46e6a0; } #banner .big.r-bad { color:#ff7272; } #banner .big.r-neutral { color:#fff; }
+#banner .sub { display:inline-block; margin-top:7px; padding:5px 13px; border-radius:999px; font-size:13px; font-weight:700;
+  background:rgba(7,12,20,.78); border:1px solid rgba(120,160,210,.3); max-width:min(80vw,560px); }
+#banner .sub.g { border-color:var(--good); color:#bff3da; }
+#banner .sub.r { border-color:var(--warn); color:#ffe3a6; }
+#banner .sub.f { border-color:#5b6f8c; color:#d3deef; }
+#toast { left:50%; bottom:12px; transform:translateX(-50%); max-width:70%; text-align:center; font-size:12.5px;
+  padding:6px 14px; border-radius:999px; background:rgba(7,12,20,.82); border:1px solid rgba(120,160,210,.3);
+  opacity:0; transition:opacity .2s; }
+#toast.show { opacity:1; }
+#toast.bad { border-color:var(--bad); color:#ffc3c3; }
+#hint { left:50%; bottom:46px; transform:translateX(-50%); font-size:12px; color:#dbe7f7; padding:4px 12px;
+  border-radius:999px; background:rgba(7,12,20,.55); opacity:0; transition:opacity .2s; white-space:nowrap; }
+#hint.show { opacity:1; }
+
+/* ---------- bottom bar ---------- */
+#bottom { flex:none; display:flex; flex-direction:column; gap:5px; padding:7px 12px 8px;
+  background:linear-gradient(0deg,#0d1622,#09111b); border-top:1px solid #1d2b3f; z-index:5; }
+.b-row { display:flex; align-items:center; gap:7px; flex-wrap:nowrap; min-width:0; }
+.b-label { font-size:10px; letter-spacing:.14em; color:var(--faint); text-transform:uppercase; width:46px; flex:none; font-weight:700; }
+.pbtn { display:flex; align-items:center; gap:6px; background:#12202f; color:#dbe7f7; border:1px solid #27405c;
+  border-radius:999px; padding:4px 11px 4px 6px; font-size:12.5px; font-weight:700; cursor:pointer; white-space:nowrap; }
+.pbtn svg { width:22px; height:22px; flex:none; }
+.pbtn .v { color:var(--muted); font-weight:600; font-size:11px; }
+.pbtn .k { color:var(--faint); font-size:10px; }
+.pbtn:hover { border-color:var(--accent); }
+.pbtn.sel { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+.pbtn.sel .v, .pbtn.sel .k { color:var(--accent-ink); opacity:.75; }
+.pbtn.sel svg path, .pbtn.sel svg circle { stroke:var(--accent-ink); }
+.pbtn svg .pz { fill:none; stroke:rgba(255,255,255,.35); stroke-width:1.5; }
+.pbtn svg .pl { fill:none; stroke:#8fd0ff; stroke-width:2; }
+.pbtn svg .pb { fill:#8fd0ff; stroke:none; }
+.pbtn.sel svg .pl { stroke:var(--accent-ink); } .pbtn.sel svg .pb { fill:var(--accent-ink); }
+.ibtn { background:#101a27; color:#c3d3e8; border:1px solid #243750; border-radius:999px; padding:4px 11px; font-size:12px;
+  font-weight:600; cursor:pointer; white-space:nowrap; }
+.ibtn:hover { border-color:var(--accent); }
+.ibtn.sel { background:#e9eef7; color:#0b1320; border-color:#e9eef7; }
+.callbtn { margin-left:auto; background:linear-gradient(180deg,#52b7ff,#2c8fe6); color:#04121f; border:none; border-radius:10px;
+  padding:9px 22px; font-size:14px; font-weight:900; letter-spacing:.08em; cursor:pointer; white-space:nowrap;
+  box-shadow:0 4px 14px rgba(44,143,230,.35); }
+.callbtn:hover { filter:brightness(1.08); }
+.callbtn:disabled { filter:grayscale(.8) brightness(.6); cursor:default; box-shadow:none; }
+.target-read { font-size:12px; color:var(--muted); white-space:nowrap; margin-left:auto; }
+.target-read b { color:var(--ink); }
+
+/* ---------- drawers, dialogs, rhythm game ---------- */
+#drawer { position:absolute; top:0; right:0; bottom:0; width:min(470px, 94vw); z-index:8; transform:translateX(102%);
+  transition:transform .22s ease; background:rgba(8,14,23,.97); border-left:1px solid #27405c;
+  display:flex; flex-direction:column; box-shadow:-12px 0 40px rgba(0,0,0,.5); }
+#drawer.open { transform:none; }
+#drawer .dh { display:flex; gap:6px; padding:9px 10px; border-bottom:1px solid #1d2b3f; align-items:center; }
+#drawer .dh .t-btn.on { background:var(--accent); }
+#drawer .db { flex:1; overflow-y:auto; overflow-x:hidden; padding:12px; }
+#drawer .db .card { margin-bottom:12px; }
+#modal { position:absolute; inset:0; z-index:9; display:none; align-items:center; justify-content:center;
+  background:rgba(3,6,10,.58); backdrop-filter:blur(2px); }
+#modal.open { display:flex; }
+#modal .mb { width:min(760px, 94vw); max-height:94%; overflow-y:auto; padding:6px; }
+#modal .mb > .card, #modal .mb > div { margin-bottom:10px; }
+#qte { position:absolute; left:50%; bottom:8px; transform:translateX(-50%); z-index:7; width:min(560px, 92vw);
+  display:none; padding:14px 16px 12px; border-radius:14px; text-align:center;
+  background:rgba(7,12,20,.9); border:1px solid #2d4a6c; box-shadow:0 12px 40px rgba(0,0,0,.55); }
+#qte.open { display:block; }
+#qte h4 { margin:0; font-size:11px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; }
+#qte .qcall { color:var(--muted); font-size:12px; margin:3px 0 0; }
+#qte .qhint { color:#b9c8dd; font-size:12px; margin:6px 0 0; min-height:2.6em; }
+#qte .qte-announce { position:absolute; left:0; right:0; top:-46px; font-size:30px; font-weight:900; letter-spacing:.06em;
+  color:#fff; text-shadow:0 3px 18px #000; opacity:0; transition:opacity .15s; pointer-events:none; }
+#qte .qte-announce.show { opacity:1; }
+#qte .rg-track { margin:12px auto 4px; height:40px; }
+#qte .qte-label { font-size:14px; font-weight:800; min-height:1.3em; margin-top:4px; }
+#qte .rg-verdict { margin:2px 0; font-size:1.3em; }
+#back-classic { font-size:11px; color:var(--faint); }
+
+@media (max-height:620px) {
+  #top { min-height:38px; padding:4px 10px; }
+  .t-score .run { font-size:20px; }
+  #bottom { padding:5px 10px 6px; gap:4px; }
+  .pbtn { padding:3px 9px 3px 5px; } .callbtn { padding:7px 18px; }
+  #batterbox { width:220px; padding:8px 10px; } #batterbox .sc { display:none; }
+  .rp-face .portrait { width:104px; } .rp-zone .zonepic { width:140px; } #readpanel { grid-template-columns:104px 140px 1fr; }
+}
+@media (max-width:1100px) { .t-brand { display:none; } }
+@media (max-width:1180px) { #mapbox { display:none; } #readpanel { width:min(800px, calc(100% - 300px)); } #readpanel.compact { max-width:calc(100% - 300px); } }
+@media (max-width:900px) {
+  .t-brand, .t-vol input { display:none; }
+  #batterbox, #readpanel { display:none !important; }
+  .b-row { flex-wrap:wrap; }
+}
+</style>
+</head><body>
+
+<div id="app">
+  <div id="top"></div>
+  <div id="stage">
+    <canvas id="view" aria-label="The field as seen by the catcher"></canvas>
+    <canvas id="mask" aria-hidden="true"></canvas>
+    <div id="batterbox" class="ov glass"></div>
+    <div id="mapbox" class="ov glass"></div>
+    <div id="readpanel" class="ov"></div>
+    <div id="catchhint" class="ov"></div>
+    <canvas id="mini" class="ov" width="250" height="162" aria-label="Top-down view of the play"></canvas>
+    <div id="banner" class="ov"></div>
+    <div id="hint" class="ov"></div>
+    <div id="toast" class="ov"></div>
+    <div id="qte"></div>
+    <div id="drawer"></div>
+    <div id="modal"><div class="mb" id="modal-body"></div></div>
+  </div>
+  <div id="bottom"></div>
+</div>
+<noscript><p style="position:fixed;top:40%;left:0;right:0;text-align:center;color:#fff">This game needs JavaScript.
+<a href="/classic">Open the classic page</a>.</p></noscript>
+<script>/* The browser-only build: the Python game runs inside this page (Pyodide, Python compiled to WebAssembly).
+   The page's fetch() calls to the game's own routes (every URL that starts with "/") are answered by pagesapi.handle() in Python,
+   which runs exactly the code the local server runs. Nothing is sent to any server of ours. */
+(function () {
+  'use strict';
+  window.BTP_STATIC = true;
+  var realFetch = window.fetch.bind(window);
+  var box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#04070b;color:#dbe7f7;font:16px system-ui,sans-serif;text-align:center;padding:20px';
+  box.innerHTML = '<div style="font-weight:800;letter-spacing:.16em">BEHIND THE &middot; PLATE</div><div id="boot-msg">Loading the game (Python runs in your browser, about 10 seconds the first time)...</div>';
+  document.body.appendChild(box);
+  var handle = null;
+  var ready = (async function () {
+    await new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js'; s.onload = res; s.onerror = function () { rej(new Error('Could not load Pyodide')); };
+      document.head.appendChild(s);
+    });
+    var py = await window.loadPyodide();
+    var buf = await (await realFetch('game.zip')).arrayBuffer();
+    py.unpackArchive(buf, 'zip');
+    py.runPython("import sys\nsys.path.insert(0, '.')\nimport pagesapi");
+    handle = py.runPython('pagesapi.handle');
+    box.remove();
+  })();
+  ready.catch(function (e) { document.getElementById('boot-msg').textContent = 'Sorry, the game could not start: ' + e.message + '. Check your connection and reload.'; });
+  window.fetch = function (url, opts) {
+    if (typeof url !== 'string' || url.charAt(0) !== '/') return realFetch(url, opts);
+    opts = opts || {};
+    var method = (opts.method || 'GET').toUpperCase();
+    return ready.then(function () {
+      var out = JSON.parse(handle(method, url, opts.body ? String(opts.body) : '', JSON.stringify(opts.headers || {})));
+      return new Response(out.body, { status: out.status, headers: { 'Content-Type': out.ctype } });
+    });
+  };
+})();
+</script>
+<script>/* ===================================================================================
+   Behind the Plate: the catcher's-eye 3D stadium. Part 1: helpers, music, camera.
+   Everything is plain JavaScript on two canvases (no libraries): a small perspective projection draws the stadium,
+   the players and the ball as the catcher sees them from a crouch behind the plate.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP = { };          // shared between the parts of this page
+
+/* ---------------- helpers ---------------- */
+BTP.$ = function (id) { return document.getElementById(id); };
+BTP.clamp = function (x, a, b) { return x < a ? a : (x > b ? b : x); };
+BTP.lerp = function (a, b, t) { return a + (b - a) * t; };
+BTP.ease = function (u) { u = BTP.clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+BTP.easeOut = function (u) { u = BTP.clamp(u, 0, 1); return 1 - (1 - u) * (1 - u); };
+BTP.rng = function (seed) {                 // a small deterministic random generator (mulberry32)
+  var a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    var t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+BTP.hex = function (h) {
+  h = h.replace('#', '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  return [parseInt(h.substr(0, 2), 16), parseInt(h.substr(2, 2), 16), parseInt(h.substr(4, 2), 16)];
+};
+BTP.rgb = function (c, k, a) {              // c = [r,g,b]; k = brightness factor; a = alpha
+  var f = k == null ? 1 : k;
+  var r = BTP.clamp(Math.round(c[0] * f), 0, 255), g = BTP.clamp(Math.round(c[1] * f), 0, 255),
+      b = BTP.clamp(Math.round(c[2] * f), 0, 255);
+  return a == null ? 'rgb(' + r + ',' + g + ',' + b + ')' : 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+};
+BTP.mixc = function (a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
+BTP.store = {
+  get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+  set: function (k, v) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
+};
+
+/* ---------------- background music ----------------
+   One AudioContext and one scheduler for the whole page. The page never reloads (every action is a fetch()), and nothing
+   here is tied to the screen or to any component, so the song just keeps going and loops by itself after bar 16.
+   Mute and volume only move a gain knob, so the song position is never touched. */
+BTP.bgm = (function () {
+  if (window.__btpBgm) return window.__btpBgm;            // never create a second player
+  var A = null, running = false, starting = false, sched = null, step = 0, nextT = 0, master = null;
+  var LOOKAHEAD = 1.0;                                     // seconds scheduled ahead (keeps playing in a busy / background tab)
+  var vol = parseFloat(BTP.store.get('btp_vol', '0.6')); if (!(vol >= 0 && vol <= 1)) vol = 0.6;
+  var muted = BTP.store.get('btp_muted', '0') === '1';
+  var startedAt = 0;
+
+  var BPM = 162, SPB = 60 / BPM / 4;
+  var N = {
+    A4:440.00, C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99,
+    A5:880.00, Bb5:932.33, C6:1046.50, D6:1174.66, E6:1318.51
+  };
+  var H3b = {D6:'Bb5', C6:'A5', E6:'C6', Bb5:'G5', A5:'F5', G5:'E5', F5:'D5'}; // harmony a third below
+  // --- Melody (one cell = a 16th note, 0 = rest) ---
+  var MEL = [
+    'D5',0,'D5',0, 'F5',0,'D5',0, 'A5',0,0,0, 'A5',0,'G5',0,        // m1
+    'F5',0,0,0, 'E5',0,'F5',0, 'D5',0,0,0, 0,0,0,0,                 // m2
+    'D5',0,'D5',0, 'F5',0,'A5',0, 'C6',0,0,0, 'C6',0,'Bb5',0,       // m3
+    'A5',0,0,0, 'G5',0,'A5',0, 'F5',0,0,0, 0,0,'A5','C6',           // m4
+    'D6',0,'A5',0, 'F5',0,'A5',0, 'D6',0,'A5',0, 'F5',0,0,0,        // m5
+    'C6',0,'A5',0, 'Bb5',0,'C6',0, 'A5',0,0,0, 0,'G5','A5','Bb5',   // m6
+    'C6',0,'C6',0, 'A5',0,'C6',0, 'D6',0,0,0, 'D6',0,'C6',0,        // m7
+    'Bb5',0,'C6',0, 'D6',0,'E6',0, 'D6',0,'C6',0, 'A5','C6','D6','E6', // m8 (into the hook)
+    'E6',0,0,0, 'D6',0,'C6',0, 'D6',0,0,0, 0,0,0,0,                 // m9  hook
+    'C6',0,0,0, 'D6',0,'A5',0, 'Bb5',0,0,0, 0,'A5','Bb5','C6',      // m10 hook
+    'D6',0,0,0, 'E6',0,'D6',0, 'C6',0,'A5',0, 0,0,0,0,              // m11 hook
+    'Bb5',0,'A5',0, 'G5',0,'A5',0, 'D6',0,0,0, 'C6',0,'Bb5',0,      // m12 hook
+    'A5',0,0,0, 'F5',0,'A5',0, 'D5',0,'F5',0, 'A5',0,0,0,           // m13
+    'G5',0,'F5',0, 'E5',0,'F5',0, 'D5',0,0,0, 0,0,'E5',0,           // m14
+    'F5',0,0,0, 'E5',0,'D5',0, 'E5',0,'F5',0, 'G5',0,'A5',0,        // m15
+    'Bb5',0,'A5',0, 'G5',0,'F5',0, 'E5',0,0,0, 0,'A4','C5','D5'     // m16
+  ];
+  var STEPS = MEL.length, LOOP = SPB * STEPS;                      // 16 bars = 256 cells
+  function osc(freq, t, dur, type, gain, slideTo) {
+    var o = A.createOscillator(), g = A.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur * 0.6);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.04);
+  }
+  function noise(t, dur, type, freq, gain) {
+    var len = Math.max(1, Math.floor(A.sampleRate * dur));
+    var b = A.createBuffer(1, len, A.sampleRate), d = b.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    var n = A.createBufferSource(); n.buffer = b;
+    var f = A.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = 1;
+    var g = A.createGain(); g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(f); f.connect(g); g.connect(master); n.start(t); n.stop(t + dur);
+  }
+  function taiko(t, f0, gain) {                          // big drum: boom
+    osc(f0, t, 0.34, 'sine', gain, f0 * 0.4);
+    osc(f0 * 1.5, t, 0.12, 'triangle', gain * 0.45, f0 * 0.7);
+    noise(t, 0.06, 'lowpass', 160, gain * 0.5);
+  }
+  function snare(t, gain) { noise(t, 0.10, 'bandpass', 1900, gain); noise(t, 0.09, 'highpass', 3600, gain * 0.55); }
+  function hat(t, gain) { noise(t, 0.03, 'highpass', 9000, gain); }
+  function crash(t) { noise(t, 1.0, 'highpass', 4200, 0.20); noise(t, 0.4, 'bandpass', 7000, 0.12); }
+  function trumpet(t, dur, freq, gain) {                 // trumpet (unison)
+    osc(freq, t, dur, 'sawtooth', gain, freq * 1.004);
+    osc(freq * 1.006, t, dur, 'sawtooth', gain * 0.7);
+    osc(freq, t, dur * 0.85, 'square', gain * 0.28);
+    osc(freq * 2, t, dur * 0.4, 'triangle', gain * 0.18);
+  }
+  function scheduleStep(s, t) {
+    var bar = Math.floor(s / 16), k = s % 16;
+    var hook = (bar >= 8 && bar < 12);                    // the hook (the big lift)
+    var fill = (bar === 7 || bar === 15);                 // fills before the hook / before the loop
+
+    // --- Drums ---
+    if (k === 0 || k === 8) taiko(t, 100, 0.68);          // big drum on beats 1 and 3
+    if (hook && (k === 4 || k === 12)) taiko(t, 116, 0.44); // the hook goes nearly four-on-the-floor
+    if (k === 4 || k === 12) snare(t, 0.28);              // snare on beats 2 and 4
+    else if (k % 2 === 1) snare(t, hook ? 0.09 : 0.03);   // 16ths (louder in the hook)
+    if (k % 2 === 0) hat(t, hook ? 0.045 : 0.03);         // hi-hat on 8ths
+    if (hook && k % 2 === 1) hat(t, 0.02);                // 16th hi-hats in the hook
+    if (k === 0 && (bar === 0 || bar === 8)) crash(t);    // loop start / hook start
+    if (fill && k >= 10) snare(t, 0.06 + (k - 10) * 0.02); // fill
+    if (bar === 15 && k === 14) taiko(t, 84, 0.85);       // the closing hit
+
+    // --- Melody (trumpet) ---
+    var m = MEL[s];
+    if (m) {
+      var held = (MEL[(s + 1) % STEPS] === 0 && MEL[(s + 2) % STEPS] === 0);
+      var dur = SPB * (held ? 3.4 : 1.9);
+      trumpet(t, dur, N[m], hook ? 0.17 : 0.15);
+      osc(N[m] / 2, t, dur, 'sawtooth', 0.055);           // an octave below for body
+      if (hook && held && H3b[m]) trumpet(t, dur, N[H3b[m]], 0.06); // a third-below harmony on held notes in the hook
+    }
+  }
+  function tick() {
+    if (!A) return;
+    while (nextT < A.currentTime + LOOKAHEAD) {
+      scheduleStep(step, nextT); nextT += SPB; step = (step + 1) % STEPS;
+    }
+  }
+
+  function level() { return muted ? 0 : vol * 0.55; }
+  function applyGain() { if (master) master.gain.setTargetAtTime(level(), A.currentTime, 0.04); }
+  function ensure() {
+    if (A) return;
+    A = new (window.AudioContext || window.webkitAudioContext)();
+    master = A.createGain(); master.gain.value = level(); master.connect(A.destination);
+  }
+  function start() {
+    if (running || starting) return;
+    starting = true;
+    try { ensure(); } catch (e) { starting = false; return; }
+    A.resume().then(function () {
+      starting = false;
+      if (running) return;
+      step = 0; nextT = A.currentTime + 0.08; startedAt = A.currentTime; running = true;
+      sched = setInterval(tick, 40);
+    }, function () { starting = false; });
+  }
+  // short sound effects (catch, swing, bat crack) through the same context; they follow the same mute and volume
+  var sfxOut = null;
+  function sfxNoise(t, dur, type, freq, gain) {
+    var len = Math.max(1, Math.floor(A.sampleRate * dur)), b = A.createBuffer(1, len, A.sampleRate), d = b.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    var n = A.createBufferSource(); n.buffer = b;
+    var f = A.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = 0.9;
+    var g = A.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(f); f.connect(g); g.connect(sfxOut); n.start(t); n.stop(t + dur);
+  }
+  function sfxTone(t, f0, f1, dur, gain, type) {
+    var o = A.createOscillator(), g = A.createGain();
+    o.type = type || 'sine'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(sfxOut); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function sfx(name, strength) {
+    if (!A || A.state !== 'running') return;
+    if (!sfxOut) { sfxOut = A.createGain(); sfxOut.connect(A.destination); }
+    sfxOut.gain.value = muted ? 0 : Math.min(1, 0.25 + vol * 0.85);
+    var t = A.currentTime + 0.005, k = strength == null ? 1 : strength;
+    if (name === 'pop') {                       // the ball hitting the mitt: a sharp leather slap and a low thump
+      sfxNoise(t, 0.045, 'bandpass', 2300, 0.9 * k); sfxNoise(t, 0.09, 'lowpass', 700, 0.8 * k);
+      sfxTone(t, 150, 55, 0.16, 0.9 * k, 'sine'); sfxTone(t, 420, 120, 0.05, 0.35 * k, 'triangle');
+    } else if (name === 'whoosh') {             // the bat or the ball going past
+      var o = A.createOscillator(), f = A.createBiquadFilter(), g = A.createGain();
+      o.type = 'sawtooth'; o.frequency.value = 90; f.type = 'bandpass'; f.Q.value = 1.2;
+      f.frequency.setValueAtTime(500, t); f.frequency.exponentialRampToValueAtTime(2600, t + 0.16);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12 * k, t + 0.07); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+      o.connect(f); f.connect(g); g.connect(sfxOut); o.start(t); o.stop(t + 0.22);
+    } else if (name === 'crack') {              // wood on ball
+      sfxNoise(t, 0.05, 'highpass', 2500, 0.9 * k); sfxTone(t, 900, 260, 0.07, 0.6 * k, 'square'); sfxNoise(t, 0.1, 'bandpass', 1200, 0.5 * k);
+    } else if (name === 'thud') {               // the ball getting away and hitting the ground behind you
+      sfxNoise(t, 0.12, 'lowpass', 380, 0.9 * k); sfxTone(t, 110, 45, 0.2, 0.8 * k, 'sine');
+    } else if (name === 'dull') {               // a ball that only just stuck in the mitt: less snap, more thump
+      sfxNoise(t, 0.08, 'lowpass', 900, 0.8 * k); sfxTone(t, 130, 60, 0.15, 0.7 * k, 'sine');
+    } else if (name === 'grunt') {
+      sfxTone(t, 180, 90, 0.2, 0.18 * k, 'sawtooth');
+    }
+  }
+  var api = {
+    sfx: sfx,
+    start: start,
+    isRunning: function () { return running; },
+    isMuted: function () { return muted; },
+    volume: function () { return vol; },
+    setVolume: function (v) { vol = BTP.clamp(v, 0, 1); BTP.store.set('btp_vol', vol); applyGain(); },
+    setMuted: function (m) { muted = !!m; BTP.store.set('btp_muted', muted ? '1' : '0'); applyGain(); },
+    players: function () { return running ? 1 : 0; },
+    elapsed: function () { return running && A ? A.currentTime - startedAt : 0; },     // seconds since the song began (never resets)
+    loopLength: function () { return LOOP; }
+  };
+  window.__btpBgm = api;
+  return api;
+})();
+
+/* ---------------- the catcher's camera ----------------
+   World units are metres: x to the right, y up, z toward the pitcher; home plate's front edge is (0, 0, 0).
+   The camera is the catcher's eye: crouched about three metres behind the plate, looking a little downward. */
+var CAM = BTP.CAM = { x: 0, y: 1.0, z: -3.1, pitch: 0.0 };      // eye height of a deep crouch
+var V = BTP.V = { W: 800, H: 450, F: 600, cx: 400, cy: 200, hy: 150, cp: 1, sp: 0 };
+
+BTP.setupView = function (W, H) {
+  V.W = W; V.H = H;
+  V.F = Math.min(2.6 * H, 1.15 * W);                         // a long lens: the pitcher fills the middle of the picture
+  V.cx = W / 2;
+  V.hy = 0.30 * H;                                          // where the horizon sits on the screen
+  V.cp = Math.cos(CAM.pitch); V.sp = Math.sin(CAM.pitch);
+  V.cy = V.hy + V.F * Math.tan(CAM.pitch);
+};
+// world point -> screen point (null if it is behind / too close to the eye)
+BTP.P = function (x, y, z) {
+  var vx = x - CAM.x, vy = y - CAM.y, vz = z - CAM.z;
+  var d = -vy * V.sp + vz * V.cp;
+  if (d < 0.08) return null;
+  var up = vy * V.cp + vz * V.sp, s = V.F / d;
+  return { x: V.cx + vx * s, y: V.cy - up * s, s: s, d: d };
+};
+// screen point -> where that line of sight crosses the vertical plane z = zPlane
+BTP.unproject = function (sx, sy, zPlane) {
+  var dx = (sx - V.cx) / V.F, du = (V.cy - sy) / V.F;
+  var dirx = dx, diry = du * V.cp - V.sp, dirz = du * V.sp + V.cp;
+  if (Math.abs(dirz) < 1e-6) return null;
+  var t = (zPlane - CAM.z) / dirz;
+  return { x: CAM.x + t * dirx, y: CAM.y + t * diry };
+};
+// trace a polygon given in world coordinates [[x,y,z],...], clipped against the near plane. Returns false if nothing is left.
+BTP.polyPath = function (ctx, pts) {
+  var cam = [], i, p;
+  for (i = 0; i < pts.length; i++) {
+    p = pts[i];
+    var vx = p[0] - CAM.x, vy = p[1] - CAM.y, vz = p[2] - CAM.z;
+    cam.push([vx, vy * V.cp + vz * V.sp, -vy * V.sp + vz * V.cp]);   // x, up, depth
+  }
+  var NEAR = 0.2, out = [];
+  for (i = 0; i < cam.length; i++) {
+    var a = cam[i], b = cam[(i + 1) % cam.length];
+    var ain = a[2] >= NEAR, bin = b[2] >= NEAR;
+    if (ain) out.push(a);
+    if (ain !== bin) {
+      var t = (NEAR - a[2]) / (b[2] - a[2]);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, NEAR]);
+    }
+  }
+  if (out.length < 3) return false;
+  ctx.beginPath();
+  for (i = 0; i < out.length; i++) {
+    var s = V.F / out[i][2], X = V.cx + out[i][0] * s, Y = V.cy - out[i][1] * s;
+    if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+  }
+  ctx.closePath();
+  return true;
+};
+
+
+/* ---------------- the pitch, from the laws of motion ----------------
+   Forces on the ball: gravity, air drag (0.5 rho A Cd v^2 against the motion), and the Magnus force from spin
+   (0.5 rho A Cl v^2 along  spin x velocity, so it is proportional to v squared and its direction comes from the cross product).
+   The lift coefficient Cl depends on the spin factor S = r * omega / v (the common empirical form Cl = 1 / (2 + 1/S)),
+   so a faster-spinning ball breaks more and a slower one breaks less.
+   Speeds and spin rates below are placeholders for a generic pitcher, not measurements of any real player. */
+BTP.phys = (function () {
+  var RHO = 1.2, RAD = 0.0366, MASS = 0.145, AREA = Math.PI * RAD * RAD, G = 9.81, CD = 0.35;
+  var MPH = 0.44704;
+  // spin axis (x = backspin(+) / topspin(-), y = sidespin) and rate in rpm, for a right-hander. A left-hander mirrors the side spin.
+  var SPIN = {
+    four_seam: [1.0, 0.05, 2300], two_seam: [0.80, -0.45, 2100], sinker: [0.45, -0.60, 2000], cutter: [0.90, 0.40, 2400],
+    slider: [0.15, 0.95, 2500], sweeper: [0.0, 1.0, 2500], curveball: [-1.0, 0.25, 2700], changeup: [0.40, -0.50, 1700],
+    splitter: [-0.25, -0.10, 1100]
+  };
+  function spinFor(key, move, lefty) {
+    var s = SPIN[key];
+    if (!s) { var d = move ? move[0] : 0.35, sw = move ? move[1] : 0; s = [BTP.clamp(0.9 - 1.7 * d, -1, 1), -sw, 2200]; }
+    // for a right-hander a positive "sweep" runs in toward first base (+x), which needs a negative y spin; a left-hander is the mirror image
+    var sy = lefty ? -s[1] : s[1];
+    var rad = s[2] * Math.PI * 2 / 60, n = Math.hypot(s[0], sy) || 1;
+    return [rad * s[0] / n, rad * sy / n, 0];
+  }
+  function cl(S) { return 1 / (2 + 1 / Math.max(S, 1e-4)); }
+  function accel(v, w, a) {
+    var sp = Math.hypot(v[0], v[1], v[2]) || 1e-6;
+    var k = 0.5 * RHO * AREA / MASS;
+    var ax = -k * CD * sp * v[0], ay = -k * CD * sp * v[1] - G, az = -k * CD * sp * v[2];
+    var wm = Math.hypot(w[0], w[1], w[2]);
+    if (wm > 1e-6) {
+      var S = RAD * wm / sp, cx = w[1] * v[2] - w[2] * v[1], cy = w[2] * v[0] - w[0] * v[2], cz = w[0] * v[1] - w[1] * v[0];
+      var f = k * cl(S) * sp * sp / (wm * sp);          // 0.5 rho A Cl v^2 * (spin x v) / (|spin| |v|), divided by the mass
+      ax += f * cx; ay += f * cy; az += f * cz;
+    }
+    a[0] = ax; a[1] = ay; a[2] = az;
+  }
+  // fly the ball (RK4) until it reaches z = stopZ; returns samples and the time it crossed z = 0
+  function fly(p0, v0, w, stopZ, dt) {
+    var p = p0.slice(), v = v0.slice(), t = 0, out = [[0, p[0], p[1], p[2]]], tPlate = null;
+    var a1 = [0, 0, 0], a2 = [0, 0, 0], a3 = [0, 0, 0], a4 = [0, 0, 0];
+    for (var i = 0; i < 4000; i++) {
+      var pz = p[2];
+      accel(v, w, a1);
+      var v2 = [v[0] + a1[0] * dt / 2, v[1] + a1[1] * dt / 2, v[2] + a1[2] * dt / 2]; accel(v2, w, a2);
+      var v3 = [v[0] + a2[0] * dt / 2, v[1] + a2[1] * dt / 2, v[2] + a2[2] * dt / 2]; accel(v3, w, a3);
+      var v4 = [v[0] + a3[0] * dt, v[1] + a3[1] * dt, v[2] + a3[2] * dt]; accel(v4, w, a4);
+      for (var k = 0; k < 3; k++) {
+        p[k] += dt * (v[k] + 2 * v2[k] + 2 * v3[k] + v4[k]) / 6;
+        v[k] += dt * (a1[k] + 2 * a2[k] + 2 * a3[k] + a4[k]) / 6;
+      }
+      t += dt;
+      if (tPlate === null && p[2] <= 0) { var u = pz / (pz - p[2]); tPlate = t - dt + dt * u; }
+      out.push([t, p[0], p[1], p[2]]);
+      if (p[2] <= stopZ || p[1] < 0.03) break;
+    }
+    return { s: out, tPlate: tPlate, v: v };
+  }
+  function crossing(res) {                                         // the (x, y) where it crossed z = 0
+    var s = res.s;
+    for (var i = 1; i < s.length; i++) if (s[i][3] <= 0) {
+      var u = s[i - 1][3] / (s[i - 1][3] - s[i][3]);
+      return [s[i - 1][1] + (s[i][1] - s[i - 1][1]) * u, s[i - 1][2] + (s[i][2] - s[i - 1][2]) * u];
+    }
+    return null;
+  }
+  function launch(speed, az, el) { return [speed * Math.sin(az) * Math.cos(el), speed * Math.sin(el), -speed * Math.cos(az) * Math.cos(el)]; }
+  // choose the launch direction that sends this spinning ball through `target` = [x, y] on the plate plane
+  function solve(R, target, speed, w) {
+    var dx = target[0] - R[0], dy = target[1] - R[1], dz = -R[2];
+    var az = Math.atan2(dx, -dz), el = Math.atan2(dy, Math.hypot(dx, dz)) + 0.03, DT = 1 / 600, h = 0.002, res, e, it;
+    for (it = 0; it < 14; it++) {
+      res = fly(R, launch(speed, az, el), w, -0.6, DT);
+      var c = crossing(res); if (!c) { el += 0.03; continue; }              // it hit the ground first: aim higher
+      e = [c[0] - target[0], c[1] - target[1]];
+      if (Math.hypot(e[0], e[1]) < 0.002) break;
+      var ca = crossing(fly(R, launch(speed, az + h, el), w, -0.6, DT)), cb = crossing(fly(R, launch(speed, az, el + h), w, -0.6, DT));
+      if (!ca || !cb) { el += 0.01; continue; }
+      var j11 = (ca[0] - c[0]) / h, j21 = (ca[1] - c[1]) / h, j12 = (cb[0] - c[0]) / h, j22 = (cb[1] - c[1]) / h;
+      var det = j11 * j22 - j12 * j21; if (Math.abs(det) < 1e-9) break;
+      az -= (j22 * e[0] - j12 * e[1]) / det; el -= (-j21 * e[0] + j11 * e[1]) / det;
+    }
+    res = fly(R, launch(speed, az, el), w, -0.6, 1 / 600);
+    var c2 = crossing(res) || [NaN, NaN];
+    return { v0: launch(speed, az, el), samples: res.s, tPlate: res.tPlate, hit: c2, miss: Math.hypot(c2[0] - target[0], c2[1] - target[1]) };
+  }
+  // where the ball is t seconds after it left the hand
+  function at(path, t) {
+    var s = path.samples;
+    if (t <= 0) return { x: s[0][1], y: s[0][2], z: s[0][3] };
+    var lo = 0, hi = s.length - 1;
+    if (t >= s[hi][0]) return { x: s[hi][1], y: s[hi][2], z: s[hi][3] };
+    while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (s[mid][0] <= t) lo = mid; else hi = mid; }
+    var u = (t - s[lo][0]) / (s[hi][0] - s[lo][0]);
+    return { x: s[lo][1] + (s[hi][1] - s[lo][1]) * u, y: s[lo][2] + (s[hi][2] - s[lo][2]) * u, z: s[lo][3] + (s[hi][3] - s[lo][3]) * u };
+  }
+  function timeAtZ(path, z) {
+    var s = path.samples;
+    for (var i = 1; i < s.length; i++) if (s[i][3] <= z) { var u = (s[i - 1][3] - z) / (s[i - 1][3] - s[i][3]); return s[i - 1][0] + (s[i][0] - s[i - 1][0]) * u; }
+    return s[s.length - 1][0];
+  }
+  return { RAD: RAD, MPH: MPH, spinFor: spinFor, solve: solve, at: at, timeAtZ: timeAtZ, fly: fly, cl: cl, SPIN: SPIN, accel: accel };
+})();
+
+/* ---------------- the field, in the game's own units ----------------
+   The game's field plan (playview.py) is 400 x 400 "field pixels" with home plate at (200, 372). We map it to metres.
+   Out to the infield dirt it is exact (a base path is about 27.4 m); the outfield is stretched so the park feels big. */
+BTP.fieldToWorld = function (px, py) {
+  var x = px - 200, y = 372 - py, r = Math.hypot(x, y), ang = Math.atan2(x, y);
+  var m = r <= 100 ? r * 0.2884 : 28.84 + (r - 100) * 0.2884 * 1.45;
+  return { x: m * Math.sin(ang), z: m * Math.cos(ang) };
+};
+BTP.FENCE_R = 99.5;
+BTP.HEIGHT_PER_PX = 0.2;                                    // field-plan "arc height" pixels -> metres
+BTP.STAND = { '3B': [-40, 108], 'SS': [-17, 128], '2B': [17, 128], '1B': [42, 102],
+              'LF': [-28, 195], 'CF': [0, 205], 'RF': [28, 195] };
+BTP.INFIELD = { '3B': 1, 'SS': 1, '2B': 1, '1B': 1 };
+// where a fielder stands for a given shift (the same rules as playview.py), in world metres
+BTP.standWorld = function (pos, alignment, bats) {
+  var s = BTP.STAND[pos], a = s[0], r = s[1], inf = !!BTP.INFIELD[pos];
+  var pull = bats === 'R' ? -1 : 1;
+  if (alignment === 'pull') a += pull * (inf ? 7 : 9);
+  else if (alignment === 'oppo') a -= pull * (inf ? 7 : 9);
+  else if (alignment === 'infield_in' && inf) r *= 0.78;
+  else if (alignment === 'dp' && inf) { r *= 0.92; a *= 0.8; }
+  else if (alignment === 'no_doubles' && !inf) r += 28;
+  else if (alignment === 'bunt' && (pos === '1B' || pos === '3B')) r *= 0.7;
+  var rad = a * Math.PI / 180;
+  return BTP.fieldToWorld(200 + r * Math.sin(rad), 372 - r * Math.cos(rad));
+};
+BTP.BASES = [{ x: 0, z: 0 }, { x: 19.4, z: 19.4 }, { x: 0, z: 38.8 }, { x: -19.4, z: 19.4 }];
+
+/* ---------------- the strike zone, as a plane in front of the plate ---------------- */
+BTP.ZONE = { x0: -0.2159, x1: 0.2159, y0: 0.5, y1: 1.1, z: 0.0 };
+BTP.ROWS = ['hi', 'mid', 'lo'];
+BTP.cols = function (bats) { return bats === 'R' ? ['in', 'mid', 'out'] : ['out', 'mid', 'in']; };
+BTP.cellCenter = function (row, col) {                      // row 0 = high, col 0 = left on the screen
+  var Z = BTP.ZONE, cw = (Z.x1 - Z.x0) / 3, ch = (Z.y1 - Z.y0) / 3;
+  return { x: Z.x0 + cw * (col + 0.5), y: Z.y1 - ch * (row + 0.5), cw: cw, ch: ch };
+};
+BTP.courseCell = function (course, bats) {                  // "in_hi" -> {row, col}
+  var parts = course.split('_'), cols = BTP.cols(bats);
+  return { row: BTP.ROWS.indexOf(parts[1]), col: cols.indexOf(parts[0]) };
+};
+BTP.cellCourse = function (row, col, bats) { return BTP.cols(bats)[col] + '_' + BTP.ROWS[row]; };
+})();
+
+/* ===================================================================================
+   Part 2: the stadium itself (everything that never moves), painted once into an off-screen canvas
+   whenever the window changes size. Sky, stands, crowd, wall, mowed grass, infield dirt, chalk lines.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP, V = BTP.V, CAM = BTP.CAM, P = BTP.P, polyPath = BTP.polyPath, rgb = BTP.rgb, hex = BTP.hex;
+var R = BTP.FENCE_R, D2R = Math.PI / 180;
+
+function fill(ctx, pts, color, seam) {
+  if (!polyPath(ctx, pts)) return;
+  ctx.fillStyle = color; ctx.fill();
+  if (seam) { ctx.lineWidth = 0.8; ctx.strokeStyle = color; ctx.stroke(); }     // hides hairline cracks between neighbours
+}
+// a quad swept around the plate: from radius r0/height y0 to radius r1/height y1, over the angles t0..t1 (degrees)
+function ringQuad(r0, y0, r1, y1, t0, t1) {
+  var a = t0 * D2R, b = t1 * D2R;
+  return [[r0 * Math.sin(a), y0, r0 * Math.cos(a)], [r0 * Math.sin(b), y0, r0 * Math.cos(b)],
+          [r1 * Math.sin(b), y1, r1 * Math.cos(b)], [r1 * Math.sin(a), y1, r1 * Math.cos(a)]];
+}
+function groundLine(ctx, x0, z0, x1, z1, w, color, y) {
+  var dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz) || 1, nx = -dz / L * w / 2, nz = dx / L * w / 2;
+  fill(ctx, [[x0 + nx, y || 0.01, z0 + nz], [x1 + nx, y || 0.01, z1 + nz], [x1 - nx, y || 0.01, z1 - nz], [x0 - nx, y || 0.01, z0 - nz]], color, true);
+}
+function circle(cx, cz, r, n, y) {
+  var pts = [];
+  for (var i = 0; i < n; i++) { var a = i / n * Math.PI * 2; pts.push([cx + r * Math.cos(a), y || 0, cz + r * Math.sin(a)]); }
+  return pts;
+}
+
+BTP.buildScene = function (W, H, dpr) {
+  var cv = document.createElement('canvas');
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  var ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var rnd = BTP.rng(20261009), i, t;
+
+  /* ---- sky ---- */
+  var sky = ctx.createLinearGradient(0, 0, 0, V.hy);
+  sky.addColorStop(0, '#3f86cf'); sky.addColorStop(0.6, '#86bfe9'); sky.addColorStop(1, '#d2e9f6');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, V.hy + 4);
+  // a few soft clouds
+  for (i = 0; i < 7; i++) {
+    var cxp = rnd() * W, cyp = (0.03 + rnd() * 0.18) * V.hy * 2.2, cw = (0.06 + rnd() * 0.12) * W;
+    var g = ctx.createRadialGradient(cxp, cyp, 2, cxp, cyp, cw);
+    g.addColorStop(0, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.save(); ctx.translate(cxp, cyp); ctx.scale(1, 0.28); ctx.translate(-cxp, -cyp);
+    ctx.beginPath(); ctx.arc(cxp, cyp, cw, 0, 7); ctx.fill(); ctx.restore();
+  }
+
+  /* ---- the ground first (everything beyond the wall gets covered by the wall and stands) ---- */
+  ctx.fillStyle = '#2d7a44'; ctx.fillRect(0, V.hy, W, H - V.hy);
+  var stripeA = hex('#2f8a47'), stripeB = hex('#3a9a52'), bandW = 6.5;
+  for (var r0 = 1, k = 0; r0 < R; r0 += bandW, k++) {
+    var col = rgb(k % 2 ? stripeA : stripeB, 1);
+    for (t = -100; t < 100; t += 4) fill(ctx, ringQuad(r0, 0, Math.min(R, r0 + bandW), 0, t, t + 4), col, true);
+  }
+  // warning track along the wall
+  for (t = -100; t < 100; t += 3) fill(ctx, ringQuad(R - 6, 0.004, R, 0.004, t, t + 3), '#a9784a', true);
+
+  /* ---- infield dirt (clipped to the corridor along the lines, so foul ground stays grass) ---- */
+  var dirt = hex('#b88049'), dirtLight = hex('#c8915a');
+  ctx.save();
+  if (polyPath(ctx, [[-8, 0.004, -8], [8, 0.004, -8], [8, 0.004, 0], [68, 0.004, 60], [-68, 0.004, 60], [-8, 0.004, 0]])) {
+    ctx.clip();
+    fill(ctx, circle(0, 18.44, 29, 56, 0.006), rgb(dirt), true);
+    fill(ctx, circle(0, 0, 8.4, 40, 0.007), rgb(dirt), true);
+    // the grass inside the diamond
+    fill(ctx, [[0, 0.008, 3.4], [16, 0.008, 19.4], [0, 0.008, 35.4], [-16, 0.008, 19.4]], '#348f4d', true);
+  }
+  ctx.restore();
+  // lighter dirt around home and the bases, and the pitcher's mound
+  fill(ctx, circle(0, 0, 4.2, 32, 0.009), rgb(dirtLight), true);
+  [[19.4, 19.4], [0, 38.8], [-19.4, 19.4]].forEach(function (b) { fill(ctx, circle(b[0], b[1], 2.7, 20, 0.009), rgb(dirt), true); });
+  fill(ctx, circle(0, 18.44, 2.9, 28, 0.01), rgb(dirt), true);
+  fill(ctx, circle(0, 18.44, 2.0, 24, 0.26), rgb(dirtLight), true);
+  fill(ctx, [[-0.3, 0.27, 18.37], [0.3, 0.27, 18.37], [0.3, 0.27, 18.53], [-0.3, 0.27, 18.53]], '#f4efe2', true);
+  // speckle: little tufts and bits of dirt so the foreground does not look like a flat colour
+  for (i = 0; i < 900; i++) {
+    var gx = (rnd() - 0.5) * 30, gz = -2 + rnd() * 30, onDirt = (gz < 9 + Math.abs(gx) * 0.2) && Math.hypot(gx, gz) < 9;
+    var pp = P(gx, 0.01, gz); if (!pp) continue;
+    ctx.fillStyle = onDirt ? (rnd() < 0.5 ? 'rgba(120,76,36,.35)' : 'rgba(225,185,130,.28)') : (rnd() < 0.5 ? 'rgba(10,60,25,.22)' : 'rgba(150,215,150,.14)');
+    var sz = Math.max(0.6, pp.s * (0.03 + rnd() * 0.05));
+    ctx.fillRect(pp.x, pp.y, sz * 2.2, sz);
+  }
+
+  /* ---- chalk: foul lines, batter's boxes, the plate, the bases ---- */
+  var chalk = '#f6f2e6';
+  groundLine(ctx, 0, 0, R * Math.sin(45 * D2R), R * Math.cos(45 * D2R), 0.14, chalk);
+  groundLine(ctx, 0, 0, -R * Math.sin(45 * D2R), R * Math.cos(45 * D2R), 0.14, chalk);
+  [-1, 1].forEach(function (s) {
+    var xa = s * 0.36, xb = s * 1.52;
+    groundLine(ctx, xa, -0.95, xb, -0.95, 0.07, chalk); groundLine(ctx, xa, 0.95, xb, 0.95, 0.07, chalk);
+    groundLine(ctx, xa, -0.95, xa, 0.95, 0.07, chalk); groundLine(ctx, xb, -0.95, xb, 0.95, 0.07, chalk);
+  });
+  fill(ctx, [[-0.215, 0.015, 0], [0.215, 0.015, 0], [0.215, 0.015, 0.215], [0, 0.015, 0.43], [-0.215, 0.015, 0.215]], '#fbf8ee', true);
+  [[19.4, 19.4], [0, 38.8], [-19.4, 19.4]].forEach(function (b) {
+    fill(ctx, [[b[0] - 0.3, 0.05, b[1]], [b[0], 0.05, b[1] - 0.3], [b[0] + 0.3, 0.05, b[1]], [b[0], 0.05, b[1] + 0.3]], '#fbf8ee', true);
+  });
+
+  /* ---- the wall, with advertising panels ---- */
+  var ads = ['#c93a34', '#2a63c9', '#e8c53a', '#f3f3f3', '#2f9a64', '#e7822c'];
+  for (t = -100; t < 100; t += 2) {
+    fill(ctx, ringQuad(R, 0, R, 2.6, t, t + 2), '#1b4a2e', true);
+    var blk = Math.floor((t + 100) / 8);
+    if (((t + 100) / 2) % 4 < 3.1) fill(ctx, ringQuad(R - 0.05, 0.45, R - 0.05, 2.15, t, t + 2), rgb(hex(ads[blk % ads.length]), 0.82), true);
+    fill(ctx, ringQuad(R - 0.04, 2.6, R - 0.04, 2.85, t, t + 2), '#f2c230', true);
+  }
+  // foul poles
+  [-45, 45].forEach(function (a) {
+    var x = R * Math.sin(a * D2R), z = R * Math.cos(a * D2R);
+    fill(ctx, [[x - 0.12, 0, z], [x + 0.12, 0, z], [x + 0.12, 21, z], [x - 0.12, 21, z]], '#f2c230', true);
+  });
+
+  /* ---- the stands: two tiers, a concourse, a roof edge, light towers, and a crowd ---- */
+  var tiers = [{ r0: R + 1.5, y0: 2.9, r1: R + 13, y1: 10.5, base: '#2a427a' },
+               { r0: R + 15, y0: 12, r1: R + 28, y1: 21, base: '#31345f' }];
+  tiers.forEach(function (tr, ti) {
+    for (t = -100; t < 100; t += 2) {
+      var sec = Math.floor((t + 100) / 10) % 3, tone = 0.86 + sec * 0.07;
+      fill(ctx, ringQuad(tr.r0, tr.y0, tr.r1, tr.y1, t, t + 2), rgb(hex(tr.base), tone), true);
+    }
+  });
+  fill(ctx, ringQuad(R + 13, 10.5, R + 15, 12, -100, 100), '#1a1f2c');
+  for (t = -100; t < 100; t += 4) {
+    fill(ctx, ringQuad(R + 13, 10.5, R + 15, 12, t, t + 4), '#202738', true);
+    fill(ctx, ringQuad(R + 28, 21, R + 31, 24.5, t, t + 4), '#12161f', true);     // the roof's edge
+    fill(ctx, ringQuad(R + 31, 24.5, R + 31, 26.5, t, t + 4), '#222a3c', true);
+  }
+  // the crowd
+  var crowd = ['#d9453d', '#f2f2f2', '#2f6fd6', '#f1c84a', '#e08a4a', '#7fb2e6', '#1c1f2a', '#d8b08c', '#a05a3a'];
+  tiers.forEach(function (tr) {
+    for (i = 0; i < 2600; i++) {
+      var th = -100 + rnd() * 200, u = rnd(), rr = BTP.lerp(tr.r0, tr.r1, u), yy = BTP.lerp(tr.y0, tr.y1, u) + 0.35;
+      var q = P(rr * Math.sin(th * D2R), yy, rr * Math.cos(th * D2R)); if (!q) continue;
+      var sz = Math.max(0.9, q.s * 0.55);
+      ctx.fillStyle = rgb(hex(crowd[Math.floor(rnd() * crowd.length)]), 0.55 + rnd() * 0.45, 0.9);
+      ctx.fillRect(q.x, q.y - sz, sz * 0.8, sz);
+    }
+  });
+  // light towers
+  [-38, 38].forEach(function (a) {
+    var x = (R + 20) * Math.sin(a * D2R), z = (R + 20) * Math.cos(a * D2R);
+    fill(ctx, [[x - 0.7, 0, z], [x + 0.7, 0, z], [x + 0.5, 36, z], [x - 0.5, 36, z]], '#2c313c', true);
+    fill(ctx, [[x - 6, 36, z], [x + 6, 36, z], [x + 6, 41, z], [x - 6, 41, z]], '#d8dde6', true);
+    for (var lx = -5; lx <= 5; lx += 2.5) for (var ly = 36.8; ly < 41; ly += 1.6) {
+      var lp = P(x + lx, ly, z); if (lp) { ctx.fillStyle = 'rgba(255,255,230,.9)'; ctx.beginPath(); ctx.arc(lp.x, lp.y, Math.max(1, lp.s * 0.4), 0, 7); ctx.fill(); }
+    }
+  });
+
+  /* ---- light and air ---- */
+  var haze = ctx.createLinearGradient(0, V.hy - 0.10 * H, 0, V.hy + 0.22 * H);
+  haze.addColorStop(0, 'rgba(210,232,248,0)'); haze.addColorStop(0.35, 'rgba(210,232,248,.30)'); haze.addColorStop(1, 'rgba(210,232,248,0)');
+  ctx.fillStyle = haze; ctx.fillRect(0, V.hy - 0.10 * H, W, 0.32 * H);
+  // warm sun from the upper left, cooler shade at the right
+  var sun = ctx.createLinearGradient(0, 0, W, H * 0.8);
+  sun.addColorStop(0, 'rgba(255,236,190,.20)'); sun.addColorStop(0.5, 'rgba(255,255,255,0)'); sun.addColorStop(1, 'rgba(10,20,50,.16)');
+  ctx.fillStyle = sun; ctx.fillRect(0, 0, W, H);
+  // the near ground is in the catcher's own shadow
+  var near = ctx.createLinearGradient(0, H * 0.78, 0, H);
+  near.addColorStop(0, 'rgba(0,0,0,0)'); near.addColorStop(1, 'rgba(0,0,0,.28)');
+  ctx.fillStyle = near; ctx.fillRect(0, H * 0.78, W, H * 0.22);
+  return cv;
+};
+
+/* ---- the catcher's mask: the steel cage seen from the inside, painted once ----
+   The opening is narrow, like peering out of a mask, and the bars come in from every side. They sit toward the edges, where
+   the batter, the stands and the foul ground are; the middle (the pitcher, the release point and the line of the pitch) stays clear. */
+BTP.buildMask = function (W, H, dpr) {
+  var cv = document.createElement('canvas');
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  var ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // the lens: darker toward the edges, clear in the middle
+  var v = ctx.createRadialGradient(W / 2, H * 0.50, Math.min(W, H) * 0.30, W / 2, H * 0.5, Math.max(W, H) * 0.66);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(0.6, 'rgba(0,0,0,.26)'); v.addColorStop(1, 'rgba(0,0,0,.74)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+
+  // the padded frame: a dark rounded window with a smaller opening than before
+  var ox = W * 0.050, oy = H * 0.052, ow = W - ox * 2, oh = H - oy * 2, rad = Math.min(W, H) * 0.24;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.moveTo(ox + rad, oy);
+  ctx.arcTo(ox + ow, oy, ox + ow, oy + oh, rad); ctx.arcTo(ox + ow, oy + oh, ox, oy + oh, rad);
+  ctx.arcTo(ox, oy + oh, ox, oy, rad); ctx.arcTo(ox, oy, ox + ow, oy, rad);
+  ctx.closePath();
+  var pad = ctx.createLinearGradient(0, 0, 0, H);
+  pad.addColorStop(0, 'rgba(14,15,19,.98)'); pad.addColorStop(0.5, 'rgba(10,11,14,.97)'); pad.addColorStop(1, 'rgba(14,15,19,.98)');
+  ctx.fillStyle = pad; ctx.fill('evenodd');
+  ctx.restore();
+  // a soft shadow just inside the edge of the opening, as if the padding were a little in front of the eyes
+  ctx.save();
+  try { ctx.filter = 'blur(' + Math.max(6, W * 0.009) + 'px)'; } catch (e) {}
+  ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = Math.max(10, W * 0.016);
+  ctx.beginPath();
+  ctx.moveTo(ox + rad, oy); ctx.arcTo(ox + ow, oy, ox + ow, oy + oh, rad); ctx.arcTo(ox + ow, oy + oh, ox, oy + oh, rad);
+  ctx.arcTo(ox, oy + oh, ox, oy, rad); ctx.arcTo(ox, oy, ox + ow, oy, rad); ctx.closePath(); ctx.stroke();
+  ctx.restore();
+
+  // steel bars. They are close to the eye, so they are soft (out of focus) and slightly see-through.
+  function bar(pts, w, alpha) {
+    ctx.save();
+    try { ctx.filter = 'blur(' + Math.max(0.8, w * 0.20) + 'px)'; } catch (e) {}
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(8,9,12,' + alpha + ')'; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.bezierCurveTo(pts[1][0], pts[1][1], pts[2][0], pts[2][1], pts[3][0], pts[3][1]); ctx.stroke();
+    ctx.strokeStyle = 'rgba(150,160,175,' + (alpha * 0.30) + ')'; ctx.lineWidth = Math.max(1, w * 0.20);
+    ctx.beginPath(); ctx.moveTo(pts[0][0] - w * 0.2, pts[0][1]); ctx.bezierCurveTo(pts[1][0] - w * 0.2, pts[1][1], pts[2][0] - w * 0.2, pts[2][1], pts[3][0] - w * 0.2, pts[3][1]); ctx.stroke();
+    ctx.restore();
+  }
+  var bw = Math.max(6, W * 0.0105);
+  [-1, 1].forEach(function (s) {
+    var x = function (f) { return s < 0 ? W * f : W * (1 - f); };
+    bar([[x(0.085), -4], [x(0.040), H * 0.30], [x(0.040), H * 0.70], [x(0.085), H + 4]], bw * 1.7, 0.94);       // outer bar
+    bar([[x(0.150), -4], [x(0.108), H * 0.30], [x(0.108), H * 0.70], [x(0.150), H + 4]], bw * 1.2, 0.72);       // middle bar
+    bar([[x(0.215), -4], [x(0.178), H * 0.30], [x(0.178), H * 0.70], [x(0.215), H + 4]], bw * 0.8, 0.46);       // inner bar, fainter
+  });
+  bar([[-4, H * 0.085], [W * 0.30, H * 0.052], [W * 0.70, H * 0.052], [W + 4, H * 0.085]], bw * 1.7, 0.94);    // brow bar
+  bar([[-4, H * 0.165], [W * 0.30, H * 0.128], [W * 0.70, H * 0.128], [W + 4, H * 0.165]], bw * 0.9, 0.48);   // second brow bar, fainter
+  bar([[-4, H * 0.925], [W * 0.30, H * 0.962], [W * 0.70, H * 0.962], [W + 4, H * 0.925]], bw * 1.7, 0.94);   // chin bar
+
+  // a touch of lens glare from the sun in the upper left
+  var gl = ctx.createRadialGradient(W * 0.14, H * 0.1, 2, W * 0.14, H * 0.1, W * 0.18);
+  gl.addColorStop(0, 'rgba(255,244,214,.18)'); gl.addColorStop(1, 'rgba(255,244,214,0)');
+  ctx.fillStyle = gl; ctx.fillRect(0, 0, W, H);
+  return cv;
+};
+})();
+
+/* ===================================================================================
+   The pitcher's delivery: a big, exaggerated, comic-book-style full-body motion, made to look fast and a little scary from behind the plate.
+     1. He waits SIDEWAYS (chest turned away from home), calm, with a slow sway: the "tame" (tame = the wind-up that stores energy).
+     2. The lead knee goes up high, the hands rise, and the upper body twists back even further than the hips. He freezes there for a beat.
+     3. A long, low stride, with the chest still closed (hips and shoulders separate).
+     4. Then everything turns in order, fast: hips, then chest, then shoulders, then the elbow leads the arm to the release.
+     5. A big follow-through: the upper body folds over the front leg and the back leg swings through.
+   Calm, then a snap, then a big sweep. It is an original, deliberately exaggerated animation, not a reconstruction of any real pitcher.
+
+   The body is a skeleton with real segment lengths; the feet are placed and the knees and elbows are solved with two-bone IK, so
+   the limbs stay connected and never fold the wrong way. A left-hander is the same motion mirrored (the stride foot, the throwing arm and the
+   release point all swap sides together).
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP;
+
+/* ---- time line (seconds): when each phase of the delivery happens ---- */
+var T = BTP.DELIVERY = {
+  set: 0.45,        // waiting, sideways, a slow sway
+  lift: 1.10,       // the knee goes up high and the hands rise
+  hold: 1.35,       // the freeze at the top
+  plant: 1.55,      // the stride foot lands (a long, quick stride)
+  release: 1.78,    // the ball leaves the hand
+  end: 2.40         // the follow-through has finished
+};
+
+/* ---- tiny helpers ---- */
+function vadd(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function vsub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function vmul(a, k) { return [a[0] * k, a[1] * k, a[2] * k]; }
+function vlen(a) { return Math.hypot(a[0], a[1], a[2]); }
+function vnorm(a) { var l = vlen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+function vdot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function ease(kind, u) { u = u < 0 ? 0 : (u > 1 ? 1 : u); return kind === 'in' ? u * u : (kind === 'out' ? 1 - (1 - u) * (1 - u) : u * u * (3 - 2 * u)); }
+// a value that moves through keyframes [[time, value, easeOfTheSegmentEndingHere?], ...]; values are numbers or arrays
+function keyed(keys, t) {
+  if (t <= keys[0][0]) return keys[0][1];
+  for (var i = 1; i < keys.length; i++) {
+    if (t <= keys[i][0]) {
+      var a = keys[i - 1], b = keys[i], u = ease(b[2] || 'ss', (t - a[0]) / (b[0] - a[0]));
+      if (typeof a[1] === 'number') return a[1] + (b[1] - a[1]) * u;
+      return [a[1][0] + (b[1][0] - a[1][0]) * u, a[1][1] + (b[1][1] - a[1][1]) * u, a[1][2] + (b[1][2] - a[1][2]) * u];
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+// two-bone IK that also returns the (possibly shortened) end, so a foot never floats away from the leg
+function ik(root, end, l1, l2, bend) {
+  var d = vsub(end, root), L = vlen(d), u = vnorm(d);
+  if (L > l1 + l2 - 0.004) { L = l1 + l2 - 0.004; end = vadd(root, vmul(u, L)); }
+  var a = (l1 * l1 - l2 * l2 + L * L) / (2 * L), h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+  var p = vsub(bend, vmul(u, vdot(bend, u))); p = vnorm(p);
+  return { mid: vadd(vadd(root, vmul(u, a)), vmul(p, h)), end: end };
+}
+function rotY(v, a) { var c = Math.cos(a), s = Math.sin(a); return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]; }
+
+/* ---- the keyframes (for a right-hander, in his own frame: x = his right, y = up, z = toward home plate) ----
+   hip / sho are turn angles in radians: + means the chest is turned toward his right (away from home, "closed"), - means opened toward home. */
+var K = {
+  // pelvis position: a little sway, up on the lift, back over the rear leg for the freeze, then a long drop and drive forward
+  py: [[0, 0.96], [0.22, 0.99, 'ss'], [T.set, 0.97], [0.85, 1.04], [T.lift, 1.07], [T.hold, 1.08], [T.plant, 0.84, 'in'], [T.release, 0.88], [T.end, 0.62, 'out']],
+  pz: [[0, 0], [T.set, 0], [T.lift, -0.12, 'ss'], [T.hold, -0.16], [T.plant, 0.78, 'in'], [T.release, 0.96, 'out'], [T.end, 1.30]],
+  // hips turn first, then the shoulders (which also wound up further back than the hips during the freeze)
+  hip: [[0, 1.25], [T.set, 1.25], [T.lift, 1.38, 'ss'], [T.hold, 1.38], [1.50, 1.30], [T.release - 0.07, -0.55, 'in'], [T.end, -0.95, 'out']],
+  sho: [[0, 1.30], [T.set, 1.30], [T.lift, 1.60, 'ss'], [T.hold, 1.80, 'ss'], [T.plant + 0.03, 1.80], [T.release - 0.04, -0.40, 'in'], [T.release + 0.02, -0.55], [T.end, -1.30, 'out']],
+  // the upper body leans back during the freeze, then folds forward over the front leg
+  lean: [[0, 0.02], [T.set, 0.02], [T.lift, -0.20, 'ss'], [T.hold, -0.26], [T.plant, 0.12, 'in'], [T.release, 0.42, 'in'], [T.end, 1.10, 'out']],
+  // the feet. Sideways stance: the lead foot toward home, the back foot behind it.
+  lead: [[0, [-0.04, 0.05, 0.24]], [T.set, [-0.04, 0.05, 0.24]], [0.80, [-0.04, 0.55, 0.30], 'ss'], [T.lift, [-0.03, 0.84, 0.16], 'ss'],
+         [T.hold, [-0.03, 0.84, 0.16]], [1.45, [-0.12, 0.55, 0.85], 'in'], [T.plant, [-0.27, 0.05, 1.48], 'in'], [T.end, [-0.27, 0.05, 1.48]]],
+  back: [[0, [0.12, 0.05, -0.18]], [T.hold, [0.12, 0.05, -0.18]], [T.plant, [0.14, 0.05, 0.14], 'in'], [T.release, [0.16, 0.10, 0.32]],
+         [1.98, [0.22, 0.60, 0.98], 'ss'], [T.end, [0.22, 0.08, 1.30], 'out']],
+  // the throwing hand, relative to its shoulder, in the shoulder frame (right, up, forward). It goes up with the knee, then back, then the elbow leads.
+  hand: [[0, [0.04, -0.30, 0.30]], [T.set, [0.04, -0.30, 0.30]], [0.80, [0.03, 0.22, 0.26], 'ss'], [T.lift, [0.00, 0.62, 0.14], 'ss'], [T.hold, [0.00, 0.62, 0.14]],
+         [1.46, [0.22, 0.12, -0.36], 'ss'], [T.plant + 0.02, [0.56, 0.06, -0.58], 'ss'], [T.release - 0.07, [0.46, 0.16, -0.40], 'ss'],
+         [T.release, [0.08, 0.68, 0.34], 'in'], [1.98, [-0.22, -0.35, 0.50], 'out'], [T.end, [-0.30, -0.55, 0.30]]],
+  glove: [[0, [-0.04, -0.30, 0.30]], [T.set, [-0.04, -0.30, 0.30]], [0.80, [-0.03, 0.22, 0.26], 'ss'], [T.lift, [-0.02, 0.62, 0.14], 'ss'], [T.hold, [-0.02, 0.62, 0.14]],
+          [1.46, [-0.22, 0.05, 0.55], 'ss'], [T.plant + 0.02, [-0.20, 0.10, 0.66], 'ss'], [T.release, [-0.12, 0.00, 0.46]], [1.98, [-0.05, -0.35, 0.25], 'ss'], [T.end, [-0.05, -0.35, 0.25]]],
+  cock: [[0, 0], [1.40, 0, 'ss'], [1.60, 1, 'ss'], [T.release - 0.07, 1], [T.release, 0, 'in'], [T.end, 0]]
+};
+
+// the delivery at time t (seconds since the motion started) as joints in the pitcher's own frame
+BTP.deliver = function (t, lefty, idle) {
+  var br = idle ? 0.008 * Math.sin(idle * 2.2) : 0;           // a slow breath while he waits
+  var py = keyed(K.py, t) + br, pz = keyed(K.pz, t), hy = keyed(K.hip, t), sy = keyed(K.sho, t), lean = keyed(K.lean, t);
+  var pel = [0, py, pz];
+  var aH = rotY([1, 0, 0], hy), aS = rotY([1, 0, 0], sy), fS = rotY([0, 0, 1], sy);
+  var up = [0, 1, 0];
+  var trunk = vadd(vmul(up, Math.cos(lean)), vmul(fS, Math.sin(lean)));            // the spine, tilted forward over the lead leg
+  var fT = vsub(vmul(fS, Math.cos(lean)), vmul(up, Math.sin(lean)));
+  var chest = vadd(pel, vmul(trunk, 0.50)), neck = vadd(chest, vmul(trunk, 0.10));
+  var head = vadd(vadd(chest, vmul(trunk, 0.27)), vmul(fT, 0.04));
+  var shL = vsub(vadd(chest, vmul(trunk, -0.04)), vmul(aS, 0.21)), shR = vadd(vadd(chest, vmul(trunk, -0.04)), vmul(aS, 0.21));
+  var hiL = vsub(pel, vmul(aH, 0.10)), hiR = vadd(pel, vmul(aH, 0.10));
+  function inFrame(o) { return vadd(vadd(vmul(aS, o[0]), vmul(trunk, o[1])), vmul(fT, o[2])); }
+  var hR = vadd(shR, inFrame(keyed(K.hand, t))), hL = vadd(shL, inFrame(keyed(K.glove, t)));
+  var cock = keyed(K.cock, t);
+  var bendR = vnorm(vadd(vmul(inFrame([1, 0.35, -0.35]), cock), vmul(inFrame([0.45, -0.85, 0.25]), 1 - cock)));
+  var lead = ik(hiL, keyed(K.lead, t), 0.49, 0.49, [0, 0.15, 1]), back = ik(hiR, keyed(K.back, t), 0.49, 0.49, [0, 0.15, 1]);
+  var armR = ik(shR, hR, 0.31, 0.30, bendR), armL = ik(shL, hL, 0.31, 0.30, vnorm(inFrame([-0.6, -0.7, 0.1])));
+  var J = { pel: pel, ch: chest, neck: neck, head: head, shL: shL, shR: shR, hiL: hiL, hiR: hiR,
+            knL: lead.mid, knR: back.mid, anL: lead.end, anR: back.end, elL: armL.mid, elR: armR.mid, haL: armL.end, haR: armR.end, glove: 'L' };
+  if (lefty) Object.keys(J).forEach(function (k) { var v = J[k]; if (v && v.length === 3 && typeof v[0] === 'number') J[k] = [-v[0], v[1], v[2]]; });
+  return J;
+};
+
+// where the ball leaves the hand, in world coordinates (the rubber is at z = 18.44 on a mound 0.25 m high)
+BTP.releasePoint = function (lefty) {
+  var J = BTP.deliver(T.release, lefty, 0);
+  return { x: -J.haR[0], y: 0.25 + J.haR[1], z: 18.44 - J.haR[2] };         // he faces the camera, so his right is world -x
+};
+})();
+
+/* ===================================================================================
+   Part 3: the things that move. Players are built from a skeleton (joints in 3D, solved with a tiny two-bone IK) and drawn as
+   rounded limbs that get smaller with distance. Plus the ball, its shadow, the catcher's mitt, and the strike-zone overlay.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP, V = BTP.V, CAM = BTP.CAM, P = BTP.P, polyPath = BTP.polyPath, rgb = BTP.rgb, hex = BTP.hex;
+var clamp = BTP.clamp, lerp = BTP.lerp, ease = BTP.ease;
+
+/* ---------- tiny vector helpers ---------- */
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function mul(a, k) { return [a[0] * k, a[1] * k, a[2] * k]; }
+function len(a) { return Math.hypot(a[0], a[1], a[2]); }
+function norm(a) { var l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+// two-bone IK: the middle joint (knee / elbow) for a limb from `root` to `end`; `bend` says which way the joint points
+function ik2(root, end, l1, l2, bend) {
+  var d = sub(end, root), L = len(d), u = norm(d);
+  if (L > l1 + l2 - 0.005) { L = l1 + l2 - 0.005; end = add(root, mul(u, L)); }
+  var a = (l1 * l1 - l2 * l2 + L * L) / (2 * L), h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+  var p = sub(bend, mul(u, dot(bend, u)));
+  p = norm(p);
+  return add(add(root, mul(u, a)), mul(p, h));
+}
+
+/* ---------- poses: joints in the player's own frame (x = his right, y = up, z = the way he faces) ---------- */
+function body(o) {
+  var pel = o.pel, lean = o.lean || 0, tw = o.twist || 0;
+  var ch = [pel[0] + (o.sway || 0), pel[1] + 0.50 * Math.cos(lean), pel[2] + 0.50 * Math.sin(lean)];
+  var neck = [ch[0], ch[1] + 0.10, ch[2] + 0.03];
+  var head = [ch[0] + (o.headx || 0), ch[1] + 0.27, ch[2] + 0.07 + 0.05 * Math.sin(lean)];
+  var shw = 0.21, shL = [ch[0] - shw * Math.cos(tw), ch[1] - 0.05, ch[2] + shw * Math.sin(tw)],
+      shR = [ch[0] + shw * Math.cos(tw), ch[1] - 0.05, ch[2] - shw * Math.sin(tw)];
+  var hiL = [pel[0] - 0.10, pel[1], pel[2]], hiR = [pel[0] + 0.10, pel[1], pel[2]];
+  var anL = o.anL, anR = o.anR, haL = o.haL, haR = o.haR;
+  return {
+    pel: pel, ch: ch, neck: neck, head: head, shL: shL, shR: shR, hiL: hiL, hiR: hiR,
+    knL: ik2(hiL, anL, 0.46, 0.46, [0, 0.2, 1]), knR: ik2(hiR, anR, 0.46, 0.46, [0, 0.2, 1]),
+    anL: anL, anR: anR,
+    elL: ik2(shL, haL, 0.30, 0.29, o.bendL || [-0.5, -0.6, -0.2]), elR: ik2(shR, haR, 0.30, 0.29, o.bendR || [0.5, -0.6, -0.2]),
+    haL: haL, haR: haR, bat: o.bat || null, glove: o.glove || null
+  };
+}
+var POSE = {
+  stand: function () {
+    return body({ pel: [0, 0.95, 0], anL: [-0.13, 0.05, 0], anR: [0.13, 0.05, 0], haL: [-0.26, 0.9, 0.06], haR: [0.26, 0.9, 0.06] });
+  },
+  ready: function (bob) {               // a fielder set for the pitch: knees bent, glove low and out front
+    var b = bob || 0;
+    return body({ pel: [0, 0.80 + b, 0], lean: 0.38, anL: [-0.27, 0.05, 0.02], anR: [0.27, 0.05, -0.02],
+                  haL: [-0.24, 0.52, 0.42], haR: [0.2, 0.55, 0.36], glove: 'L' });
+  },
+  run: function (phase) {
+    var s = Math.sin(phase), c = Math.cos(phase);
+    return body({ pel: [0, 0.92 + 0.035 * Math.abs(c), 0], lean: 0.28,
+                  anL: [-0.12, 0.05 + Math.max(0, s) * 0.30, s * 0.50], anR: [0.12, 0.05 + Math.max(0, -s) * 0.30, -s * 0.50],
+                  haL: [-0.27, 1.02 - 0.05 * s, -s * 0.38], haR: [0.27, 1.02 + 0.05 * s, s * 0.38], bendL: [-0.4, -0.5, -0.8], bendR: [0.4, -0.5, -0.8] });
+  },
+  catchUp: function () {
+    return body({ pel: [0, 0.88, 0], lean: 0.1, anL: [-0.2, 0.05, 0], anR: [0.2, 0.05, 0],
+                  haL: [-0.2, 1.95, 0.32], haR: [0.2, 1.9, 0.3], glove: 'L' });
+  },
+  // the pitcher: u in 0..1 is the whole delivery (set, leg lift, stride, release at u = 0.72, follow through)
+  pitch: function (u, lefty) {
+    var sm = function (a, b) { return ease((u - a) / (b - a)); };
+    var forward = 0.62 * sm(0.45, 0.72) + 0.12 * sm(0.72, 1.0);
+    var lift = sm(0.28, 0.46) * (1 - sm(0.50, 0.62));
+    var drop = 0.10 * sm(0.45, 0.72);
+    var stride = sm(0.46, 0.72);
+    var pel = [0, 0.97 - drop, forward];
+    var anL = [-0.16, 0.05 + 0.58 * lift, stride * 1.05 + 0.25 * lift];            // the lead leg
+    var anR = [0.17, 0.05 + 0.10 * sm(0.66, 0.74) * (1 - sm(0.80, 1)), -0.02 + 0.55 * sm(0.78, 1.0)];   // the back leg drags, then comes around
+    var lean = 0.05 + 0.50 * sm(0.62, 0.78) - 0.12 * sm(0.9, 1);
+    var tmp = body({ pel: pel, lean: lean, anL: anL, anR: anR, haL: [0, 0, 0], haR: [0, 0, 0] });
+    var shR = tmp.shR, shL = tmp.shL;
+    // throwing arm: swings down, back, up and over the top. phi = 0 hangs, -90 reaches back, -180 straight up, -270 forward
+    var phi;
+    if (u < 0.30) phi = 52 * Math.PI / 180;
+    else if (u < 0.55) phi = lerp(52, -105, ease((u - 0.30) / 0.25)) * Math.PI / 180;
+    else if (u < 0.72) phi = lerp(-105, -246, ease((u - 0.55) / 0.17)) * Math.PI / 180;
+    else phi = lerp(-246, -330, ease((u - 0.72) / 0.22)) * Math.PI / 180;
+    var arm = u < 0.30 ? 0.44 : 0.58;
+    var dirv = [0.0, -Math.cos(phi), Math.sin(phi)];
+    var haR = [shR[0] + 0.05, shR[1] + arm * dirv[1], shR[2] + arm * dirv[2]];
+    if (u < 0.30) haR = [0.02, 1.28, 0.30 + 0.0];                                        // hands together at the chest
+    var haL = u < 0.30 ? [-0.02, 1.28, 0.30] : [-0.28, 1.30 + 0.12 * sm(0.46, 0.7), 0.40 + 0.45 * sm(0.40, 0.72)];
+    var J = body({ pel: pel, lean: lean, twist: -0.5 * sm(0.55, 0.72) + 0.3 * sm(0.72, 1), anL: anL, anR: anR, haL: haL, haR: haR,
+                   bendR: [0.3, 0.3, -0.9], glove: 'L' });
+    if (lefty) mirror(J);
+    return J;
+  },
+  // the batter, from behind. In his own frame he faces the plate (+z); his left shoulder points at the pitcher (-x).
+  batStance: function (bobble) {
+    var b = bobble || 0;
+    var hands = [0.18 + 0.02 * b, 1.48 + 0.035 * b, 0.12];                                 // the bat waggles while he waits on the pitch
+    return body({ pel: [0, 0.90, 0], lean: 0.12, twist: 0.0, anL: [-0.42, 0.05, 0.0], anR: [0.40, 0.05, 0.02],
+                  haL: add(hands, [-0.03, -0.01, 0.0]), haR: add(hands, [0.03, 0.01, 0.0]),
+                  bat: { grip: hands, dir: norm([-0.30 + 0.09 * b, 0.93, 0.16 - 0.06 * b]) } });
+  },
+  batSwing: function (u) {
+    var load = ease(u / 0.22);                           // a small step and load
+    var s = ease((u - 0.22) / 0.43);                     // the swing itself
+    var fin = ease((u - 0.65) / 0.35);                   // the finish
+    var grip, dir;
+    var g0 = [0.18, 1.48, 0.12], g1 = [0.24, 1.46, 0.0], g2 = [-0.02, 1.12, 0.60], g3 = [-0.30, 1.50, 0.34];
+    var d0 = norm([-0.30, 0.93, 0.16]), d1 = norm([0.10, 0.80, -0.55]), d2 = norm([-0.12, 0.10, 0.99]), d3 = norm([-0.75, 0.45, 0.45]);
+    if (u < 0.22) { grip = [lerp(g0[0], g1[0], load), lerp(g0[1], g1[1], load), lerp(g0[2], g1[2], load)]; dir = norm([lerp(d0[0], d1[0], load), lerp(d0[1], d1[1], load), lerp(d0[2], d1[2], load)]); }
+    else if (u < 0.65) { grip = [lerp(g1[0], g2[0], s), lerp(g1[1], g2[1], s), lerp(g1[2], g2[2], s)]; dir = norm([lerp(d1[0], d2[0], s), lerp(d1[1], d2[1], s), lerp(d1[2], d2[2], s)]); }
+    else { grip = [lerp(g2[0], g3[0], fin), lerp(g2[1], g3[1], fin), lerp(g2[2], g3[2], fin)]; dir = norm([lerp(d2[0], d3[0], fin), lerp(d2[1], d3[1], fin), lerp(d2[2], d3[2], fin)]); }
+    var step = 0.16 * ease(u / 0.25) * (1 - ease((u - 0.8) / 0.2));
+    return body({ pel: [0, 0.88, 0.06 * s], lean: 0.12 + 0.12 * s, twist: 0.85 * s - 0.2 * load, anL: [-0.42 - step, 0.05 + 0.05 * Math.sin(Math.min(1, u / 0.25) * Math.PI), 0.02 + 0.1 * s],
+                  anR: [0.40, 0.05, 0.02], haL: add(grip, [-0.03, -0.01, 0]), haR: add(grip, [0.03, 0.01, 0]),
+                  bat: { grip: grip, dir: dir } });
+  }
+};
+function mirror(J) {                                  // a left-hander: flip x only (the names keep their meaning)
+  Object.keys(J).forEach(function (k) { if (J[k] && J[k].length === 3 && typeof J[k][0] === 'number') J[k] = [-J[k][0], J[k][1], J[k][2]]; });
+}
+
+/* ---------- drawing a figure ---------- */
+var SKIN = hex('#e0b48e');
+var TEAM = { us: { jersey: hex('#2358c2'), pants: hex('#e7e9ee'), cap: hex('#17306e'), glove: hex('#6b4423'), shoe: hex('#1a1d26'), trim: hex('#f3f3f3') },
+             them: { jersey: hex('#c7352d'), pants: hex('#9aa3b2'), cap: hex('#8e1f1b'), glove: hex('#6b4423'), shoe: hex('#1a1d26'), trim: hex('#f3f3f3') } };
+BTP.TEAM = TEAM;
+
+function toWorld(J, yaw, bx, by, bz) {
+  var c = Math.cos(yaw), s = Math.sin(yaw), out = {};
+  Object.keys(J).forEach(function (k) {
+    var j = J[k];
+    if (j && j.length === 3 && typeof j[0] === 'number') out[k] = [bx + j[0] * c + j[2] * s, by + j[1], bz - j[0] * s + j[2] * c];
+  });
+  if (J.bat) {
+    var g = J.bat.grip, d = J.bat.dir;
+    var gw = [bx + g[0] * c + g[2] * s, by + g[1], bz - g[0] * s + g[2] * c];
+    var dw = [d[0] * c + d[2] * s, d[1], -d[0] * s + d[2] * c];
+    out.batA = gw; out.batB = add(gw, mul(dw, 0.88)); out.batC = add(gw, mul(dw, -0.12));
+  }
+  out.glove = J.glove; out.yawN = yaw;
+  return out;
+}
+
+function drawFigure(ctx, W3, team, opts) {
+  opts = opts || {};
+  var parts = [];
+  function limb(a, b, wm, col, order) {
+    var pa = P(a[0], a[1], a[2]), pb = P(b[0], b[1], b[2]);
+    if (!pa || !pb) return;
+    parts.push({ pa: pa, pb: pb, w: wm, col: col, d: (pa.d + pb.d) / 2 + (order || 0) });
+  }
+  var pants = team.pants, jersey = team.jersey;
+  limb(W3.hiL, W3.knL, 0.17, pants); limb(W3.knL, W3.anL, 0.125, pants);
+  limb(W3.hiR, W3.knR, 0.17, pants); limb(W3.knR, W3.anR, 0.125, pants);
+  var toeL = [W3.anL[0], W3.anL[1], W3.anL[2]], toeR = [W3.anR[0], W3.anR[1], W3.anR[2]];
+  var fw = [Math.sin(W3.yawN), 0, Math.cos(W3.yawN)];
+  limb(W3.anL, add(toeL, mul(fw, 0.22)), 0.10, team.shoe, -0.05); limb(W3.anR, add(toeR, mul(fw, 0.22)), 0.10, team.shoe, -0.05);
+  limb(W3.pel, W3.ch, 0.34, jersey, -0.02);
+  limb(W3.shL, W3.shR, 0.14, jersey, -0.03);
+  limb(W3.shL, W3.elL, 0.105, jersey); limb(W3.elL, W3.haL, 0.085, opts.sleeves ? jersey : SKIN);
+  limb(W3.shR, W3.elR, 0.105, jersey); limb(W3.elR, W3.haR, 0.085, opts.sleeves ? jersey : SKIN);
+  limb(W3.ch, W3.neck, 0.10, SKIN, -0.04);
+  if (W3.batA) limb(W3.batC, W3.batB, 0.07, hex('#d6ae72'), -0.2);
+  parts.sort(function (a, b) { return b.d - a.d; });
+  ctx.lineCap = 'round';
+  var bulk = opts.bulk || 1;
+  parts.forEach(function (p) {
+    var px = Math.max(1.2, p.w * bulk * (p.pa.s + p.pb.s) / 2);
+    ctx.strokeStyle = rgb(p.col, 0.55); ctx.lineWidth = px + Math.min(2, px * 0.14);
+    ctx.beginPath(); ctx.moveTo(p.pa.x, p.pa.y); ctx.lineTo(p.pb.x, p.pb.y); ctx.stroke();
+    ctx.strokeStyle = rgb(p.col, 1); ctx.lineWidth = px;
+    ctx.beginPath(); ctx.moveTo(p.pa.x, p.pa.y); ctx.lineTo(p.pb.x, p.pb.y); ctx.stroke();
+  });
+  // jersey stripe, gloves, head and cap on top
+  var h = P(W3.head[0], W3.head[1], W3.head[2]);
+  [['haL', 'L'], ['haR', 'R']].forEach(function (pair) {
+    var hp = P(W3[pair[0]][0], W3[pair[0]][1], W3[pair[0]][2]); if (!hp) return;
+    var isGlove = W3.glove === pair[1];
+    ctx.fillStyle = isGlove ? rgb(team.glove) : rgb(SKIN);
+    ctx.beginPath(); ctx.arc(hp.x, hp.y, Math.max(1.2, hp.s * (isGlove ? 0.115 : 0.05)), 0, 7); ctx.fill();
+    if (isGlove) { ctx.strokeStyle = rgb(team.glove, 0.5); ctx.lineWidth = 1; ctx.stroke(); }
+  });
+  if (h) {
+    var hr = h.s * 0.118;
+    ctx.fillStyle = rgb(opts.helmet ? team.cap : SKIN);
+    ctx.beginPath(); ctx.arc(h.x, h.y, hr, 0, 7); ctx.fill();
+    ctx.fillStyle = rgb(team.cap);                                        // the cap / helmet shell
+    ctx.beginPath(); ctx.arc(h.x, h.y, hr * 1.04, Math.PI * (opts.helmet ? 0.0 : 1.02), Math.PI * (opts.helmet ? 2.0 : 1.98)); ctx.closePath(); ctx.fill();
+    if (!opts.helmet) {
+      ctx.fillStyle = rgb(team.cap, 0.8);                                 // brim
+      var fwx = Math.sin(W3.yawN), fwz = Math.cos(W3.yawN);
+      var bx = h.x + hr * 0.2 * (fwx), by = h.y - hr * 0.1;
+      ctx.beginPath(); ctx.ellipse(bx, by, hr * 0.95, hr * 0.28, 0, 0, 7); ctx.fill();
+    } else {
+      ctx.fillStyle = rgb(team.cap, 0.7);                                 // the ear flap
+      ctx.beginPath(); ctx.ellipse(h.x + hr * (opts.flapSide || 0.0), h.y + hr * 0.25, hr * 0.5, hr * 0.62, 0, 0, 7); ctx.fill();
+    }
+  }
+}
+
+function shadowOf(ctx, x, z, height, y0) {
+  // the sun is high on the left, so shadows fall to the right and a little forward
+  var L = [0.55, 0.55];
+  var a = P(x - 0.3, y0 || 0, z), b = P(x + 0.3, y0 || 0, z);
+  var c = P(x + 0.3 + L[0] * height * 0.55, y0 || 0, z + L[1] * height * 0.55), d = P(x - 0.3 + L[0] * height * 0.55, y0 || 0, z + L[1] * height * 0.55);
+  if (!a || !b || !c || !d) return;
+  ctx.fillStyle = 'rgba(0,18,6,0.30)';
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.ellipse((c.x + d.x) / 2, (c.y + d.y) / 2, Math.abs(c.x - d.x) * 0.38, Math.abs(a.y - d.y) * 0.1 + 1, 0, 0, 7); ctx.fill();
+}
+
+function drawPlayer(ctx, p) {
+  // p: {x, z, y, yaw, J (local joints), team, opts}
+  var W3 = toWorld(p.J, p.yaw, p.x, p.y || 0, p.z);
+  shadowOf(ctx, p.x, p.z, 1.85, p.y || 0);
+  drawFigure(ctx, W3, p.team, p.opts);
+  return W3;
+}
+
+/* ---------- the ball ---------- */
+// b.trail is a short list of recent positions (newest last); they make the afterimage. The ball keeps its real size:
+// it only looks small far away and huge up close because of the perspective.
+function drawBall(ctx, b, o) {
+  o = o || {};
+  var r = o.radius || 0.052;
+  var sp = P(b.x, 0.02, b.z);
+  if (sp && b.y > 0.05) {
+    var sr = Math.max(1.5, r * sp.s * 1.1);
+    ctx.fillStyle = 'rgba(0,15,5,' + clamp(0.38 - b.y * 0.012, 0.1, 0.38) + ')';
+    ctx.beginPath(); ctx.ellipse(sp.x, sp.y, sr * 1.2, sr * 0.42, 0, 0, 7); ctx.fill();
+  }
+  var p = P(b.x, b.y, b.z);
+  if (!p) return null;
+  var pr = Math.max(o.minPx || 2.2, r * p.s);
+  // the afterimage: soft capsules along the last few positions, fading and thinning
+  if (b.trail && b.trail.length) {
+    var prev = p, n = b.trail.length;
+    ctx.lineCap = 'round';
+    for (var i = n - 1; i >= 0; i--) {
+      var q = P(b.trail[i][0], b.trail[i][1], b.trail[i][2]); if (!q) break;
+      var k = 1 - (n - i) / (n + 1), w = Math.max(1, pr * 2 * (0.35 + 0.55 * k));
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.30 * k * k).toFixed(3) + ')'; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      prev = q;
+    }
+  }
+  if (pr < 6) {                                        // far away: a faint ring so the eye can still follow a tiny ball
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 * (1 - pr / 6)).toFixed(3) + ')'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, pr * 2.0 + 2, 0, 7); ctx.stroke();
+  }
+  var g = ctx.createRadialGradient(p.x - pr * 0.35, p.y - pr * 0.4, pr * 0.1, p.x, p.y, pr);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#d4d8e2');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, pr, 0, 7); ctx.fill();
+  if (pr > 5) {                                        // the seams, turning with the spin
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(o.spin || 0);
+    ctx.strokeStyle = '#c63c3c'; ctx.lineWidth = Math.max(1, pr * 0.14);
+    ctx.beginPath(); ctx.arc(-pr * 0.95, 0, pr * 0.95, -0.9, 0.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(pr * 0.95, 0, pr * 0.95, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
+    ctx.restore();
+  }
+  return p;
+}
+function drawTrail(ctx, pts, color, alpha, widthM) {
+  if (pts.length < 2) return;
+  var prev = null;
+  ctx.lineCap = 'round';
+  for (var i = 0; i < pts.length; i++) {
+    var q = P(pts[i][0], pts[i][1], pts[i][2]);
+    if (q && prev) {
+      var a = alpha * (i / pts.length);
+      ctx.strokeStyle = 'rgba(' + color + ',' + (a * 0.6).toFixed(3) + ')'; ctx.lineWidth = Math.min(3, Math.max(1.2, widthM * (q.s + prev.s) / 2));      // a thin trace, never a fat blob
+      ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    }
+    prev = q;
+  }
+}
+
+/* ---------- the catcher's mitt, close to the eye ---------- */
+function drawMitt(ctx, x, y, size, pop, tilt) {
+  var r = size;
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(tilt || 0);
+  var sc = 1 + 0.16 * pop; ctx.scale(sc, sc);
+  // the forearm coming up from below
+  var arm = ctx.createLinearGradient(0, r * 0.6, 0, r * 2.2);
+  arm.addColorStop(0, 'rgba(27,31,42,.95)'); arm.addColorStop(1, 'rgba(12,14,20,0)');
+  ctx.fillStyle = arm;
+  ctx.beginPath(); ctx.moveTo(-r * 0.5, r * 0.7); ctx.lineTo(r * 0.5, r * 0.7); ctx.lineTo(r * 0.7, r * 2.2); ctx.lineTo(-r * 0.7, r * 2.2); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#3a4252'; ctx.lineWidth = Math.max(1, r * 0.05); ctx.beginPath(); ctx.moveTo(-r * 0.5, r * 0.78); ctx.lineTo(r * 0.5, r * 0.78); ctx.stroke();
+  // the mitt body
+  var leather = ctx.createRadialGradient(-r * 0.25, -r * 0.3, r * 0.1, 0, 0, r * 1.2);
+  leather.addColorStop(0, '#b87a44'); leather.addColorStop(0.6, '#8a5128'); leather.addColorStop(1, '#5a3417');
+  ctx.fillStyle = leather;
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 1.02, r * 0.98, 0, 0, 7); ctx.fill();
+  // finger tops
+  ctx.fillStyle = '#7b4623';
+  for (var i = -2; i <= 2; i++) { ctx.beginPath(); ctx.ellipse(i * r * 0.42, -r * 0.86 + Math.abs(i) * r * 0.1, r * 0.24, r * 0.3, i * 0.18, 0, 7); ctx.fill(); }
+  // the pocket and the web
+  var pk = ctx.createRadialGradient(0, r * 0.05, r * 0.05, 0, r * 0.05, r * 0.7);
+  pk.addColorStop(0, '#2d1809'); pk.addColorStop(1, '#6b3d1c');
+  ctx.fillStyle = pk; ctx.beginPath(); ctx.ellipse(0, r * 0.08, r * 0.62, r * 0.6, 0, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#d8b27a'; ctx.lineWidth = Math.max(1, r * 0.055); ctx.setLineDash([r * 0.14, r * 0.1]);
+  ctx.beginPath(); ctx.ellipse(0, r * 0.08, r * 0.7, r * 0.68, 0, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/* ---------- the strike zone overlay ---------- */
+function cellPoly(row, col, grow) {
+  var Z = BTP.ZONE, cw = (Z.x1 - Z.x0) / 3, ch = (Z.y1 - Z.y0) / 3, g = grow || 0;
+  var x0 = Z.x0 + cw * col - g, x1 = Z.x0 + cw * (col + 1) + g, y1 = Z.y1 - ch * row + g, y0 = Z.y1 - ch * (row + 1) - g;
+  return [[x0, y1, Z.z], [x1, y1, Z.z], [x1, y0, Z.z], [x0, y0, Z.z]];
+}
+BTP.cellPoly = cellPoly;
+function drawZone(ctx, z) {
+  if (!z) return;
+  var Z = BTP.ZONE, row, col;
+  for (row = 0; row < 3; row++) for (col = 0; col < 3; col++) {
+    var isSel = z.sel && z.sel.row === row && z.sel.col === col, isHover = z.hover && z.hover.row === row && z.hover.col === col && z.enabled;
+    if (!polyPath(ctx, cellPoly(row, col))) continue;
+    ctx.fillStyle = isSel ? 'rgba(63,169,255,.34)' : (isHover ? 'rgba(255,255,255,.20)' : 'rgba(255,255,255,.045)');
+    ctx.fill();
+    ctx.strokeStyle = isSel ? 'rgba(120,200,255,.95)' : 'rgba(255,255,255,' + (z.enabled ? 0.62 : 0.32) + ')';
+    ctx.lineWidth = isSel ? 2.4 : 1.2; ctx.stroke();
+  }
+  if (polyPath(ctx, [[Z.x0, Z.y1, Z.z], [Z.x1, Z.y1, Z.z], [Z.x1, Z.y0, Z.z], [Z.x0, Z.y0, Z.z]])) {
+    ctx.strokeStyle = 'rgba(255,255,255,' + (z.enabled ? 0.85 : 0.5) + ')'; ctx.lineWidth = 2.2; ctx.stroke();
+  }
+  // where you asked for it (T) and where it really went (A)
+  if (z.markT) {
+    if (polyPath(ctx, cellPoly(z.markT.row, z.markT.col, -0.012))) { ctx.strokeStyle = 'rgba(80,230,200,.95)'; ctx.lineWidth = 2.2; ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]); }
+  }
+  if (z.markA) {
+    var q = P(z.markA.x, z.markA.y, Z.z);
+    if (q) {
+      ctx.fillStyle = 'rgba(255,170,60,.95)'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(3.5, 0.028 * q.s), 0, 7); ctx.fill(); ctx.stroke();
+    }
+  }
+}
+
+/* ---------- one frame of everything that moves ---------- */
+BTP.renderFrame = function (ctx, scene, m) {
+  var W = V.W, H = V.H;
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if (m.shake) ctx.translate(m.shake[0], m.shake[1]);
+  ctx.drawImage(scene, 0, 0, W, H);
+  var items = [];                                           // everything drawn as a player, sorted far to near
+  var t = m.t || 0;
+
+  // fielders
+  var restW = BTP.standWorld;
+  ['3B', 'SS', '2B', '1B', 'LF', 'CF', 'RF'].forEach(function (pos) {
+    var f = m.fielders && m.fielders[pos];
+    var w = f ? f : restW(pos, m.alignment, m.bats);
+    var moving = f && f.moving, J;
+    if (f && f.catching) J = POSE.catchUp();
+    else if (moving) J = POSE.run(t * 0.017 + pos.charCodeAt(0));
+    else J = POSE.ready(0.012 * Math.sin(t * 0.004 + pos.charCodeAt(1)));
+    // face home plate (or the way he is running)
+    var yaw = moving ? Math.atan2(f.vx || 0, f.vz || -1) : Math.atan2(-w.x, -w.z);
+    items.push({ x: w.x, z: w.z, y: 0, yaw: yaw, J: J, team: TEAM.us, opts: { glove: true }, d: w.z });
+  });
+  // the pitcher
+  var pJ = m.pitcherT == null ? BTP.deliver(0, m.lefty, t * 0.001) : BTP.deliver(Math.min(m.pitcherT, BTP.DELIVERY.end), m.lefty, 0);
+  items.push({ x: 0, z: 18.44, y: 0.25, yaw: Math.PI, J: pJ, team: TEAM.us, opts: { bulk: 1.28, glove: true }, d: 18.44, isPitcher: true });
+  // runners
+  var base = BTP.BASES;
+  (m.runners || []).forEach(function (r) {
+    var J = r.moving ? POSE.run(t * 0.018 + r.id * 2) : POSE.ready(0.01 * Math.sin(t * 0.004 + r.id));
+    var yaw = r.moving ? Math.atan2(r.vx || 0, r.vz || 1) : Math.atan2(-r.x, 8 - r.z);
+    items.push({ x: r.x, z: r.z, y: 0, yaw: yaw, J: r.out ? POSE.stand() : J, team: TEAM.them, opts: { helmet: true }, d: r.z });
+  });
+  // the batter (big, close to the camera); once he has hit the ball he is a runner, drawn from the replay
+  var bx = (m.bats === 'R' ? -1 : 1) * 0.80;
+  var bJ = m.batterU == null ? POSE.batStance(Math.sin(m.pitcherT != null ? m.pitcherT * 7 : t * 0.005)) : POSE.batSwing(m.batterU);
+  if (!m.batterHidden) items.push({ x: bx, z: 0.12, y: 0, yaw: m.bats === 'R' ? Math.PI / 2 : -Math.PI / 2, J: bJ, team: TEAM.them,
+               opts: { helmet: true, flapSide: m.bats === 'R' ? 0.45 : -0.45, sleeves: true }, d: 0.12 });
+  // the ball is part of the same far-to-near order so the batter can pass in front of it
+  var ball = m.ball && m.ball.visible ? m.ball : null;
+  if (ball) items.push({ ball: ball, d: ball.z + 0.02 });
+  items.sort(function (a, b) { return b.d - a.d; });
+  items.forEach(function (it) {
+    if (it.ball) {
+      if (m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.55, 0.075);
+      drawBall(ctx, it.ball, { spin: it.ball.spin, radius: it.ball.radius, minPx: it.ball.minPx });
+    } else drawPlayer(ctx, it);
+  });
+  if (!ball && m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.35 * (m.trailFade == null ? 1 : m.trailFade), 0.075);
+
+  // the mitt hangs just behind the plate; the grid is drawn over it so the target stays readable
+  if (m.mitt) drawMitt(ctx, m.mitt.x, m.mitt.y, m.mitt.size, m.mitt.pop || 0, m.mitt.tilt);
+  drawZone(ctx, m.zone);
+  // the timing ring: it closes on the mitt as the ball arrives (a cue for the easier difficulties only)
+  if (m.ring) {
+    ctx.strokeStyle = m.ring.gold ? 'rgba(255,214,90,.95)' : 'rgba(255,255,255,.7)'; ctx.lineWidth = m.ring.gold ? 4 : 2.5;
+    ctx.beginPath(); ctx.arc(m.ring.x, m.ring.y, m.ring.r, 0, 7); ctx.stroke();
+  }
+  if (m.aligned) {
+    ctx.strokeStyle = 'rgba(80,230,160,.9)'; ctx.lineWidth = 3; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.arc(m.aligned.x, m.aligned.y, m.aligned.r, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  }
+  // a flash where the ball hits the mitt
+  if (m.pop && m.pop.a > 0) {
+    var pp = m.pop;
+    ctx.strokeStyle = 'rgba(255,248,220,' + (pp.a * 0.9).toFixed(3) + ')'; ctx.lineWidth = 3 * pp.a + 1;
+    ctx.beginPath(); ctx.arc(pp.x, pp.y, pp.r, 0, 7); ctx.stroke();
+    for (var i = 0; i < 8; i++) {
+      var an = i / 8 * Math.PI * 2 + 0.3;
+      ctx.beginPath(); ctx.moveTo(pp.x + Math.cos(an) * pp.r * 0.7, pp.y + Math.sin(an) * pp.r * 0.7);
+      ctx.lineTo(pp.x + Math.cos(an) * pp.r * 1.25, pp.y + Math.sin(an) * pp.r * 1.25); ctx.stroke();
+    }
+  }
+  ctx.restore();
+  // a ball that left the top of the screen: an arrow at the edge
+  if (ball) {
+    var bp = P(ball.x, ball.y, ball.z);
+    ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 2;
+    var mx = Math.max(36, V.W * 0.035), my = Math.max(52, V.H * 0.09);       // keep the arrows inside the mask's opening
+    function arrow(pts) { ctx.beginPath(); ctx.moveTo(pts[0], pts[1]); ctx.lineTo(pts[2], pts[3]); ctx.lineTo(pts[4], pts[5]); ctx.closePath(); ctx.stroke(); ctx.fill(); }
+    if (bp && bp.y < my - 8 && bp.x > mx && bp.x < V.W - mx) arrow([bp.x, my - 4, bp.x - 9, my + 12, bp.x + 9, my + 12]);   // up and out of the top
+    else if (bp && bp.x < mx - 6) { var ly = clamp(bp.y, my + 14, V.H - my); arrow([mx - 6, ly, mx + 10, ly - 9, mx + 10, ly + 9]); }
+    else if (bp && bp.x > V.W - mx + 6) { var ry = clamp(bp.y, my + 14, V.H - my); arrow([V.W - mx + 6, ry, V.W - mx - 10, ry - 9, V.W - mx - 10, ry + 9]); }
+  }
+};
+BTP.POSE = POSE; BTP.ik2 = ik2; BTP.toWorld = toWorld;
+})();
+
+/* ===================================================================================
+   Part 4a: the pieces of the pitch-by-pitch read: the batter's face, the strike-zone picture that shows where the ball and the bat
+   went, and the map of the last few pitches. All of it is drawn from what the engine really judged (the swing, its timing, the
+   reaction it returned); nothing here is random. They are plain SVG strings.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP, clamp = BTP.clamp;
+var HUD = BTP.hud = {};
+
+/* ---------- the batter's face and shoulders ---------- */
+// expression for each reaction category the engine can return: brow tilt (+ = angry, - = worried), eye openness, mouth, gaze, head tilt
+var FACES = {
+  confident: { brow: 6, eye: 3.4, mouth: 'smirk', gaze: 0, tilt: -3 },
+  locked_in: { brow: 11, eye: 4.6, mouth: 'flat', gaze: 0, tilt: 0 },
+  comfortable: { brow: 0, eye: 4.2, mouth: 'smile', gaze: 0, tilt: 0 },
+  defensive: { brow: -6, eye: 3.6, mouth: 'tight', gaze: 3, tilt: 4 },
+  uncertain: { brow: -13, eye: 4.6, mouth: 'wavy', gaze: -4, tilt: -2 },
+  neutral: { brow: 0, eye: 4.2, mouth: 'flat', gaze: 0, tilt: 0 },
+  frustrated: { brow: 17, eye: 3.2, mouth: 'grimace', gaze: 0, tilt: 3 },
+  jammed: { brow: 9, eye: 0.9, mouth: 'grimace', gaze: 0, tilt: 6 },
+  out_front: { brow: 0, eye: 6.2, mouth: 'open', gaze: 5, tilt: -8 },
+  surprised: { brow: -5, eye: 6.8, mouth: 'round', gaze: 0, tilt: 0 }
+};
+var MOUTH = {
+  flat: 'M48 78 L72 78', smirk: 'M48 79 Q60 80 73 73', smile: 'M47 75 Q60 85 73 75', tight: 'M49 79 Q60 76 71 79',
+  wavy: 'M46 78 Q52 73 58 78 T71 77', grimace: 'M46 80 Q60 71 74 80', open: 'M50 75 Q60 90 70 75 Z', round: 'M55 76 a5 6 0 1 0 10 0 a5 6 0 1 0 -10 0'
+};
+// pose = what he just did: took / late / early / whiff / foul / contact
+HUD.portrait = function (category, pose, bats) {
+  var f = FACES[category] || FACES.neutral;
+  var tilt = f.tilt + (pose === 'whiff' ? 7 : (pose === 'early' ? 5 : (pose === 'late' ? -4 : 0)));
+  var shift = pose === 'late' ? [-3, 3] : (pose === 'early' || pose === 'whiff' ? [3, 1] : [0, 0]);
+  var flap = bats === 'R' ? 26 : 94;
+  var eye = function (cx) {
+    var ry = Math.max(0.8, f.eye);
+    return '<ellipse cx="' + cx + '" cy="55" rx="5.4" ry="' + ry + '" fill="#fff"/><circle cx="' + (cx + f.gaze * 0.6) + '" cy="55" r="' + Math.min(2.8, ry) + '" fill="#2a1d16"/>';
+  };
+  var browY = 44, bl = f.brow;
+  var svg = '<svg viewBox="0 0 120 130" class="portrait" aria-hidden="true">' +
+    '<path d="M2 130 C4 99 30 92 60 92 C90 92 116 99 118 130 Z" fill="#c7352d"/>' +
+    '<path d="M44 93 Q60 108 76 93 L72 90 Q60 100 48 90 Z" fill="#f1ede3"/>' +
+    '<g transform="translate(' + shift[0] + ',' + shift[1] + ') rotate(' + tilt + ' 60 80)">' +
+    '<rect x="50" y="78" width="20" height="18" rx="6" fill="#c89a76"/>' +
+    '<ellipse cx="60" cy="52" rx="27" ry="31" fill="#e0b48e"/>' +
+    '<path d="M31 50 C30 22 48 14 60 14 C72 14 90 22 89 50 L60 38 Z" fill="#8e1f1b"/>' +
+    '<path d="M30 52 L90 52 L88 40 L32 40 Z" fill="#8e1f1b"/>' +
+    '<ellipse cx="' + flap + '" cy="56" rx="7" ry="13" fill="#7a1a17"/>' +
+    '<g stroke="#3a2418" stroke-width="3.2" stroke-linecap="round">' +
+    '<line x1="38" y1="' + (browY + bl * 0.20) + '" x2="54" y2="' + (browY - bl * 0.20) + '"/><line x1="82" y1="' + (browY + bl * 0.20) + '" x2="66" y2="' + (browY - bl * 0.20) + '"/></g>' +
+    eye(47) + eye(73) +
+    '<path d="' + MOUTH[f.mouth] + '" fill="' + (f.mouth === 'open' || f.mouth === 'round' ? '#5a1d18' : 'none') + '" stroke="#5a1d18" stroke-width="3" stroke-linecap="round"/>' +
+    ((pose === 'late' || pose === 'whiff' || f.mouth === 'grimace') ? '<path d="M92 36 q5 8 0 13 q-5 -5 0 -13 z" fill="#7fc8ff"/>' : '') +
+    '</g>' +
+    (pose === 'whiff' ? '<g stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".6"><line x1="6" y1="40" x2="20" y2="44"/><line x1="4" y1="54" x2="18" y2="56"/><line x1="8" y1="68" x2="22" y2="66"/></g>' : '') +
+    '</svg>';
+  return svg;
+};
+
+/* ---------- the strike-zone picture: where the ball went and where the bat went ---------- */
+var ZV = { x0: -0.5, x1: 0.5, y0: 0.25, y1: 1.35, w: 200, h: 220 };
+function zx(x) { return (x - ZV.x0) / (ZV.x1 - ZV.x0) * ZV.w; }
+function zy(y) { return (ZV.y1 - y) / (ZV.y1 - ZV.y0) * ZV.h; }
+// ball = {x,y} on the plate plane; swing = the swing_info from the server; bats = 'R' | 'L'; target = {row,col}
+HUD.zonePicture = function (ball, swing, bats, target) {
+  var Z = BTP.ZONE, h = '<svg viewBox="0 0 ' + ZV.w + ' ' + ZV.h + '" class="zonepic" aria-hidden="true">';
+  h += '<rect x="0" y="0" width="' + ZV.w + '" height="' + ZV.h + '" rx="10" fill="rgba(255,255,255,.04)"/>';
+  var bx0 = zx(Z.x0), bx1 = zx(Z.x1), by0 = zy(Z.y1), by1 = zy(Z.y0);
+  for (var i = 1; i < 3; i++) {
+    h += '<line x1="' + (bx0 + (bx1 - bx0) * i / 3) + '" y1="' + by0 + '" x2="' + (bx0 + (bx1 - bx0) * i / 3) + '" y2="' + by1 + '" stroke="rgba(255,255,255,.28)"/>';
+    h += '<line x1="' + bx0 + '" y1="' + (by0 + (by1 - by0) * i / 3) + '" x2="' + bx1 + '" y2="' + (by0 + (by1 - by0) * i / 3) + '" stroke="rgba(255,255,255,.28)"/>';
+  }
+  h += '<rect x="' + bx0 + '" y="' + by0 + '" width="' + (bx1 - bx0) + '" height="' + (by1 - by0) + '" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2"/>';
+  if (target) {
+    var cw = (bx1 - bx0) / 3, ch = (by1 - by0) / 3;
+    h += '<rect x="' + (bx0 + cw * target.col + 2) + '" y="' + (by0 + ch * target.row + 2) + '" width="' + (cw - 4) + '" height="' + (ch - 4) + '" fill="none" stroke="#50e6c8" stroke-width="1.6" stroke-dasharray="4 3"/>';
+  }
+  var bxp = zx(ball.x), byp = zy(ball.y);
+  if (swing && swing.swung) {
+    var dir = bats === 'R' ? 1 : -1;                                        // a right-hander swings left to right as the catcher sees it
+    var cx = zx(ball.x + dir * swing.ahead), cy = zy(ball.y + swing.dy);
+    var col = swing.timing === 'late' ? '#ff9a5a' : (swing.timing === 'early' ? '#6ab8ff' : '#7be0a8');
+    h += '<line x1="' + (cx - dir * 46) + '" y1="' + cy + '" x2="' + (cx - dir * 16) + '" y2="' + cy + '" stroke="' + col + '" stroke-width="3" stroke-dasharray="2 5" stroke-linecap="round" opacity=".7"/>';
+    h += '<rect x="' + (cx - 30) + '" y="' + (cy - 7) + '" width="60" height="14" rx="7" fill="#d6ae72" stroke="' + col + '" stroke-width="2.5" opacity=".95"/>';
+    h += '<circle cx="' + cx + '" cy="' + cy + '" r="5" fill="' + col + '"/>';
+    h += '<path d="M' + (cx + dir * 38) + ' ' + (cy - 7) + ' l' + (dir * 11) + ' 7 l' + (-dir * 11) + ' 7" fill="none" stroke="' + col + '" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>';
+  }
+  h += '<circle cx="' + bxp + '" cy="' + byp + '" r="9" fill="#fff" stroke="#222" stroke-width="1.5"/>';
+  h += '<path d="M' + (bxp - 6) + ' ' + (byp - 3) + ' q6 4 12 0 M' + (bxp - 6) + ' ' + (byp + 3) + ' q6 -4 12 0" fill="none" stroke="#c63c3c" stroke-width="1.3"/>';
+  if (!swing || !swing.swung) h += '<text x="' + (ZV.w / 2) + '" y="' + (ZV.h - 8) + '" text-anchor="middle" font-size="15" font-weight="800" fill="#cfe0f5" letter-spacing="1.5">TOOK IT</text>';
+  return h + '</svg>';
+};
+
+/* ---------- the map of the last few pitches to this batter ---------- */
+var MAP_COLOR = { Strike: '#6ab8ff', Foul: '#6ab8ff', Ball: '#9aa6b8', Whiff: '#46e6a0', Out: '#ffb454', Single: '#ff6a6a', Double: '#ff6a6a', Triple: '#ff6a6a', 'Home run': '#ff6a6a', Error: '#ff6a6a' };
+HUD.pitchMap = function (items, bats) {
+  var W = 150, H = 170, bx0 = 38, bx1 = 112, by0 = 30, by1 = 128, cw = (bx1 - bx0) / 3, ch = (by1 - by0) / 3, cols = BTP.cols(bats);
+  var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="pitchmap" aria-hidden="true">';
+  h += '<rect x="' + bx0 + '" y="' + by0 + '" width="' + (bx1 - bx0) + '" height="' + (by1 - by0) + '" fill="none" stroke="rgba(255,255,255,.7)" stroke-width="1.6"/>';
+  for (var i = 1; i < 3; i++) {
+    h += '<line x1="' + (bx0 + cw * i) + '" y1="' + by0 + '" x2="' + (bx0 + cw * i) + '" y2="' + by1 + '" stroke="rgba(255,255,255,.2)"/>';
+    h += '<line x1="' + bx0 + '" y1="' + (by0 + ch * i) + '" x2="' + bx1 + '" y2="' + (by0 + ch * i) + '" stroke="rgba(255,255,255,.2)"/>';
+  }
+  items.forEach(function (p, idx) {
+    var parts = p.course.split('_'), col = cols.indexOf(parts[0]), row = BTP.ROWS.indexOf(parts[1]);
+    var jx = ((p.n * 37) % 11 - 5) / 5 * cw * 0.22, jy = ((p.n * 53) % 11 - 5) / 5 * ch * 0.22;
+    var x = bx0 + cw * (col + 0.5) + jx, y = by0 + ch * (row + 0.5) + jy, c = MAP_COLOR[p.result] || '#9aa6b8';
+    var last = idx === items.length - 1;
+    h += p.swung ? '<circle cx="' + x + '" cy="' + y + '" r="' + (last ? 8.5 : 7) + '" fill="' + c + '" stroke="#0b1320" stroke-width="1.4"/>'
+                 : '<circle cx="' + x + '" cy="' + y + '" r="' + (last ? 8.5 : 7) + '" fill="none" stroke="' + c + '" stroke-width="2.4"/>';
+    h += '<text x="' + x + '" y="' + (y + 3.2) + '" text-anchor="middle" font-size="9" font-weight="800" fill="' + (p.swung ? '#0b1320' : c) + '">' + p.n + '</text>';
+  });
+  h += '<text x="' + (W / 2) + '" y="' + (H - 6) + '" text-anchor="middle" font-size="8.5" fill="#93a1b8">filled = swung &middot; ring = took</text>';
+  return h + '</svg>';
+};
+})();
+
+/* ===================================================================================
+   Part 4b: catching the pitch yourself, and reading the batter after it.
+   The pure rules live here so they are easy to check on their own:
+     - judge(): from how far the mitt was from the ball and how far off the Space press was in time, decide clean / barely / miss;
+     - describe(): say in a few words what was off;
+     - keepFlying(): carry the ball on past the mitt when it is missed;
+     - panelHTML(): the read panel (his face, where the ball and the bat went, the timing, what you have seen him do).
+   The call (which pitch, where, why) and the catch (your hands) are judged separately: a great call can still be dropped.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP;
+var L = BTP.catchlib = {};
+
+// rules = {pos: [perfect, good] in metres, time: [perfect, good] in seconds, auto: bool} (from the server, by difficulty)
+L.judge = function (posErr, dt, rules) {
+  var p = rules.pos, t = rules.time, adt = Math.abs(dt);
+  if (posErr <= p[0] && adt <= t[0]) return 'clean';
+  if (posErr <= p[1] && adt <= t[1]) return 'barely';
+  return 'miss';
+};
+// ex, ey = mitt minus ball (metres, x to the right, y up); dt = press minus arrival (seconds, + = late); null if Space was never pressed
+L.describe = function (ex, ey, dt, rules) {
+  var bits = [], big = function (v, lim) { return Math.abs(v) > lim; };
+  if (big(ex, rules.pos[0]) || big(ey, rules.pos[0])) {
+    var how = Math.hypot(ex, ey) > rules.pos[1] ? 'way ' : 'a bit ', words = [];
+    if (big(ey, rules.pos[0] * 0.8)) words.push(ey > 0 ? 'high' : 'low');
+    if (big(ex, rules.pos[0] * 0.8)) words.push(ex > 0 ? 'right' : 'left');
+    bits.push('Mitt ' + how + words.join(' and '));
+  }
+  if (dt == null) bits.push('Space was never pressed');
+  else if (Math.abs(dt) > rules.time[0]) bits.push((Math.abs(dt) > rules.time[1] ? 'Space way ' : 'Space a touch ') + (dt > 0 ? 'late' : 'early'));
+  return bits.length ? bits.join(' · ') : 'Right on the ball';
+};
+// a missed ball keeps going: the same forces, past the mitt toward the backstop
+L.keepFlying = function (path, spin) {
+  var s = path.samples, a = s[s.length - 2], b = s[s.length - 1], dt = b[0] - a[0];
+  var v = [(b[1] - a[1]) / dt, (b[2] - a[2]) / dt, (b[3] - a[3]) / dt];
+  var res = BTP.phys.fly([b[1], b[2], b[3]], v, spin, -9, 1 / 240);
+  return { samples: res.s.map(function (r) { return [r[0] + b[0], r[1], r[2], r[3]]; }), t0: b[0] };
+};
+
+/* ---------- the read panel ---------- */
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+var TONE = { Strike: 'good', Whiff: 'good', Out: 'good', Foul: 'neutral', Ball: 'neutral', Single: 'bad', Double: 'bad', Triple: 'bad', 'Home run': 'bad', Error: 'bad' };
+L.pose = function (l) {
+  var sw = l.swing;
+  if (!sw || !sw.swung) return 'took';
+  if (l.result === 'Whiff') return 'whiff';
+  if (l.result === 'Foul') return 'foul';
+  return sw.timing === 'late' ? 'late' : (sw.timing === 'early' ? 'early' : 'contact');
+};
+// a = {l (the last pitch from the server), reaction, reads, bats, Pt ({x,y} where it crossed), markT ({row,col}), headline (text), difficulty, catchLabel}
+L.panelHTML = function (a) {
+  var l = a.l, sw = l.swing, ev = l.eval, tone = TONE[l.result] || 'neutral';
+  var word = sw.swung ? sw.label : 'TOOK IT';
+  var wcls = !sw.swung ? 'took' : sw.timing;
+  var rx = a.reaction || { category: 'neutral', text: '' };
+  var callLine = a.difficulty === 'expert' ? '' :
+    '<div class="rp-line"><span class="rp-k">CALL</span><b class="tag-' + ev.grade + '">' + esc(ev.title) + '</b><span class="rp-why">' + esc(ev.reason) + '</span></div>';
+  var c = l.catch, catchLine = '';
+  if (a.catchLabel) catchLine = '<div class="rp-line"><span class="rp-k">CATCH</span><b class="cq-' + a.catchLabel.cls + '">' + esc(a.catchLabel.text) + '</b><span class="rp-why">' + esc(a.catchLabel.detail || '') + '</span></div>';
+  var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>'
+    : '<div class="rp-none">Not enough swings yet to read a pattern.</div>';
+  return '<div class="rp-face">' + BTP.hud.portrait(rx.category, L.pose(l), a.bats) + '<div class="rp-say">&ldquo;' + esc(rx.text || '') + '&rdquo;</div></div>' +
+    '<div class="rp-zone">' + BTP.hud.zonePicture(a.Pt, sw, a.bats, a.markT) + '<div class="rp-vert">' + esc(sw.vert || '') + '</div></div>' +
+    '<div class="rp-main"><div class="rp-head"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span></div>' +
+    callLine + catchLine + '<div class="rp-sub">WHAT YOU HAVE SEEN</div>' + reads + '</div>' +
+    '<div class="rp-mini"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' +
+    (a.catchLabel ? '<span class="rp-chip cq-' + a.catchLabel.cls + '">' + esc(a.catchLabel.text) + '</span>' : '') +
+    (a.difficulty === 'expert' ? '' : '<span class="rp-chip tag-' + ev.grade + '">' + esc(ev.title) + '</span>') + '</div>';
+};
+})();
+
+/* ===================================================================================
+   Part 4: the game. Talks to the Python server (the same rules as the classic page), draws the HUD, runs the pitch and the
+   replay of the ball in play, and handles the rhythm mini-games. The page never reloads, so nothing here (and not the music)
+   restarts between pitches.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP, $ = BTP.$, V = BTP.V, P = BTP.P, clamp = BTP.clamp, lerp = BTP.lerp, ease = BTP.ease;
+
+var S = null;               // the newest state from the server
+var shown = null;           // the state the HUD shows (held back while a pitch is being animated, so it never spoils the result)
+var lastSeq = null;         // the last pitch result already animated
+var sel = { pitch: null, intent: 'strike', cell: { row: 1, col: 1 } };
+var hover = null;
+var anim = null;            // the pitch / play being animated, or null
+var pendingState = null;
+var qteRun = null;
+var busy = false;
+var drawerName = null;
+var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1;
+var markers = { T: null, A: null };
+var catchG = null;          // the catch game for the pitch being thrown (your mitt, your press), or null
+var keys = {};              // which of the mitt keys (arrows / WASD) are held
+var panelOpen = false;
+var TS = parseFloat(new URLSearchParams(location.search).get('slow')) || 1;     // ?slow=3 plays the pitch animations three times slower
+
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+/* ---------------- talking to the server ---------------- */
+function parseJSON(r) { return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { throw new Error('bad response'); } }); }
+function post(path, data) {
+  var body = data ? new URLSearchParams(data).toString() : '';
+  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Fetch': '1' }, body: body }).then(parseJSON);
+}
+function getState() { return fetch('/api/state', { cache: 'no-store' }).then(parseJSON); }
+function act(path, data) {
+  if (busy) return Promise.resolve();
+  busy = true;
+  return post(path, data).then(function (ns) { busy = false; onState(ns); }, function () {
+    busy = false; toast('Something went wrong. Reloading the game state...', true);
+    getState().then(onState, function () {});
+  });
+}
+
+/* ---------------- small UI helpers ---------------- */
+var toastTimer = null;
+function toast(msg, bad) {
+  var el = $('toast'); el.textContent = msg; el.className = 'ov show' + (bad ? ' bad' : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(function () { el.className = 'ov'; }, 3600);
+}
+function hint(msg) { var el = $('hint'); if (msg) { el.textContent = msg; el.className = 'ov show'; } else el.className = 'ov'; }
+function pips(n, total, cls) { var h = ''; for (var i = 0; i < total; i++) h += '<span class="t-pip ' + cls + (i < n ? ' on' : '') + '"></span>'; return '<span class="t-pips">' + h + '</span>'; }
+function arcSvg(move) {
+  var drop = move[0], sweep = move[1], x1 = 20 + sweep * 12, y1 = 12 + drop * 23, cx = 20 + sweep * 2.5, cy = 3 + (y1 - 3) * 0.32;
+  return '<svg viewBox="0 0 40 40" aria-hidden="true"><rect x="6" y="4" width="28" height="30" rx="2" class="pz"/>' +
+    '<path d="M20 3 Q' + cx.toFixed(1) + ' ' + cy.toFixed(1) + ' ' + x1.toFixed(1) + ' ' + y1.toFixed(1) + '" class="pl"/>' +
+    '<circle cx="' + x1.toFixed(1) + '" cy="' + y1.toFixed(1) + '" r="2.6" class="pb"/></svg>';
+}
+function diamond(runners, fast) {
+  var pts = [[15, 4], [24, 13], [15, 22], [6, 13]];       // 2B, 1B, home, 3B
+  var on = [runners[1], runners[0], false, runners[2]];
+  var h = '<svg class="t-diamond" viewBox="0 0 30 26"><polygon points="15,4 24,13 15,22 6,13" fill="none" stroke="#3b5272" stroke-width="1.4"/>';
+  for (var i = 0; i < 4; i++) {
+    if (i === 2) continue;
+    h += '<rect class="base' + (on[i] ? ' on' : '') + '" x="' + (pts[i][0] - 3.3) + '" y="' + (pts[i][1] - 3.3) + '" width="6.6" height="6.6" transform="rotate(45 ' + pts[i][0] + ' ' + pts[i][1] + ')"/>';
+  }
+  return h + '</svg>';
+}
+var RESULT_TONE = { 'Strike': 'r-good', 'Whiff': 'r-good', 'Out': 'r-good', 'Foul': 'r-neutral', 'Ball': 'r-neutral',
+                    'Single': 'r-bad', 'Double': 'r-bad', 'Triple': 'r-bad', 'Home run': 'r-bad', 'Error': 'r-bad' };
+
+/* ---------------- the HUD ---------------- */
+function renderTop() {
+  var st = shown; if (!st || !st.situation) {
+    $('top').innerHTML = '<span class="t-brand">BEHIND THE <i>&middot;</i> PLATE</span><span class="t-spacer"></span>' + audioControls();
+    bindAudio(); return;
+  }
+  var s = st.situation, tire = st.pitcher.fatigue === 1 ? ' <span class="t-warn">tired</span>' : (st.pitcher.fatigue >= 2 ? ' <span class="t-warn">gassed</span>' : '');
+  $('top').innerHTML =
+    '<span class="t-brand">BEHIND THE <i>&middot;</i> PLATE</span><span class="t-sep"></span>' +
+    '<span class="t-score"><span class="abbr">US</span><span class="run' + (s.our > s.opp ? ' lead' : '') + '">' + s.our + '</span>' +
+    '<span class="t-inning">' + esc(s.inning) + '</span>' +
+    '<span class="run' + (s.opp > s.our ? ' lead' : '') + '" style="font-size:24px;font-weight:800;">' + s.opp + '</span><span class="abbr">THEM</span></span>' +
+    '<span class="t-sep"></span><span class="t-grp">' + diamond(s.runners) + (s.fast_runner ? '<span class="t-warn">STEAL</span>' : '') + '</span>' +
+    '<span class="t-sep"></span><span class="t-grp">B ' + pips(s.balls, 4, 'b') + ' S ' + pips(s.strikes, 3, 's') + ' OUT ' + pips(s.outs, 3, 'o') + '</span>' +
+    '<span class="t-sep"></span><span class="t-grp">' + (st.pitcher.throws === 'R' ? 'RHP' : 'LHP') + ' <b>' + st.pitcher.pitches + '</b> pitches' + tire + '</span>' +
+    '<span class="t-spacer"></span>' +
+    ['history', 'defense', 'bench', 'help'].map(function (n) {
+      return '<button class="t-btn' + (drawerName === n ? ' on' : '') + '" data-drawer="' + n + '">' + { history: 'History', defense: 'Defense', bench: 'Notes', help: 'Help' }[n] + '</button>';
+    }).join('') + audioControls();
+  bindAudio();
+}
+function audioControls() {
+  var muted = BTP.bgm.isMuted();
+  return '<span class="t-vol"><button class="t-btn" id="mute-btn" title="Mute / unmute the music">' + (muted ? '&#9835; Off' : '&#9835; On') + '</button>' +
+    '<input type="range" id="vol" min="0" max="100" value="' + Math.round(BTP.bgm.volume() * 100) + '" aria-label="Music volume"></span>';
+}
+function bindAudio() {
+  var m = $('mute-btn'), v = $('vol');
+  if (m) m.onclick = function () { BTP.bgm.start(); BTP.bgm.setMuted(!BTP.bgm.isMuted()); m.innerHTML = BTP.bgm.isMuted() ? '&#9835; Off' : '&#9835; On'; };
+  if (v) v.oninput = function () { BTP.bgm.start(); BTP.bgm.setVolume(v.value / 100); if (BTP.bgm.isMuted() && v.value > 0) { BTP.bgm.setMuted(false); if (m) m.innerHTML = '&#9835; On'; } };
+}
+function renderSide() {
+  var st = shown;
+  if (!st || !st.batter) { $('batterbox').style.display = 'none'; $('mapbox').style.display = 'none'; return; }
+  $('batterbox').style.display = ''; $('mapbox').style.display = '';
+  var b = st.batter;
+  $('batterbox').innerHTML =
+    '<div class="nm"><span>' + b.spot + '</span> ' + esc(b.name.replace(/^\d+\s+/, '')) + ' <span class="hand ' + b.bats + '">' + b.bats + '</span></div>' +
+    '<div class="tag" style="margin-top:4px">' + esc(b.type) + '</div>' +
+    '<div class="sl"><span>AVG <b>' + b.avg.toFixed(3) + '</b></span><span>OBP <b>' + b.obp.toFixed(3) + '</b></span><span>SLG <b>' + b.slg.toFixed(3) + '</b></span><span>OPS <b>' + b.ops.toFixed(3) + '</b></span></div>' +
+    '<div class="sc">' + esc(b.scouting) + '</div>' +
+    '<div class="nx">NEXT: ' + esc(b.next.name.replace(/^\d+\s+/, '')) + ' (' + b.next.bats + ') &middot; OPS ' + b.next.ops.toFixed(3) + '</div>';
+  var items = st.pitch_map || [], recent = items.slice(-3).reverse().map(function (p) {
+    return '<div>#' + p.n + ' <b>' + esc(p.pitch) + '</b> &middot; ' + esc(p.result) + '</div>';
+  }).join('');
+  $('mapbox').innerHTML = '<div class="cap">Pitches to him</div>' + BTP.hud.pitchMap(items, b.bats) + '<div class="recent">' + (recent || 'No pitches yet') + '</div>';
+}
+function renderBottom() {
+  var st = shown;
+  if (!st || !st.repertoire) { $('bottom').innerHTML = ''; return; }
+  if (!sel.pitch || !st.repertoire.some(function (p) { return p.key === sel.pitch; })) sel.pitch = st.repertoire[0].key;
+  var canCall = canPlay();
+  var h = '<div class="b-row"><span class="b-label">Pitch</span>' + st.repertoire.map(function (p, i) {
+    return '<button class="pbtn' + (sel.pitch === p.key ? ' sel' : '') + '" data-pitch="' + p.key + '">' + arcSvg(p.move) + esc(p.name) +
+      ' <span class="v">' + p.velocity + '</span> <span class="k">' + (i + 1) + '</span></button>';
+  }).join('') + '<span class="target-read" id="targetread"></span><span class="modebadge ' + (catchActive() ? 'catch' : 'call') + '">' + (catchActive() ? '\u25CF CATCH' : '\u25CF CALL') + '</span></div>' +
+  '<div class="b-row"><span class="b-label">Intent</span>' + st.intents.map(function (it) {
+    return '<button class="ibtn' + (sel.intent === it.key ? ' sel' : '') + '" data-intent="' + it.key + '" title="' + esc(it.desc) + '">' + esc(it.label) + '</button>';
+  }).join('') + '<button class="callbtn" id="callbtn"' + (canCall ? '' : ' disabled') + '>CALL PITCH</button></div>';
+  $('bottom').innerHTML = h;
+  updateTargetRead();
+}
+function updateTargetRead() {
+  var el = $('targetread'); if (!el || !shown || !shown.batter) return;
+  var key = BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats);
+  var names = { in_hi: 'High-In', mid_hi: 'High', out_hi: 'High-Out', in_mid: 'In', mid_mid: 'Middle', out_mid: 'Out', in_lo: 'Low-In', mid_lo: 'Low', out_lo: 'Low-Out' };
+  el.innerHTML = 'Target <b>' + names[key] + '</b> &middot; click the zone &middot; <b>Enter</b> to call';
+}
+function catchActive() { return !!(anim && anim.interactive && catchG && !catchG.resolved); }
+function renderAll() { renderTop(); renderSide(); renderBottom(); }
+function canPlay() { return !!(shown && S && S.phase === 'play' && !anim && !qteRun && !busy && !modalOpen()); }
+function modalOpen() { return $('modal').classList.contains('open'); }
+
+/* ---------------- the state machine ---------------- */
+function onState(ns) {
+  S = ns;
+  if (anim) { pendingState = ns; return; }
+  if (!shown) { shown = ns; lastSeq = ns.last ? ns.last.seq : null; }
+  if (ns.phase === 'qte') { openQTE(ns.qte); return; }
+  closeQTE();
+  if (ns.last && ns.last.seq !== lastSeq) { lastSeq = ns.last.seq; startPitchAnim(ns); return; }
+  settle(ns);
+}
+function settle(ns) {
+  shown = ns;
+  if (ns.messages && ns.messages.length && ns.phase !== 'start') {
+    var msg = ns.messages.map(function (m) { return m.replace(/^>>>\s*/, ''); }).slice(0, 2).join(' ');
+    if (msg !== lastMsg) { lastMsg = msg; toast(msg, /(hit|Passed|error|Walk|dropped|gave up|Stolen|stole)/i.test(msg)); }
+  }
+  renderAll();
+  if (!ns.last) { $('readpanel').className = 'ov'; panelOpen = false; } else restorePanel(ns);
+  if (drawerName) loadDrawer(drawerName);
+  handlePhase(ns);
+}
+var lastMsg = '';
+function handlePhase(ns) {
+  if (ns.phase === 'start') { openModal('start'); }
+  else if (ns.phase === 'intro') { openModal('intro'); }
+  else if (ns.phase === 'over') { openModal('report'); }
+  else closeModal();
+  hint(ns.phase === 'play' ? '' : '');
+}
+function openModal(name) {
+  var mb = $('modal-body'), md = $('modal');
+  if (md.dataset.name === name && md.classList.contains('open')) return;
+  md.dataset.name = name;
+  fetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
+    mb.innerHTML = html + (name === 'start' && !window.BTP_STATIC ? '<p style="text-align:center;margin:6px 0 0"><a id="back-classic" href="/classic">Use the classic page layout instead</a></p>' : '');
+    md.classList.add('open'); md.scrollTop = 0; mb.scrollTop = 0;
+    renderBottom();
+  });
+}
+function closeModal() { var md = $('modal'); if (md.classList.contains('open')) { md.classList.remove('open'); md.dataset.name = ''; renderBottom(); } }
+
+/* forms inside panels and dialogs (classic markup) are sent with fetch so the page never reloads */
+function interceptForms(container) {
+  container.addEventListener('submit', function (e) {
+    var f = e.target; if (!f || f.tagName !== 'FORM') return;
+    e.preventDefault();
+    var fd;
+    try { fd = new FormData(f, e.submitter || undefined); } catch (err) { fd = new FormData(f); }
+    var data = {}; fd.forEach(function (v, k) { data[k] = v; });
+    var path = new URL(f.action, location.href).pathname;
+    BTP.bgm.start();
+    act(path, data);
+  });
+}
+
+/* ---------------- drawers (History / Defense / Notes & Bench / Help) ---------------- */
+var HELP = '<div class="card"><h3>How to play</h3><p style="font-size:14px;margin:.4em 0">You are the catcher, crouched behind the plate. Each pitch has two parts. ' +
+  '<b>CALL:</b> pick a pitch, click where you want it in the strike zone (your mitt moves there), pick an intent, and press <b>CALL PITCH</b> (or Enter). ' +
+  '<b>CATCH:</b> as the ball comes in, move your mitt with <b>WASD / arrow keys</b> to where it is heading, and press <b>SPACE</b> as it arrives.</p>' +
+  '<p style="font-size:13px;color:var(--muted)">Keys: <b>1-9</b> pitch type &middot; <b>arrows</b> move the target (before the pitch) or the mitt (during it) &middot; <b>Enter</b> call &middot; <b>Space</b> catch / timing games &middot; <b>click</b> the stage to skip an animation.</p></div>' +
+  '<div class="card"><h3>Catching</h3><p style="font-size:13px;margin:.4em 0">Both the position and the timing count: <b>clean</b> catch, <b>barely</b> caught, or <b>missed</b> (a passed ball if runners are on). ' +
+  'On Beginner and Normal a ring closes on the mitt as the ball arrives, and the mitt closes by itself if you are on the ball. On Expert there is no ring and no help. ' +
+  'A clean catch can steal a strike on a ball just off the edge, and it steadies the pitcher for the next pitch; a miss rattles him.</p></div>' +
+  '<div class="card"><h3>Reading the batter</h3><p style="font-size:13px;margin:.4em 0">After each pitch, the panel at the top shows his face, where the ball and the bat went in the strike zone, whether he was early, on time or late, and what you have seen over his last swings. ' +
+  'It only reports what happened. What he is looking for is for you to work out. His face is a hint, not proof.</p></div>' +
+  '<div class="card"><h3>Your call, graded</h3><p style="font-size:13px;margin:.4em 0">You also get a one-line grade of the call (good, fair, risky) with the reason, separate from the catch. ' +
+  'It comes from the same hidden score the post-game review uses, but the number is never shown. Expert hides it.</p></div>';
+function loadDrawer(name) {
+  drawerName = name;
+  var dr = $('drawer'), titles = { history: 'History', defense: 'Defense', bench: 'Notes & Bench', help: 'Help' };
+  dr.className = 'open';
+  dr.querySelector('.dh .ttl').textContent = titles[name] || name;
+  var db = dr.querySelector('.db');
+  if (name === 'help') { db.innerHTML = HELP; renderTop(); return; }
+  fetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
+    if (drawerName === name) db.innerHTML = html;
+  });
+  renderTop();
+}
+function closeDrawer() { drawerName = null; $('drawer').className = ''; renderTop(); }
+
+/* ---------------- rhythm mini-games (receive, throw down, block, ...) ---------------- */
+function openQTE(spec) {
+  if (qteRun && qteRun.kind === spec.kind && qteRun.call === spec.call) return;
+  closeQTE();
+  var el = $('qte');
+  el.innerHTML = '<div class="qte-announce" id="qa"></div><h4>' + esc(spec.title) + '</h4>' + (spec.call ? '<div class="qcall">' + esc(spec.call) + '</div>' : '') +
+    '<div class="qhint">' + esc(spec.hint) + '</div>' +
+    (spec.direction ? '<div class="qte-dirs" id="qdirs" hidden><button type="button" data-dir="in">&#9664; In</button><button type="button" data-dir="mid">&#9679; Middle</button><button type="button" data-dir="out">Out &#9654;</button></div>' : '') +
+    '<div class="qte-label" id="qlabel"></div><div class="rg-track" id="qtrack" tabindex="0"><div class="rg-target" id="qband"><div class="core"></div></div><div class="rg-marker" id="qmarker"></div></div>' +
+    '<div class="rg-verdict" id="qverdict"></div>';
+  el.className = 'open';
+  renderBottom();
+  var nbars = spec.labels.length, mash = {}; (spec.mash || []).forEach(function (i) { mash[i] = 1; });
+  var bar = 0, verdicts = [], dir = '', phase = 0, period = 1150, start = 0, mashN = 0, mashEnd = 0, done = false, timers = [];
+  var track = $('qtrack'), marker = $('qmarker'), band = $('qband'), vEl = $('qverdict'), lab = $('qlabel'), ann = $('qa'), dirs = $('qdirs');
+  function later(fn, ms) { timers.push(setTimeout(fn, ms)); }
+  function announce(t, ms) { ann.textContent = t; ann.className = 'qte-announce show'; later(function () { ann.className = 'qte-announce'; }, ms || 750); }
+  function center() { var c = spec.targets[bar]; return (c == null || isNaN(c)) ? 0.5 : c; }
+  function frac(now) { var t = ((now - start) % (period * 2)) / period; return t <= 1 ? t : 2 - t; }
+  function place(c, w) { band.style.left = (Math.max(0, Math.min(1 - w, c - w / 2)) * 100) + '%'; band.style.width = (w * 100) + '%'; }
+  function tick(now) { if (phase !== 1 || done) return; marker.style.left = (frac(now) * 100) + '%'; requestAnimationFrame(tick); }
+  function mashTick(now) { if (phase !== 2 || done) return; place(0.5, Math.max(0.03, (mashEnd - now) / 1800)); requestAnimationFrame(mashTick); }
+  function record(v, txt) { verdicts.push(v); phase = 0; vEl.textContent = txt || (v.toUpperCase() + (v === 'perfect' ? '!' : '')); vEl.className = 'rg-verdict ' + v; bar++; }
+  function begin() {
+    if (bar >= nbars) return finish();
+    vEl.textContent = ''; vEl.className = 'rg-verdict'; phase = 0;
+    lab.textContent = spec.labels[bar] || ('Timing ' + (bar + 1));
+    if (mash[bar]) { announce('MASH!! GO', 900); later(startMash, 950); } else later(startSweep, bar === 0 ? 120 : 620);
+  }
+  function startSweep() { place(center(), 0.18); marker.style.left = '0%'; start = performance.now(); phase = 1; requestAnimationFrame(tick); }
+  function startMash() { place(0.5, 1.0); mashN = 0; marker.style.left = '0%'; lab.textContent = spec.labels[bar] + '  0'; phase = 2; mashEnd = performance.now() + 1800; requestAnimationFrame(mashTick); later(endMash, 1800); }
+  function endMash() { if (phase !== 2) return; place(0.5, 0.18); var v = mashN >= 12 ? 'perfect' : (mashN >= 6 ? 'good' : 'miss'); record(v, mashN + ' hits -> ' + v.toUpperCase()); announce('MASH OVER', 700); later(begin, 1150); }
+  function hit() {
+    if (done) return;
+    if (phase === 2) { mashN++; marker.style.left = Math.min(100, mashN / 12 * 100) + '%'; lab.textContent = spec.labels[bar] + '  ' + mashN; return; }
+    if (phase !== 1) return;
+    var d = Math.abs(frac(performance.now()) - center());
+    record(d <= 0.05 ? 'perfect' : (d <= 0.14 ? 'good' : 'miss')); later(begin, 600);
+  }
+  function finish() {
+    if (done) return; done = true;
+    while (verdicts.length < nbars) verdicts.push('miss');
+    later(function () { qteRun = null; act('/qte', { verdicts: verdicts.join(','), dir: dir }); }, 450);
+  }
+  track.addEventListener('pointerdown', function (e) { e.preventDefault(); hit(); });
+  qteRun = { kind: spec.kind, call: spec.call, hit: hit, cancel: function () { timers.forEach(clearTimeout); done = true; } };
+  if (spec.jp) announce(spec.jp, 1000);
+  later(function () {
+    if (spec.direction && dirs) {
+      dirs.hidden = false; announce('PICK A SIDE', 700);
+      Array.prototype.forEach.call(dirs.querySelectorAll('button'), function (b) { b.onclick = function () { dir = b.dataset.dir; dirs.hidden = true; begin(); }; });
+    } else begin();
+  }, spec.jp ? 1050 : 0);
+  later(finish, 15000);
+}
+function closeQTE() { if (qteRun) { qteRun.cancel(); qteRun = null; } var el = $('qte'); if (el.className) { el.className = ''; el.innerHTML = ''; renderBottom(); } }
+
+/* ---------------- the strike zone: clicking it in 3D ---------------- */
+function zoneCellAt(sx, sy) {
+  var q = BTP.unproject(sx, sy, BTP.ZONE.z); if (!q) return null;
+  var Z = BTP.ZONE, pad = 0.06;
+  if (q.x < Z.x0 - pad || q.x > Z.x1 + pad || q.y < Z.y0 - pad || q.y > Z.y1 + pad) return null;
+  var cw = (Z.x1 - Z.x0) / 3, ch = (Z.y1 - Z.y0) / 3;
+  return { col: clamp(Math.floor((q.x - Z.x0) / cw), 0, 2), row: clamp(Math.floor((Z.y1 - q.y) / ch), 0, 2) };
+}
+function stageXY(e) { var r = $('view').getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+
+/* ---------------- pitch geometry and timing ---------------- */
+var BALL_TIME_SCALE = 1.35;                       // the flight is played a little slower than real life so the eye can follow it (never tied to the frame rate)
+var CATCH_Z = -0.25;                              // the mitt is held this far behind the front of the plate
+function pitchTarget(last, bats, rnd) {
+  var cell = BTP.courseCell(last.actual_course, bats), c = BTP.cellCenter(cell.row, cell.col);
+  var x = c.x + (rnd() - 0.5) * c.cw * 0.55, y = c.y + (rnd() - 0.5) * c.ch * 0.55;
+  var outside = !last.in_zone || (last.framed && !last.swung);
+  if (outside) {                                   // a ball: push it out of the zone, away from the middle
+    var Z = BTP.ZONE, dx = c.x - (Z.x0 + Z.x1) / 2, dy = c.y - (Z.y0 + Z.y1) / 2;
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) { dy = -1; }
+    var push = last.framed ? 0.07 : (0.09 + rnd() * 0.10);
+    x += dx / (Math.hypot(dx, dy) || 1) * push; y += dy / (Math.hypot(dx, dy) || 1) * push;
+    if (!last.framed && cell.row === 2) y -= 0.12;
+  }
+  return { x: x, y: Math.max(y, 0.38) };                                      // a ball in the dirt still stays inside what the mask lets you see
+}
+function mittScreen(wx, wy) {                       // the idle mitt hangs behind the plate, on the line of sight to the target
+  var k = (CATCH_Z - BTP.CAM.z) / (0 - BTP.CAM.z);
+  var X = BTP.CAM.x + (wx - BTP.CAM.x) * k, Y = BTP.CAM.y + (wy - BTP.CAM.y) * k;
+  var p = P(X, Y, CATCH_Z); if (!p) return { x: V.W / 2, y: V.H * 0.7, size: 40 };
+  return { x: p.x, y: p.y, size: 0.092 * p.s };
+}
+function mittAtWorld(x, y) { var p = P(x, y, CATCH_Z); return p ? { x: p.x, y: p.y, size: 0.092 * p.s } : null; }
+
+function mittPlane(cell) {                          // the idle mitt, as a point on the plane it hangs in (on the line of sight to the target cell)
+  var c = BTP.cellCenter(cell.row, cell.col), k = (CATCH_Z - BTP.CAM.z) / (0 - BTP.CAM.z);
+  return { x: BTP.CAM.x + (c.x - BTP.CAM.x) * k, y: BTP.CAM.y + (c.y - BTP.CAM.y) * k };
+}
+function mittPx(x, y) { return mittAtWorld(x, y); }
+function startPitchAnim(ns) {
+  var l = ns.last, prev = shown, bats = prev.batter.bats, lefty = prev.pitcher.throws === 'L';
+  var rep = null; prev.repertoire.forEach(function (p) { if (p.key === l.pitch_type) rep = p; });
+  rep = rep || { key: l.pitch_type, velocity: 90, move: [0.3, 0], family: 'fastball' };
+  var rnd = BTP.rng(l.seq * 977 + 13);
+  var Rp = BTP.releasePoint(lefty), Pt = pitchTarget(l, bats, rnd);
+  // the game decided where this pitch ended up (its control error is already in that spot); we find the throw that gets there
+  var spin = BTP.phys.spinFor(rep.key, rep.move, lefty);
+  var path = BTP.phys.solve([Rp.x, Rp.y, Rp.z], [Pt.x, Pt.y], rep.velocity * BTP.phys.MPH, spin);
+  var tRel = BTP.DELIVERY.release, S_ = BALL_TIME_SCALE;
+  var tPlate = tRel + path.tPlate * S_, tCatch = tRel + BTP.phys.timeAtZ(path, CATCH_Z) * S_;
+  var tHitZ = tRel + BTP.phys.timeAtZ(path, 0.22) * S_;                       // the bat meets the ball just over the front of the plate
+  var swung = l.swung, res = l.result, batted = l.batted;
+  var off = swung ? l.swing.off : 0;                                          // early (-) or late (+), in seconds: the engine's own judgement of the swing
+  var tContact = tHitZ + off, swingDur = 0.52;
+  var tAfter = tCatch + 1.5, script = batted ? batted.script : null;
+  if (script) tAfter = tContact + script.duration - 0.2 + 0.5;
+  else if (res === 'Foul') tAfter = tContact + 2.2;
+  var foul = null;                                                            // a foul ball goes up and off to the side
+  if (res === 'Foul') {
+    var side = (l.timing === 'late') ? (bats === 'R' ? 1 : -1) : (bats === 'R' ? -1 : 1);
+    foul = { vx: side * (9 + rnd() * 5), vy: 9 + rnd() * 4, vz: 2 + rnd() * 7 };
+  }
+  var tx = BTP.cellCenter(sel.cell.row, sel.cell.col);                        // where the mitt was set
+  var atCatch = BTP.phys.at(path, BTP.phys.timeAtZ(path, CATCH_Z));
+  var mittT = mittScreen(tx.x, tx.y), mittA = mittAtWorld(atCatch.x, atCatch.y) || mittT;
+  var caught = !script && res !== 'Foul';                                     // the mitt takes it unless the bat does
+  var interactive = !!(l.catchable && ns.phase === 'play');                   // you catch it yourself when the pitch ended in the mitt
+  var pts = [];                                                               // the whole path, kept for the faint trace afterwards
+  for (var q = 0; q <= 40; q++) { var pp = BTP.phys.at(path, path.tPlate * q / 40); pts.push([pp.x, pp.y, pp.z]); }
+  anim = { t0: performance.now(), tRel: tRel, tPlate: tPlate, tCatch: tCatch, tContact: tContact, swingDur: swingDur, scale: S_,
+           path: path, R: Rp, Pt: Pt, bats: bats, lefty: lefty, l: l, script: script, foul: foul, caught: caught, swung: swung,
+           mittT: mittT, mittA: mittA, tAfter: tAfter, spin: rnd() * 6, trail: [], pathPts: pts, banner: -1, rep: rep, done: false, ns: ns,
+           snd: {}, tArr: tPlate, interactive: interactive, rules: ns.catch_rules, difficulty: ns.difficulty, atCatch: atCatch, spinVec: spin,
+           catchPending: false, panelShown: false };
+  anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
+  catchG = null; keys = {};
+  if (interactive) {
+    var p0 = mittPlane(sel.cell);
+    catchG = { x: p0.x, y: p0.y, vx: 0, vy: 0, pressT: null, resolved: false, quality: null, tRes: null, ex: 0, ey: 0, dt: null, detail: '', dropped: false, missPath: null, lastNow: null };
+    anim.tAfter = Infinity;                                                   // it ends once your catch is decided
+  }
+  anim.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? tContact + 1.2 : (interactive ? Infinity : tCatch + 0.45));
+  setPanelCompact(true);                                                      // the read panel steps aside while the pitch is on its way
+  hint('');
+  renderBottom();
+  $('banner').className = 'ov';
+}
+
+/* ---------------- the catch game ---------------- */
+function resolveCatch(a, cg, t, posErr, dt, passed) {
+  var rules = a.rules, q;
+  if (passed) q = 'miss';
+  else if (dt == null) q = (rules.auto && posErr <= rules.pos[1]) ? 'barely' : 'miss';       // never pressed: the mitt closes by itself on the easier settings
+  else q = BTP.catchlib.judge(posErr, dt, rules);
+  cg.resolved = true; cg.quality = q; cg.tRes = t; cg.dt = dt; cg.auto = (dt == null && q === 'barely');
+  cg.ex = cg.x - a.atCatch.x; cg.ey = cg.y - a.atCatch.y;
+  cg.detail = BTP.catchlib.describe(cg.ex, cg.ey, dt, rules);
+  if (q === 'miss') {
+    if (passed) cg.missPath = BTP.catchlib.keepFlying(a.path, a.spinVec);          // it flew past the mitt
+    else cg.dropped = true;                                                       // it was in the mitt, but you did not close it in time
+  }
+  a.tAfter = t + 2.2;
+  a.panelAt = t + 1.0;
+  var label = { clean: 'CLEAN CATCH!', barely: 'BARELY CAUGHT', miss: 'MISSED IT!' }[q];
+  $('banner').innerHTML = '<div class="big ' + (q === 'clean' ? 'r-gold' : (q === 'barely' ? 'r-warn' : 'r-bad')) + '">' + label + '</div><div class="sub f">' + esc(cg.detail) + '</div>';
+  $('banner').className = 'ov show';
+  a.catchPending = true;
+  post('/catch', { quality: q }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
+                                      function () { a.catchPending = false; });
+  renderBottom();
+  $('catchhint').className = 'ov';
+}
+function catchPress(now) {
+  var a = anim, cg = catchG;
+  if (!a || !cg || cg.resolved || cg.pressT !== null) return;
+  var t = (now - a.t0) / 1000 / TS;
+  if (t < a.tCatch - 0.45) return;                                                 // far too early: not counted, press again
+  if (t < a.tCatch) { cg.pressT = t; return; }                                    // judged when the ball arrives
+  resolveCatch(a, cg, t, Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y), t - a.tCatch);
+}
+function updateCatch(a, cg, now, t) {
+  var dtr = clamp((now - (cg.lastNow || now)) / 1000, 0, 0.05); cg.lastNow = now;
+  if (!cg.resolved) {                                                              // the mitt follows your keys, with a little weight
+    var tx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), ty = (keys.up ? 1 : 0) - (keys.down ? 1 : 0), sp = 1.7, k = Math.min(1, dtr * 14);
+    if (tx && ty) { tx *= 0.7071; ty *= 0.7071; }
+    cg.vx += (tx * sp - cg.vx) * k; cg.vy += (ty * sp - cg.vy) * k;
+    cg.x = clamp(cg.x + cg.vx * dtr, -0.75, 0.75); cg.y = clamp(cg.y + cg.vy * dtr, 0.22, 1.6);
+  }
+  if (!cg.resolved && t >= a.tCatch) {                                             // the ball arrives
+    var rules = a.rules, posErr = Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y);
+    if (cg.pressT !== null) resolveCatch(a, cg, t, posErr, cg.pressT - a.tCatch);
+    else if (posErr > rules.pos[1] * 1.25) resolveCatch(a, cg, t, posErr, null, true);   // way off: it flies past before you can close the mitt
+    else if (t > a.tCatch + rules.time[1]) resolveCatch(a, cg, t, posErr, null);         // it sat in the open mitt and you never pressed
+  }
+}
+
+/* ---------------- the read panel ---------------- */
+function setPanelCompact(on) { var el = $('readpanel'); if (el.className.indexOf('show') >= 0) el.className = 'ov show' + (on ? ' compact' : ''); }
+function showPanel(a) {
+  var ns2 = a.ns, l2 = ns2.last || a.l, cg = a.interactive ? catchG : null, label = null;
+  if (cg && cg.resolved) {
+    label = { cls: cg.quality, text: { clean: 'CLEAN CATCH', barely: cg.auto ? 'CAUGHT (AUTO)' : 'BARELY CAUGHT', miss: 'MISSED' }[cg.quality], detail: cg.detail };
+    if (l2.catch && l2.catch.stolen) label.detail = 'Stole a strike!';
+    if (l2.catch && l2.catch.passed) label.detail = 'Passed ball: the runners moved up';
+  }
+  var data = { l: l2, reaction: ns2.reaction, reads: ns2.reads, bats: a.bats, Pt: a.Pt, markT: a.markT, headline: plainLabel(l2), difficulty: ns2.difficulty, catchLabel: label };
+  $('readpanel').innerHTML = BTP.catchlib.panelHTML(data);
+  $('readpanel').className = 'ov show';
+  $('banner').className = 'ov';
+  a.panelShown = true; panelOpen = true;
+}
+function restorePanel(ns) {                                                        // after a reload: the last pitch, compact
+  if (!ns.last || panelOpen) return;
+  var l = ns.last, bats = ns.batter.bats, cell = BTP.courseCell(l.actual_course, bats), c = BTP.cellCenter(cell.row, cell.col);
+  var data = { l: l, reaction: ns.reaction, reads: ns.reads, bats: bats, Pt: { x: c.x, y: c.y }, markT: cell, headline: plainLabel(l), difficulty: ns.difficulty, catchLabel: null };
+  $('readpanel').innerHTML = BTP.catchlib.panelHTML(data); $('readpanel').className = 'ov show compact'; panelOpen = true;
+}
+function finishAnim() {
+  var ns = pendingState || S; pendingState = null; anim = null; catchG = null; keys = {};
+  $('catchhint').className = 'ov';
+  $('banner').className = 'ov';
+  onState(ns);
+}
+
+/* the banner after a pitch: the result, and your grade with the reason */
+function showResult(l, label, tone) {
+  $('banner').innerHTML = '<div class="big ' + (tone || RESULT_TONE[l.result] || 'r-neutral') + '">' + esc(label) + '</div>';
+  $('banner').className = 'ov show';
+}
+function plainLabel(l) {
+  if (l.batted) return l.batted.label.toUpperCase() + (l.batted.runs ? ' · ' + l.batted.runs + ' RUN' + (l.batted.runs > 1 ? 'S' : '') : '');
+  return { Strike: 'STRIKE', Ball: 'BALL', Whiff: 'SWING & MISS', Foul: 'FOUL BALL' }[l.result] || l.result.toUpperCase();
+}
+
+/* ---------------- one frame ---------------- */
+function scriptSeg(d, t) {                           // a position from a list of [t0,t1,x0,y0,x1,y1] segments (field plan units)
+  var p = d.start;
+  for (var i = 0; i < d.segs.length; i++) {
+    var s = d.segs[i];
+    if (t < s[0]) return { p: p, moving: false };
+    if (t >= s[1]) { p = [s[4], s[5]]; continue; }
+    var u = ease((t - s[0]) / (s[1] - s[0]));
+    return { p: [s[2] + (s[4] - s[2]) * u, s[3] + (s[5] - s[3]) * u], moving: true, v: [s[4] - s[2], s[5] - s[3]] };
+  }
+  return { p: p, moving: false };
+}
+function scriptBall(sc, t) {
+  var d = sc.ball, p = d.start, z = 0;
+  for (var i = 0; i < d.segs.length; i++) {
+    var s = d.segs[i];
+    if (t < s[0]) break;
+    if (t >= s[1]) { p = [s[4], s[5]]; z = 0; continue; }
+    var u = (t - s[0]) / (s[1] - s[0]);
+    p = [s[2] + (s[4] - s[2]) * u, s[3] + (s[5] - s[3]) * u];
+    var h = s[6] || 0, n = s[7] || 1;
+    z = n <= 1 ? h * 4 * u * (1 - u) : h * Math.abs(Math.sin(n * Math.PI * u)) * (1 - 0.6 * u);
+    break;
+  }
+  return { p: p, z: z };
+}
+
+function buildModel(now) {
+  var st = shown, m = { t: now, zone: null, alignment: 'standard', bats: 'R' };
+  if (!st || !st.situation) return m;
+  m.alignment = st.alignment || 'standard'; m.bats = st.batter.bats; m.lefty = st.pitcher.throws === 'L';
+  var B = BTP.BASES, rs = st.situation.runners, i;
+  m.runners = [];
+  for (i = 0; i < 3; i++) if (rs[i]) m.runners.push({ id: i + 1, x: B[i + 1].x * 0.94 + (i === 1 ? 0 : (i === 0 ? -0.6 : 0.6)), z: B[i + 1].z * 0.94 - 0.5 });
+  var enabled = canPlay();
+  var selCell = sel.cell;
+  m.zone = { enabled: enabled, sel: enabled ? selCell : null, hover: enabled ? hover : null, markT: markers.T, markA: markers.A };
+  var ctr = BTP.cellCenter(selCell.row, selCell.col);
+  var idle = mittScreen(ctr.x, ctr.y);
+  idle.y += Math.sin(now * 0.003) * 1.5;
+  m.mitt = { x: idle.x, y: idle.y, size: idle.size, pop: 0, tilt: -0.12 };
+  if (!enabled && !anim) { var c0 = BTP.cellCenter(1, 1), m0 = mittScreen(c0.x, c0.y); m.mitt = { x: m0.x, y: m0.y + 10, size: m0.size, pop: 0, tilt: -0.12 }; }
+  if (!anim) return m;
+
+  /* ---- the pitch / play animation ---- */
+  var a = anim, t = (now - a.t0) / 1000 / TS;
+  var l = a.l;
+  function once(name, cond, fn) { if (cond && !a.snd[name]) { a.snd[name] = 1; fn(); } }
+  // the pitcher's whole-body delivery, in real time
+  m.pitcherT = t;
+  // the batter: the swing starts so that the bat arrives at the right moment
+  if (a.swung) {
+    var su = (t - (a.tContact - 0.62 * a.swingDur)) / a.swingDur;
+    if (su > -0.05) m.batterU = clamp(su, 0, 1);
+    once('swing', su > 0.30, function () { BTP.bgm.sfx('whoosh', 1.0); });
+  } else if (t > a.tCatch + 0.2) m.batterU = null;
+  // the ball, from the physics
+  var ball = { visible: false, x: 0, y: 0, z: 0, spin: a.spin + t * 20, radius: 0.052 };
+  var ts = (t - a.tRel) / a.scale;                                  // seconds of flight time since release (real-life seconds)
+  var cg = a.interactive ? catchG : null;
+  var flyingPlain = t >= a.tRel && (a.interactive ? t < a.tCatch : (a.caught ? t <= a.tCatch + 0.12 : t < a.tContact));
+  if (flyingPlain) {
+    var q = BTP.phys.at(a.path, ts);
+    ball.visible = true; ball.x = q.x; ball.y = q.y; ball.z = q.z;
+    ball.trail = [];                                                // a short afterimage: where it was a few frames ago
+    for (var k = 7; k >= 1; k--) { var qq = BTP.phys.at(a.path, ts - k * 0.0065); ball.trail.push([qq.x, qq.y, qq.z]); }
+    once('pass', (a.caught || a.interactive) && ts > a.path.tPlate - 0.10, function () { BTP.bgm.sfx('whoosh', 0.5); });
+  }
+  var mp, pop = 0, tilt = -0.12;
+  if (cg) {
+    updateCatch(a, cg, now, t);
+    mp = mittPx(cg.x, cg.y) || a.mittT;
+    var rules = a.rules;
+    // the ball after it reaches the mitt's plane
+    if (t >= a.tCatch) {
+      if (!cg.resolved) { ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }                // in the open mitt, waiting for you
+      else {
+        var age = t - cg.tRes;
+        if (cg.quality !== 'miss') {                                                                                          // it sticks: it slides into the pocket
+          if (age < 0.10) { var u = clamp(age / 0.05, 0, 1); ball.visible = true; ball.x = lerp(a.atCatch.x, cg.x, u); ball.y = lerp(a.atCatch.y, cg.y, u); ball.z = CATCH_Z; }
+        } else if (cg.missPath) {                                                                                             // it flew past
+          var sm = cg.missPath.samples, tm = (t - a.tCatch) / a.scale + cg.missPath.t0;
+          var qm = BTP.phys.at({ samples: sm }, tm);
+          if (qm.z > -3.0 && qm.y > 0.05) { ball.visible = true; ball.x = qm.x; ball.y = qm.y; ball.z = qm.z; ball.trail = []; }
+        } else if (age < 0.7) {                                                                                               // it fell out of the open mitt
+          ball.visible = true; ball.x = a.atCatch.x + 0.15 * age; ball.y = Math.max(0.06, a.atCatch.y - 4.9 * age * age); ball.z = CATCH_Z - 0.7 * age;
+        }
+      }
+    }
+    if (cg.resolved) {
+      var ag = t - cg.tRes, q2 = cg.quality;
+      pop = ag < 0.5 ? Math.sin(Math.min(1, ag / 0.07) * Math.PI / 2) * (1 - ease(ag / 0.5)) * (q2 === 'clean' ? 1 : (q2 === 'barely' ? 1.35 : 0.35)) : 0;
+      if (q2 === 'barely') tilt += Math.sin(ag * 38) * 0.28 * Math.max(0, 1 - ag / 0.45);                                      // a bobble
+      once('rsnd', true, function () {
+        if (q2 === 'clean') BTP.bgm.sfx('pop', 1.15);
+        else if (q2 === 'barely') { BTP.bgm.sfx('dull', 1.0); BTP.bgm.sfx('pop', 0.45); }
+        else BTP.bgm.sfx('whoosh', 0.9);
+      });
+      once('thud', q2 === 'miss' && ag > 0.30, function () { BTP.bgm.sfx('thud', 1.0); });
+      if (q2 !== 'miss' && ag < 0.40) m.pop = { x: mp.x, y: mp.y, r: mp.size * (0.8 + ag * 4), a: (1 - ag / 0.40) * (q2 === 'clean' ? 1 : 0.7) };
+      if (ag >= 0 && ag < 0.14) {                                                                                             // one short jolt, then still again
+        var amp2 = (q2 === 'clean' ? 6 : (q2 === 'barely' ? 5 : 8)) * (1 - ag / 0.14) * (1 - ag / 0.14);
+        m.shake = [Math.sin(ag * 220) * amp2, Math.cos(ag * 260) * amp2 * 0.8];
+      }
+    } else if (t >= a.tRel - 0.2) {                                                                                           // the cues: a ring closing on the mitt (not on Expert)
+      if (a.difficulty !== 'expert' && t < a.tCatch + rules.time[1]) m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * clamp((a.tCatch - t) / 0.5, 0, 1)), gold: Math.abs(t - a.tCatch) <= rules.time[0] };
+      if (a.difficulty === 'beginner' && Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y) <= rules.pos[1]) m.aligned = { x: mp.x, y: mp.y, r: mp.size * 1.3 };
+      var hintEl = $('catchhint');
+      if (!a.hintOn) { a.hintOn = true; hintEl.innerHTML = '<b>CATCH</b> &nbsp; WASD / arrows: move the mitt &nbsp;&middot;&nbsp; <b>SPACE</b>: close it as the ball arrives'; hintEl.className = 'ov show'; renderBottom(); }
+    }
+    m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: tilt + 0.12 * pop };
+  } else {
+    // the mitt: set at your target, then it reaches for where the ball really is going; a quick recoil when it lands
+    var mv = ease((t - (a.tCatch - 0.28)) / 0.20);
+    mp = a.caught ? { x: lerp(a.mittT.x, a.mittA.x, mv), y: lerp(a.mittT.y, a.mittA.y, mv), size: lerp(a.mittT.size, a.mittA.size, mv) } : a.mittT;
+    var popAge = t - a.tCatch;
+    pop = a.caught && popAge >= 0 && popAge < 0.45 ? Math.sin(Math.min(1, popAge / 0.07) * Math.PI / 2) * (1 - ease(popAge / 0.45)) : 0;
+    m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: -0.12 + 0.12 * pop };
+    if (a.caught && popAge >= 0 && popAge < 0.40) m.pop = { x: mp.x, y: mp.y, r: mp.size * (0.8 + popAge * 4), a: 1 - popAge / 0.40 };
+    if (a.caught) once('pop', popAge >= 0, function () { BTP.bgm.sfx('pop', 1.0); });
+    var shakeAge = a.caught ? popAge : t - a.tContact;
+    if ((a.caught || a.swung) && shakeAge >= 0 && shakeAge < 0.14) {          // one short jolt, then still again
+      var amp = (a.caught ? 7 : 4) * (1 - shakeAge / 0.14) * (1 - shakeAge / 0.14);
+      m.shake = [Math.sin(shakeAge * 220) * amp, Math.cos(shakeAge * 260) * amp * 0.8];
+    }
+  }
+  if (!a.marked && t >= a.tPlate) { a.marked = true; markers.T = a.markT; markers.A = a.markA; }
+  m.zone.markT = markers.T; m.zone.markA = markers.A;
+  m.zone.enabled = false; m.zone.sel = null; m.zone.hover = null;
+  // the whole path stays on screen as a faint trace for a moment, so you can see how it moved
+  m.pathTrail = t > a.tPlate ? a.pathPts : null; m.trailColor = a.rep && a.rep.family === 'breaking' ? '255,200,110' : (a.rep && a.rep.family === 'offspeed' ? '140,220,255' : '255,255,255');
+  m.trailFade = clamp(1 - (t - a.tPlate) / 1.4, 0, 1);
+  var contactAt = BTP.phys.at(a.path, BTP.phys.timeAtZ(a.path, 0.22));
+  // the ball off the bat
+  if (!a.caught && t >= a.tContact) {
+    once('crack', true, function () { BTP.bgm.sfx('crack', a.script ? 1.0 : 0.6); });
+    if (a.script) {
+      var st2 = t - a.tContact + 0.2, sb = scriptBall(a.script, st2), w = BTP.fieldToWorld(sb.p[0], sb.p[1]);
+      var y = 0.11 + sb.z * BTP.HEIGHT_PER_PX + 0.8 * Math.max(0, 1 - (st2 - 0.2) / 0.15);
+      ball.visible = true; ball.x = w.x; ball.y = y; ball.z = w.z; ball.radius = 0.32; ball.minPx = 4.5; ball.trail = null;
+      a.trail.push([w.x, y, w.z]); if (a.trail.length > 14) a.trail.shift();
+      // fielders and runners from the replay script
+      m.fielders = {};
+      Object.keys(a.script.fielders).forEach(function (pos) {
+        var r = scriptSeg(a.script.fielders[pos], st2), fw = BTP.fieldToWorld(r.p[0], r.p[1]);
+        var o = { x: fw.x, z: fw.z, moving: r.moving };
+        if (r.moving) { var v2 = BTP.fieldToWorld(r.p[0] + r.v[0] * 0.05, r.p[1] + r.v[1] * 0.05); o.vx = v2.x - fw.x; o.vz = v2.z - fw.z; }
+        var dd = Math.hypot(fw.x - w.x, fw.z - w.z);
+        if (dd < 2.4 && y > 0.9 && !r.moving) o.catching = true;
+        m.fielders[pos] = o;
+      });
+      var boxX = (a.bats === 'R' ? -1 : 1) * 0.8;
+      m.runners = a.script.runners.map(function (rn, ix) {
+        var r = scriptSeg(rn, st2), rw = BTP.fieldToWorld(r.p[0], r.p[1]), o = { id: ix + 1, x: rw.x, z: rw.z, moving: r.moving, out: false };
+        if (rn.id === 'b') o.x += boxX * Math.max(0, 1 - Math.hypot(rw.x, rw.z) / 7);      // he starts in the batter's box, not on the plate
+        if (r.moving) { var v3 = BTP.fieldToWorld(r.p[0] + r.v[0] * 0.05, r.p[1] + r.v[1] * 0.05); o.vx = v3.x - rw.x; o.vz = v3.z - rw.z; }
+        if (rn.fate === 'out' && !r.moving && rn.segs.length && st2 > rn.segs[rn.segs.length - 1][1] + 0.1) o.out = true;
+        return o;
+      });
+      m.batterHidden = true; m.miniOn = true; drawMini(a, st2);
+      m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
+    } else if (a.foul) {
+      var ft = t - a.tContact;
+      ball.visible = true; ball.x = contactAt.x + a.foul.vx * ft; ball.z = a.foul.vz * ft + 0.22;
+      ball.y = Math.max(0.1, contactAt.y + a.foul.vy * ft - 4.9 * ft * ft); ball.radius = 0.12; ball.trail = null;
+      a.trail.push([ball.x, ball.y, ball.z]); if (a.trail.length > 12) a.trail.shift();
+      m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
+    }
+  }
+  m.ball = ball;
+
+  // the play-by-play words (CAUGHT!, OUT!, FALLS IN!...) while a ball in play is replayed
+  if (a.script && t >= a.tContact + 0.25 && a.banner < 0) {
+    a.banner = 0; a.evIdx = 1;
+    showResult(l, a.script.events.length ? a.script.events[0][1] : plainLabel(l), a.script.events.length ? (a.script.events[0][2] === 'good' ? 'r-good' : 'r-bad') : null);
+  }
+  if (a.script && a.banner >= 0 && !a.panelShown) {
+    var st3 = t - a.tContact + 0.2, evs = a.script.events, last = -1;
+    for (var k = 0; k < evs.length; k++) if (evs[k][0] <= st3) last = k;
+    if (last >= a.evIdx - 1 && last !== a.lastEv && last >= 0) { a.lastEv = last; showResult(l, evs[last][1], evs[last][2] === 'good' ? 'r-good' : 'r-bad'); }
+  }
+  // then the read of the batter, once the pitch (and your catch) are done
+  if (!a.panelShown && t >= a.panelAt && !a.catchPending && (!a.interactive || (cg && cg.resolved))) showPanel(a);
+  if (a.interactive && cg && cg.resolved && t >= a.tAfter - 1.0) $('catchhint').className = 'ov';
+  if (t >= a.tAfter || a.skip) { a.done = true; if (!a.panelShown && !a.catchPending) showPanel(a); }
+  return m;
+}
+
+
+/* ---------------- the little top-down board for balls that leave the catcher's view ---------------- */
+var MINI = { w: 250, h: 162, s: 0.53 };
+function miniXY(px, py) { return [px * MINI.s + 19, (py - 96) * MINI.s + 4]; }
+function drawMini(a, st2) {
+  var cv = $('mini'); if (!cv) return;
+  var c = cv.getContext('2d'), k = MINI.s, home = miniXY(200, 372), i;
+  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, cv.width, cv.height);
+  c.fillStyle = 'rgba(7,12,20,.72)'; c.fillRect(0, 0, MINI.w, MINI.h);
+  c.fillStyle = '#2f7f47'; c.beginPath(); c.moveTo(home[0], home[1]); c.lineTo(miniXY(5.5, 177.5)[0], miniXY(5.5, 177.5)[1]);
+  c.arc(home[0], home[1], 275 * k, Math.PI * 1.25, Math.PI * 1.75); c.closePath(); c.fill();
+  c.fillStyle = '#b58650'; c.beginPath(); c.moveTo(home[0], home[1]);
+  [[267, 305], [200, 238], [133, 305]].forEach(function (b) { var q = miniXY(b[0], b[1]); c.lineTo(q[0], q[1]); }); c.closePath(); c.fill();
+  c.strokeStyle = 'rgba(255,255,255,.7)'; c.lineWidth = 1; c.beginPath(); c.moveTo(home[0], home[1]); c.lineTo(miniXY(5.5, 177.5)[0], miniXY(5.5, 177.5)[1]);
+  c.moveTo(home[0], home[1]); c.lineTo(miniXY(394.5, 177.5)[0], miniXY(394.5, 177.5)[1]); c.stroke();
+  var sc = a.script;
+  Object.keys(sc.fielders).forEach(function (pos) {
+    var r = scriptSeg(sc.fielders[pos], st2), q = miniXY(r.p[0], r.p[1]);
+    c.fillStyle = '#2f6fe0'; c.strokeStyle = '#fff'; c.lineWidth = 1; c.beginPath(); c.arc(q[0], q[1], 6, 0, 7); c.fill(); c.stroke();
+    c.fillStyle = '#fff'; c.font = '700 6.5px sans-serif'; c.textAlign = 'center'; c.fillText(pos, q[0], q[1] + 2.3);
+  });
+  sc.runners.forEach(function (rn) {
+    var r = scriptSeg(rn, st2), q = miniXY(r.p[0], r.p[1]);
+    c.fillStyle = rn.fate === 'out' ? '#8a6a6a' : '#e0463c'; c.strokeStyle = '#fff'; c.beginPath(); c.arc(q[0], q[1], 4.5, 0, 7); c.fill(); c.stroke();
+  });
+  var sb = scriptBall(sc, st2), bq = miniXY(sb.p[0], sb.p[1]);
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(bq[0], bq[1] - sb.z * 0.25, 3.6, 0, 7); c.fill();
+  c.fillStyle = 'rgba(255,255,255,.7)'; c.font = '700 8px sans-serif'; c.textAlign = 'left'; c.fillText('FIELD VIEW', 7, MINI.h - 6);
+}
+
+/* ---------------- the render loop ---------------- */
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (!ctx) return;
+  if (anim && anim.skip) { /* jump to the end */ }
+  var m = buildModel(now);
+  BTP.renderFrame(ctx, scene, m);
+  var mini = $('mini'); if (mini) mini.style.opacity = m.miniOn ? '1' : '0';
+  if (anim && anim.done && !anim.catchPending) finishAnim();
+}
+function skipAnim() { if (anim && !catchActive()) { anim.done = true; } }
+
+/* ---------------- setup ---------------- */
+function resize() {
+  var st = $('stage'); dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(320, st.clientWidth); H = Math.max(240, st.clientHeight);
+  if (W * H * dpr * dpr > 2.4e6) dpr = Math.max(0.75, Math.sqrt(2.4e6 / (W * H)));       // very large screens: a little softer, still smooth
+  ['view', 'mask'].forEach(function (id) { var c = $(id); c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); });
+  BTP.setupView(W, H);
+  scene = BTP.buildScene(W, H, dpr);
+  maskCv = BTP.buildMask(W, H, dpr);
+  var mc = $('mask').getContext('2d'); mc.setTransform(1, 0, 0, 1, 0, 0); mc.clearRect(0, 0, $('mask').width, $('mask').height); mc.drawImage(maskCv, 0, 0);
+  ctx = $('view').getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function init() {
+  resize();
+  var rt = null;
+  window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(resize, 120); });
+  var view = $('view');
+  view.addEventListener('pointermove', function (e) {
+    if (!canPlay()) { hover = null; return; }
+    var p = stageXY(e); hover = zoneCellAt(p.x, p.y); view.style.cursor = hover ? 'pointer' : 'default';
+  });
+  view.addEventListener('pointerleave', function () { hover = null; });
+  view.addEventListener('pointerdown', function (e) {
+    BTP.bgm.start();
+    if (anim) { skipAnim(); return; }
+    if (!canPlay()) return;
+    var p = stageXY(e), c = zoneCellAt(p.x, p.y);
+    if (c) { sel.cell = c; updateTargetRead(); }
+  });
+  $('bottom').addEventListener('click', function (e) {
+    BTP.bgm.start();
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.pitch) { sel.pitch = b.dataset.pitch; renderBottom(); }
+    else if (b.dataset.intent) { sel.intent = b.dataset.intent; renderBottom(); }
+    else if (b.id === 'callbtn') callPitch();
+  });
+  $('top').addEventListener('click', function (e) {
+    BTP.bgm.start();
+    var b = e.target.closest('button'); if (!b || !b.dataset.drawer) return;
+    if (drawerName === b.dataset.drawer) closeDrawer(); else loadDrawer(b.dataset.drawer);
+  });
+  $('drawer').innerHTML = '<div class="dh"><b class="ttl" style="flex:1"></b><button class="t-btn" id="drawer-close">Close</button></div><div class="db"></div>';
+  $('drawer-close').onclick = closeDrawer;
+  interceptForms($('drawer')); interceptForms($('modal'));
+  document.addEventListener('pointerdown', function () { BTP.bgm.start(); }, true);
+  document.addEventListener('keydown', function (e) {
+    BTP.bgm.start();
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (catchActive()) {                                                          // during the pitch the keys are your mitt, not the target
+      if (setMittKey(e.code, true)) { e.preventDefault(); return; }
+      if (e.code === 'Space') { e.preventDefault(); catchPress(performance.now()); return; }
+    }
+    if (e.code === 'Space' || e.code === 'Enter') {
+      if (qteRun) { e.preventDefault(); qteRun.hit(); return; }
+      if (anim) { e.preventDefault(); skipAnim(); return; }
+      if (e.code === 'Enter' && canPlay()) { e.preventDefault(); callPitch(); }
+      return;
+    }
+    if (e.code === 'Escape') { if (drawerName) closeDrawer(); return; }
+    if (!canPlay()) return;
+    if (/^Digit[1-9]$/.test(e.code) && shown && shown.repertoire) {
+      var i = parseInt(e.code.slice(5), 10) - 1; if (shown.repertoire[i]) { sel.pitch = shown.repertoire[i].key; renderBottom(); }
+    }
+    var d = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.code];
+    if (d) { e.preventDefault(); sel.cell = { row: clamp(sel.cell.row + d[0], 0, 2), col: clamp(sel.cell.col + d[1], 0, 2) }; updateTargetRead(); }
+  });
+  document.addEventListener('keyup', function (e) { setMittKey(e.code, false); });
+  window.addEventListener('blur', function () { keys = {}; });
+  renderTop();
+  getState().then(onState, function () { toast('Could not reach the game server.', true); });
+  requestAnimationFrame(loop);
+}
+function setMittKey(code, down) {
+  var map = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down' };
+  if (!map[code]) return false;
+  keys[map[code]] = down; return true;
+}
+function callPitch() {
+  if (!canPlay()) return;
+  var course = BTP.cellCourse(sel.cell.row, sel.cell.col, shown.batter.bats);
+  markers.T = markers.A = null;
+  setPanelCompact(true);
+  act('/pitch', { pitch_type: sel.pitch, course: course, intent: sel.intent });
+}
+BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, keys: keys }; };
+BTP.catchPress = function () { catchPress(performance.now()); };
+BTP.setKeys = function (k) { keys = k; };
+BTP.setSlow = function (n) { TS = n; };      // for testing and demos
+BTP.finishAnim = function () { if (anim) finishAnim(); };
+BTP.sync = function () { return getState().then(onState); };
+BTP.model = function () { return buildModel(performance.now()); };
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+})();
+</script>
+</body></html>

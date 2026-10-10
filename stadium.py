@@ -53,11 +53,13 @@ _BODY = """
 """
 
 
-def render_stadium_page(classic_css=""):
+def render_stadium_page(classic_css="", static=False):
+    """The page. With static=True it also carries the loader that runs the Python game inside the browser (Pyodide)."""
     css, js = _assets()
+    boot = ("<script>" + _read("pyodide_boot.js") + "</script>\n") if static else ""
     return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             "<meta name=\"color-scheme\" content=\"dark\">\n"
             "<title>Behind the Plate — A Catcher's Game</title>\n"
             "<style>" + classic_css + "</style>\n<style>" + css + "</style>\n</head><body>\n"
-            + _BODY + "<script>" + js + "</script>\n</body></html>")
+            + _BODY + boot + "<script>" + js + "</script>\n</body></html>")
