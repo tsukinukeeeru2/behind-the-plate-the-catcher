@@ -38,7 +38,7 @@ A catcher game that feels like catching: the reads, the framing, the throw down.
 Single sources of truth (one engine, one RNG, one place for hidden state) made the translation, the new modes, and the fuzzing cheap.
 
 ## What's next
-An advanced batting mode (aim the bat yourself), real internet play without hosting your own server, more pitchers and lineups (the real-data adapter is already in place), and a daily challenge code.
+An advanced batting mode (aim the bat yourself), a relay server so strict networks can connect too, more pitchers and lineups (the real-data adapter is already in place), and a daily challenge code.
 
 ## Built with
 Python (standard library only), http.server, plain HTML/CSS/JavaScript canvas, Web Audio API, Pyodide (browser-only build), unittest, GitHub Actions
@@ -48,6 +48,8 @@ Python (standard library only), http.server, plain HTML/CSS/JavaScript canvas, W
 python webapp.py
 ```
 (Python 3.11+, nothing to install.)
+
+Or just open the public page. Online 2-player also works there: one player creates a room, the page runs the game in their browser, and the friend connects to it with the invite code (peer-to-peer; the host keeps their tab open).
 
 ---
 

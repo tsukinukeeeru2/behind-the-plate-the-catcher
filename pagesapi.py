@@ -48,3 +48,11 @@ def handle(method, path, body="", headers_json="{}"):
     h = _MemHandler(method, path, body, json.loads(headers_json or "{}"))
     h._guarded(h._handle_get if method == "GET" else h._handle_post)
     return json.dumps({"status": h.status, "ctype": h.ctype, "body": h.payload.decode("utf-8"), "location": h.location})
+
+
+def tick():
+    """The room referee's once-a-second check (who dropped out, what has stalled). The real server runs this in a thread; in the browser the page calls it."""
+    with webapp._LOCK:
+        webapp.ROOMS.sweep()
+        webapp.room_tick()
+    return "ok"

@@ -244,7 +244,7 @@ function onRoomView(v, changed) {
   var r = v.room;
   if (!r) return;
   var first = !roomInfo;
-  if (net.room && r.role !== net.room.role) { net.setRoom({ code: net.room.code, token: net.room.token, role: r.role }); lastGuide = ''; }     // the sides switched
+  if (net.room && r.role !== net.room.role) { net.setRoom({ code: net.room.code, token: net.room.token, role: r.role, guest: net.room.guest }); lastGuide = ''; }     // the sides switched
   var mk = v.match ? v.match.id + ':' + v.match.half : '';
   if (mk !== matchKey && r.phase === 'call') { matchKey = mk; newHalf(); }
   roomInfo = r; roomRecv = performance.now();
@@ -297,10 +297,6 @@ function openModal(name) {
   md.dataset.name = name;
   rfetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
     mb.innerHTML = html + (name === 'start' && !window.BTP_STATIC ? '<p style="text-align:center;margin:6px 0 0"><a id="back-classic" href="/classic">Use the classic page layout instead</a></p>' : '');
-    if (window.BTP_STATIC && name === 'start') {                                    // the browser-only build has no server to host a room
-      var onl = mb.querySelector('input[value=online]');
-      if (onl) { onl.disabled = true; onl.parentNode.style.opacity = '.5'; onl.parentNode.title = 'Online play needs the Python server: python webapp.py --host 0.0.0.0'; var sp = onl.parentNode.querySelector('.dim'); if (sp) sp.textContent = 'needs the Python server (see the README)'; }
-    }
     if (net.room && name === 'report') {                                          // online: there is no "play again" button, only leaving the room
       Array.prototype.forEach.call(mb.querySelectorAll('form'), function (f) { f.remove(); });
       mb.insertAdjacentHTML('beforeend', '<div style="text-align:center;margin-top:8px"><button type="button" class="ho-ready" id="leave-room" style="width:auto;padding:10px 28px">LEAVE THE ROOM</button></div>');
@@ -323,7 +319,6 @@ function interceptForms(container) {
     var path = new URL(f.action, location.href).pathname;
     BTP.bgm.start();
     if (path === '/start' && data.mode === 'online') {                              // two players, two PCs: the lobby, not a local game
-      if (window.BTP_STATIC) { toast('Online play needs the Python server (python webapp.py --host 0.0.0.0). The browser-only page is for one player.', true); return; }
       closeModal(); net.openMenu(); return;
     }
     act(path, data);
@@ -1186,7 +1181,7 @@ function applyOnlinePause(r) {
   if (want && !paused) { paused = true; pausedAt = performance.now(); }
   else if (!want && paused) { paused = false; if (anim && anim.online && !anim.practice && r && r.start_at) { anim.t0 = net.perfOf(r.start_at); anim.startAt = r.start_at; } }
   var el = $('pausev'), html = '';
-  if (netLost) html = '<div class="pv"><b>CONNECTION LOST</b><span>Trying to reconnect. The game is paused, and nothing is lost.</span></div>';
+  if (netLost) html = '<div class="pv"><b>CONNECTION LOST</b><span>Trying to reconnect. The game is paused, and nothing is lost.' + (window.BTP_STATIC ? ' If the host closed their page, the room is gone.' : '') + '</span><button type="button" id="leave-btn2">LEAVE THE ROOM</button></div>';
   else if (r && r.paused) {
     var who = r.paused.role === r.role ? 'You' : (r.paused.role === 'catcher' ? 'The catcher' : 'The batter');
     html = r.paused.reason === 'disconnect' ?
@@ -1478,7 +1473,11 @@ function init() {
   net.hooks = { practice: startBatPractice, catchPractice: startCatchPractice, left: onLeftRoom, gone: onRoomGone, back: function () { getState().then(onState, function () {}); } };
   renderTop();
   if (window.ResizeObserver) { var ro = new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(resize, 60); }); ro.observe($('stage')); }   // the guide strip comes and goes
-  if (!window.BTP_STATIC && net.restore()) {                                         // this tab was in an online room: go back to it
+  var back = net.restore();
+  if (back && window.BTP_STATIC && !net.room.guest) { net.setRoom(null); back = false; }      // a host's room lived in the page that was just reloaded: it is gone
+  if (back && window.BTP_STATIC) {                                                   // a guest on the public page: reconnect to the host's page, then to the room
+    net.joinOnNetwork(net.room.code).then(function () { return net.syncClock(6); }).then(function () { net.startPolling(); }, function () { net.closeNetwork(); net.setRoom(null); getState().then(onState, function () {}); });
+  } else if (back) {                                                                 // this tab was in an online room: go back to it
     net.syncClock(6).then(function () { net.startPolling(); });
   } else getState().then(onState, function () { toast('Could not reach the game server.', true); });
   requestAnimationFrame(loop);

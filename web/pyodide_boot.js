@@ -21,13 +21,25 @@
     py.unpackArchive(buf, 'zip');
     py.runPython("import sys\nsys.path.insert(0, '.')\nimport pagesapi");
     handle = py.runPython('pagesapi.handle');
+    window.BTP_TICKFN = py.runPython('pagesapi.tick');
     box.remove();
   })();
+  // answer one request with the game inside this page (also used by a host to answer a friend's requests, see js_online.js)
+  window.BTP_HANDLE = function (method, url, body, headers) {
+    return ready.then(function () { return JSON.parse(handle(method, url, body || '', JSON.stringify(headers || {}))); });
+  };
+  window.BTP_REMOTE = null;                       // set when this page is a guest in a friend's room: the room's requests go to the friend's page instead
+  function remoteRoute(url, headers) { return url.indexOf('/room/') === 0 || !!(headers && (headers['X-Room'] || headers['x-room'])); }
   ready.catch(function (e) { document.getElementById('boot-msg').textContent = 'Sorry, the game could not start: ' + e.message + '. Check your connection and reload.'; });
   window.fetch = function (url, opts) {
     if (typeof url !== 'string' || url.charAt(0) !== '/') return realFetch(url, opts);
     opts = opts || {};
     var method = (opts.method || 'GET').toUpperCase();
+    if (window.BTP_REMOTE && remoteRoute(url, opts.headers)) {
+      return window.BTP_REMOTE(method, url, opts.body ? String(opts.body) : '', opts.headers || {}).then(function (out) {
+        return new Response(out.body, { status: out.status, headers: { 'Content-Type': out.ctype } });
+      });
+    }
     return ready.then(function () {
       var out = JSON.parse(handle(method, url, opts.body ? String(opts.body) : '', JSON.stringify(opts.headers || {})));
       return new Response(out.body, { status: out.status, headers: { 'Content-Type': out.ctype } });

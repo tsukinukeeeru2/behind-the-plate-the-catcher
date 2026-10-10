@@ -2294,7 +2294,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_html(render_stadium_page(_classic_css()))
         elif path == "/classic":
             self._send_html(_page(render_page(SESSION)))
-        elif path == "/api/state":
+        elif path == "/api/state" or path == "/room/poll":
+            # (/room/poll is answered by do_GET on the real server, which waits for a change; the browser-only build has no
+            # threads to wait on, so it asks again a moment later and gets the view straight away)
             self._send_json(self._state_obj())
         elif path == "/room/time":
             self._send_json({"t": rooms.now_ms()})

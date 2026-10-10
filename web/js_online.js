@@ -67,13 +67,76 @@ N.startPolling = function () {
       N.fails++;
       if (N.fails >= 2 && !N.lost) { N.lost = true; if (N.onConn) N.onConn(false); }
       return new Promise(function (r) { setTimeout(r, 700); });
-    }).then(function () { loop(); });
+    }).then(function () { if (window.BTP_STATIC) setTimeout(loop, 160); else loop(); });
   })();
 };
 N.stopPolling = function () { N.polling = false; };
 
+/* ---------------- playing from the public page (no server of ours) ----------------
+   The room then lives in the host's browser: the host's page runs the game (Python in the browser) and answers the friend's requests, which
+   reach it straight from the friend's page over a peer-to-peer WebRTC data channel (PeerJS, using its free public broker only to introduce
+   the two pages). Nothing else changes: the friend's page sends the very same requests it would send to the server, and the host answers them
+   with the very same code. The host has to keep their tab open. */
+var PEERJS = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js', SAFE_H = ['X-Room', 'X-Token', 'X-Fetch', 'Content-Type'];
+function loadPeer() {
+  if (window.Peer) return Promise.resolve();
+  return new Promise(function (res, rej) { var sc = document.createElement('script'); sc.src = PEERJS; sc.onload = res; sc.onerror = function () { rej(new Error('peerjs')); }; document.head.appendChild(sc); });
+}
+function peerId(code) { return 'btp-' + String(code).replace(/[^A-Za-z0-9]/g, '').toUpperCase(); }
+function answerGuest(conn) {
+  conn.on('data', function (msg) {
+    if (!msg || typeof msg.id !== 'number' || typeof msg.u !== 'string' || msg.u.length > 200 || String(msg.b || '').length > 4000) return;
+    var h = {}; SAFE_H.forEach(function (k) { if (msg.h && typeof msg.h[k] === 'string') h[k] = msg.h[k]; });
+    var refuse = msg.u.indexOf('/room/create') === 0 || !(msg.u.indexOf('/room/') === 0 || h['X-Room']);        // a guest may only talk about a room, never start games or rooms here
+    if (refuse) { conn.send({ id: msg.id, r: { status: 403, body: '{"ok":false,"error":"no"}', ctype: 'application/json' } }); return; }
+    window.BTP_HANDLE(msg.m === 'POST' ? 'POST' : 'GET', msg.u, msg.b || '', h).then(function (r) { conn.send({ id: msg.id, r: { status: r.status, body: r.body, ctype: r.ctype } }); }, function () {});
+  });
+}
+N.hostOnNetwork = function (code) {                                               // the host: be reachable under the room's code
+  return loadPeer().then(function () {
+    return new Promise(function (res, rej) {
+      var pr = new window.Peer(peerId(code)); N.peer = pr;
+      var to = setTimeout(function () { rej(new Error('timeout')); }, 15000);
+      pr.on('open', function () { clearTimeout(to); res(); });
+      pr.on('error', function (e) { clearTimeout(to); rej(e); });
+      pr.on('connection', function (c) { answerGuest(c); });
+    });
+  }).then(function () { N.tickTimer = setInterval(function () { if (window.BTP_TICKFN) { try { window.BTP_TICKFN(); } catch (e) {} } }, 1000); });
+};
+N.joinOnNetwork = function (code) {                                               // the guest: send the room's requests to the host's page
+  return loadPeer().then(function () {
+    return new Promise(function (res, rej) {
+      var pr = new window.Peer(); N.peer = pr;
+      var fail = setTimeout(function () { rej(new Error('timeout')); }, 15000);
+      pr.on('error', function (e) { clearTimeout(fail); rej(e); });
+      pr.on('open', function () {
+        var c = pr.connect(peerId(code), { reliable: true }), pending = {}, seq = 0;
+        c.on('open', function () {
+          clearTimeout(fail); N.conn = c;
+          window.BTP_REMOTE = function (method, url, body, headers) {
+            return new Promise(function (resolve, reject) {
+              if (!c.open) { reject(new Error('closed')); return; }
+              var id = ++seq, to = setTimeout(function () { delete pending[id]; reject(new Error('timeout')); }, 10000);
+              pending[id] = { resolve: resolve, reject: reject, to: to };
+              c.send({ id: id, m: method, u: url, b: body, h: headers });
+            });
+          };
+          res();
+        });
+        c.on('data', function (msg) { var f = msg && pending[msg.id]; if (f) { delete pending[msg.id]; clearTimeout(f.to); f.resolve(msg.r); } });
+        c.on('close', function () { Object.keys(pending).forEach(function (k) { clearTimeout(pending[k].to); pending[k].reject(new Error('closed')); delete pending[k]; }); });
+      });
+    });
+  });
+};
+N.closeNetwork = function () {
+  window.BTP_REMOTE = null; clearInterval(N.tickTimer);
+  try { if (N.peer) N.peer.destroy(); } catch (e) {}
+  N.peer = null; N.conn = null;
+};
+
 /* ---------------- the lobby ---------------- */
-var ERR = { not_found: 'No room has that code. Check it and try again.', full: 'That room is full.', bad_code: 'A code is 6 letters or numbers, like K7Q-H2M.', busy: 'The server has too many rooms open right now. Try again in a minute.', slow_down: 'Too many wrong codes. Wait a minute and try again.' };
+var ERR = { net_host: 'Could not open the room on the network. Check your connection and try again.', net_join: 'Could not reach that room. The host has to keep their tab open, and both of you need a working internet connection.', not_found: 'No room has that code. Check it and try again.', full: 'That room is full.', bad_code: 'A code is 6 letters or numbers, like K7Q-H2M.', busy: 'The server has too many rooms open right now. Try again in a minute.', slow_down: 'Too many wrong codes. Wait a minute and try again.' };
 function show(html) { var el = $('lobby'); el.innerHTML = html; el.className = 'ov show'; }
 N.hideLobby = function () { var el = $('lobby'); if (el && el.className.indexOf('show') >= 0) { el.className = 'ov'; el.innerHTML = ''; } N.lobbyKey = ''; };
 function say(msg, bad) { var m = $('lb-msg'); if (m) { m.textContent = msg || ''; m.className = bad ? 'bad' : ''; } }
@@ -96,11 +159,17 @@ N.openMenu = function (msg) {
   $('lb-create').onclick = function () {
     var side = document.querySelector('input[name=lbside]:checked').value;
     say('Creating the room...');
-    N.post('/room/create', { role: side, timer: $('lb-timer').value, guide: $('lb-guide').value }).then(entered, function () { say('Could not reach the game server.', true); });
+    N.post('/room/create', { role: side, timer: $('lb-timer').value, guide: $('lb-guide').value }).then(function (res) {
+      if (!res.ok || !window.BTP_STATIC) { entered(res); return; }
+      say('Opening the room on the network...');                                   // the public page: the room is open to friends once this page is reachable under its code
+      N.hostOnNetwork(res.code).then(function () { entered(res); }, function () { N.closeNetwork(); say(ERR.net_host, true); });
+    }, function () { say('Could not reach the game server.', true); });
   };
   var join = function () {
     say('Joining...');
-    N.post('/room/join', { code: $('lb-code').value }).then(entered, function () { say('Could not reach the game server.', true); });
+    var doJoin = function () { N.post('/room/join', { code: $('lb-code').value }).then(entered, function () { say(window.BTP_STATIC ? ERR.net_join : 'Could not reach the game server.', true); }); };
+    if (!window.BTP_STATIC) { doJoin(); return; }
+    N.joinOnNetwork($('lb-code').value).then(doJoin, function (e) { N.closeNetwork(); say(e && e.type === 'peer-unavailable' ? ERR.not_found : ERR.net_join, true); });
   };
   $('lb-join').onclick = join;
   $('lb-code').onkeydown = function (e) { e.stopPropagation(); if (e.key === 'Enter') join(); };
@@ -109,7 +178,7 @@ N.openMenu = function (msg) {
 };
 function entered(res) {
   if (!res.ok) { say(ERR[res.error] || 'Could not join.', true); return; }
-  N.setRoom({ code: res.code, token: res.token, role: res.role });
+  N.setRoom({ code: res.code, token: res.token, role: res.role, guest: !!N.conn });          // (a guest on the public page can come back after a reload: the host still has the room)
   N.ver = 0; N.view = null;
   N.syncClock(6).then(function () { N.startPolling(); });
   N.showRoom(res.view);
@@ -124,7 +193,7 @@ N.showRoom = function (v) {
   if (r.phase === 'lobby') {
     show('<div class="ho-card lb"><div class="ho-lock">YOU ARE THE ' + sideName(me) + '</div><div class="ho-big">Share this code</div>' +
       '<div class="lb-code" id="lb-showcode">' + esc(r.code) + '</div>' +
-      '<div class="ho-sub">Waiting for the other player to join as the ' + sideName(other).toLowerCase() + '.<br>They open this same address (<b>' + esc(location.origin) + '</b>), choose <b>2 players online</b>, and type the code.</div>' +
+      '<div class="ho-sub">Waiting for the other player to join as the ' + sideName(other).toLowerCase() + '.<br>They open this same address (<b>' + esc(location.origin + location.pathname) + '</b>), choose <b>2 players online</b>, and type the code.' + (window.BTP_STATIC ? '<br><b>Keep this tab open and in front:</b> the game runs in your browser, and your friend connects straight to it.' : '') + '</div>' +
       '<button type="button" class="ho-back" id="lb-leave">Leave the room</button></div>');
   } else {
     show('<div class="ho-card lb"><div class="ho-lock">ROOM ' + esc(r.code) + '</div><div class="ho-big">' + (you ? 'Waiting for the other player' : 'Ready to start?') + '</div>' +
@@ -174,7 +243,7 @@ N.showMatch = function (v) {
   $('lb-leave').onclick = N.leave;
 };
 N.leave = function () {
-  var done = function () { N.stopPolling(); N.setRoom(null); N.view = null; N.hideLobby(); if (N.hooks.left) N.hooks.left(); };
+  var done = function () { N.stopPolling(); N.closeNetwork(); N.setRoom(null); N.view = null; N.hideLobby(); if (N.hooks.left) N.hooks.left(); };
   if (!N.room) { done(); return; }
   N.post('/room/leave', {}).then(done, done);
 };
