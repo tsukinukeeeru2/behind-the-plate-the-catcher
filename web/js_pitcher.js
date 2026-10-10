@@ -60,15 +60,18 @@ function rotY(v, a) { var c = Math.cos(a), s = Math.sin(a); return [v[0] * c + v
 var K = {
   // pelvis position: a little sway, up on the lift, back over the rear leg for the freeze, then a long drop and drive forward
   py: [[0, 0.96], [0.22, 0.99, 'ss'], [T.set, 0.97], [0.85, 1.04], [T.lift, 1.07], [T.hold, 1.08], [T.plant, 0.84, 'in'], [T.release, 0.88], [T.end, 0.62, 'out']],
+  // he shifts over the back (axis) leg while the front leg is up, then drives forward off it
+  px: [[0, 0], [T.set, 0], [T.lift, 0.10, 'ss'], [T.hold, 0.12], [1.45, 0.04, 'ss'], [T.plant, -0.04, 'in'], [T.end, -0.02]],
   pz: [[0, 0], [T.set, 0], [T.lift, -0.12, 'ss'], [T.hold, -0.16], [T.plant, 0.78, 'in'], [T.release, 0.96, 'out'], [T.end, 1.30]],
   // hips turn first, then the shoulders (which also wound up further back than the hips during the freeze)
-  hip: [[0, 1.25], [T.set, 1.25], [T.lift, 1.38, 'ss'], [T.hold, 1.38], [1.50, 1.30], [T.release - 0.07, -0.55, 'in'], [T.end, -0.95, 'out']],
-  sho: [[0, 1.30], [T.set, 1.30], [T.lift, 1.60, 'ss'], [T.hold, 1.80, 'ss'], [T.plant + 0.03, 1.80], [T.release - 0.04, -0.40, 'in'], [T.release + 0.02, -0.55], [T.end, -1.30, 'out']],
+  hip: [[0, 1.25], [T.set, 1.25], [T.lift, 1.50, 'ss'], [T.hold, 1.50], [1.50, 1.30], [T.release - 0.07, -0.55, 'in'], [T.end, -0.95, 'out']],
+  sho: [[0, 1.30], [T.set, 1.30], [T.lift, 1.70, 'ss'], [T.hold, 1.95, 'ss'], [T.plant + 0.03, 1.95], [T.release - 0.04, -0.40, 'in'], [T.release + 0.02, -0.55], [T.end, -1.30, 'out']],
   // the upper body leans back during the freeze, then folds forward over the front leg
   lean: [[0, 0.02], [T.set, 0.02], [T.lift, -0.20, 'ss'], [T.hold, -0.26], [T.plant, 0.12, 'in'], [T.release, 0.42, 'in'], [T.end, 1.10, 'out']],
   // the feet. Sideways stance: the lead foot toward home, the back foot behind it.
-  lead: [[0, [-0.04, 0.05, 0.24]], [T.set, [-0.04, 0.05, 0.24]], [0.80, [-0.04, 0.55, 0.30], 'ss'], [T.lift, [-0.03, 0.84, 0.16], 'ss'],
-         [T.hold, [-0.03, 0.84, 0.16]], [1.45, [-0.12, 0.55, 0.85], 'in'], [T.plant, [-0.27, 0.05, 1.48], 'in'], [T.end, [-0.27, 0.05, 1.48]]],
+  // the front knee comes up high and swings toward third base (his right, across his body), then unwinds and strides toward home
+  lead: [[0, [-0.04, 0.05, 0.24]], [T.set, [-0.04, 0.05, 0.24]], [0.80, [0.22, 0.58, 0.22], 'ss'], [T.lift, [0.46, 0.94, 0.14], 'ss'],
+         [T.hold, [0.46, 0.94, 0.14]], [1.42, [0.34, 0.72, 0.55], 'ss'], [1.49, [0.05, 0.38, 1.00], 'in'], [T.plant, [-0.27, 0.05, 1.48], 'in'], [T.end, [-0.27, 0.05, 1.48]]],
   back: [[0, [0.12, 0.05, -0.18]], [T.hold, [0.12, 0.05, -0.18]], [T.plant, [0.14, 0.05, 0.14], 'in'], [T.release, [0.16, 0.10, 0.32]],
          [1.98, [0.22, 0.60, 0.98], 'ss'], [T.end, [0.22, 0.08, 1.30], 'out']],
   // the throwing hand, relative to its shoulder, in the shoulder frame (right, up, forward). It goes up with the knee, then back, then the elbow leads.
@@ -84,7 +87,7 @@ var K = {
 BTP.deliver = function (t, lefty, idle) {
   var br = idle ? 0.008 * Math.sin(idle * 2.2) : 0;           // a slow breath while he waits
   var py = keyed(K.py, t) + br, pz = keyed(K.pz, t), hy = keyed(K.hip, t), sy = keyed(K.sho, t), lean = keyed(K.lean, t);
-  var pel = [0, py, pz];
+  var pel = [keyed(K.px, t), py, pz];
   var aH = rotY([1, 0, 0], hy), aS = rotY([1, 0, 0], sy), fS = rotY([0, 0, 1], sy);
   var up = [0, 1, 0];
   var trunk = vadd(vmul(up, Math.cos(lean)), vmul(fS, Math.sin(lean)));            // the spine, tilted forward over the lead leg
@@ -97,7 +100,8 @@ BTP.deliver = function (t, lefty, idle) {
   var hR = vadd(shR, inFrame(keyed(K.hand, t))), hL = vadd(shL, inFrame(keyed(K.glove, t)));
   var cock = keyed(K.cock, t);
   var bendR = vnorm(vadd(vmul(inFrame([1, 0.35, -0.35]), cock), vmul(inFrame([0.45, -0.85, 0.25]), 1 - cock)));
-  var lead = ik(hiL, keyed(K.lead, t), 0.49, 0.49, [0, 0.15, 1]), back = ik(hiR, keyed(K.back, t), 0.49, 0.49, [0, 0.15, 1]);
+  var bendLeg = rotY([0, 0.15, 1], hy);                      // the knees point where the hips face: toward third base while he is closed, toward home once he opens
+  var lead = ik(hiL, keyed(K.lead, t), 0.49, 0.49, bendLeg), back = ik(hiR, keyed(K.back, t), 0.49, 0.49, bendLeg);
   var armR = ik(shR, hR, 0.31, 0.30, bendR), armL = ik(shL, hL, 0.31, 0.30, vnorm(inFrame([-0.6, -0.7, 0.1])));
   var J = { pel: pel, ch: chest, neck: neck, head: head, shL: shL, shR: shR, hiL: hiL, hiR: hiR,
             knL: lead.mid, knR: back.mid, anL: lead.end, anR: back.end, elL: armL.mid, elR: armR.mid, haL: armL.end, haR: armR.end, glove: 'L' };

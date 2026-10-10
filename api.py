@@ -22,13 +22,13 @@ PITCH_MOVE = {
     "curveball": (0.88, -0.30), "changeup": (0.58, 0.40), "splitter": (0.80, 0.10),
 }
 
-# How forgiving the catch is, by difficulty. Position is in metres on the plane of the mitt, time in seconds.
-# [perfect, good] limits: both inside "perfect" is a clean catch, both inside "good" is a catch (barely), anything else is a miss.
-# `auto` means that if you never press Space the mitt still closes by itself, but only as a "barely" catch.
+# How forgiving the catch is, by difficulty. The catch is one press of Space, judged by timing alone (seconds from the moment the
+# ball reaches the mitt). [perfect, good] limits: inside "perfect" is a clean catch, inside "good" is a catch (barely), the rest is
+# a miss (too early or too late). Not pressing at all is a miss.
 CATCH_RULES = {
-    "beginner": {"pos": [0.16, 0.34], "time": [0.14, 0.30], "auto": True},
-    "normal": {"pos": [0.11, 0.24], "time": [0.11, 0.22], "auto": True},
-    "expert": {"pos": [0.065, 0.14], "time": [0.065, 0.13], "auto": False},
+    "beginner": {"time": [0.16, 0.32]},
+    "normal": {"time": [0.12, 0.24]},
+    "expert": {"time": [0.06, 0.13]},
 }
 _BLOCK_KINDS = ("wild_block", "d3_block", "d3_throw", "steal_throw", "field_bunt")
 _TIMING_LABEL = {"early": "EARLY", "on_time": "ON TIME", "late": "LATE"}

@@ -2456,11 +2456,11 @@ class CatchTests(unittest.TestCase):
 
     def test_judging_rules_get_stricter_with_difficulty(self):
         r = api_module.CATCH_RULES
-        for key in ("pos", "time"):
-            for i in (0, 1):
-                self.assertGreater(r["beginner"][key][i], r["normal"][key][i])
-                self.assertGreater(r["normal"][key][i], r["expert"][key][i])
-        self.assertTrue(r["beginner"]["auto"] and r["normal"]["auto"] and not r["expert"]["auto"])
+        for i in (0, 1):
+            self.assertGreater(r["beginner"]["time"][i], r["normal"]["time"][i])
+            self.assertGreater(r["normal"]["time"][i], r["expert"]["time"][i])
+        for rules in r.values():                                          # the catch is one press, judged by timing alone
+            self.assertEqual(set(rules), {"time"})
 
 
 class BatterReadTests(unittest.TestCase):

@@ -20,7 +20,7 @@ var drawerName = null;
 var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1;
 var markers = { T: null, A: null };
 var catchG = null;          // the catch game for the pitch being thrown (your mitt, your press), or null
-var keys = {};              // which of the mitt keys (arrows / WASD) are held
+var catchCount = 0;         // how many catches you have played this session (the first few get a bigger timing guide)
 var panelOpen = false;
 var TS = parseFloat(new URLSearchParams(location.search).get('slow')) || 1;     // ?slow=3 plays the pitch animations three times slower
 
@@ -200,10 +200,10 @@ function interceptForms(container) {
 /* ---------------- drawers (History / Defense / Notes & Bench / Help) ---------------- */
 var HELP = '<div class="card"><h3>How to play</h3><p style="font-size:14px;margin:.4em 0">You are the catcher, crouched behind the plate. Each pitch has two parts. ' +
   '<b>CALL:</b> pick a pitch, click where you want it in the strike zone (your mitt moves there), pick an intent, and press <b>CALL PITCH</b> (or Enter). ' +
-  '<b>CATCH:</b> as the ball comes in, move your mitt with <b>WASD / arrow keys</b> to where it is heading, and press <b>SPACE</b> as it arrives.</p>' +
-  '<p style="font-size:13px;color:var(--muted)">Keys: <b>1-9</b> pitch type &middot; <b>arrows</b> move the target (before the pitch) or the mitt (during it) &middot; <b>Enter</b> call &middot; <b>Space</b> catch / timing games &middot; <b>click</b> the stage to skip an animation.</p></div>' +
-  '<div class="card"><h3>Catching</h3><p style="font-size:13px;margin:.4em 0">Both the position and the timing count: <b>clean</b> catch, <b>barely</b> caught, or <b>missed</b> (a passed ball if runners are on). ' +
-  'On Beginner and Normal a ring closes on the mitt as the ball arrives, and the mitt closes by itself if you are on the ball. On Expert there is no ring and no help. ' +
+  '<b>CATCH:</b> the mitt goes to the ball by itself. You only press <b>SPACE</b> once, at the moment the ball reaches it.</p>' +
+  '<p style="font-size:13px;color:var(--muted)">Keys: <b>1-9</b> pitch type &middot; <b>arrows</b> move the target (before the pitch) &middot; <b>Enter</b> call &middot; <b>Space</b> catch / timing games &middot; <b>click</b> the stage to skip an animation.</p></div>' +
+  '<div class="card"><h3>Catching</h3><p style="font-size:13px;margin:.4em 0">One press of <b>Space</b> per pitch, judged by timing alone: <b>clean</b>, <b>barely caught</b>, or <b>missed</b> (too early or too late; a passed ball if runners are on). ' +
+  'A ring closes on the mitt and turns gold at the right moment. It is always shown for your first few catches; after that Expert hides it. ' +
   'A clean catch can steal a strike on a ball just off the edge, and it steadies the pitcher for the next pitch; a miss rattles him.</p></div>' +
   '<div class="card"><h3>Reading the batter</h3><p style="font-size:13px;margin:.4em 0">After each pitch, the panel at the top shows his face, where the ball and the bat went in the strike zone, whether he was early, on time or late, and what you have seen over his last swings. ' +
   'It only reports what happened. What he is looking for is for you to work out. His face is a hint, not proof.</p></div>' +
@@ -355,10 +355,11 @@ function startPitchAnim(ns) {
            snd: {}, tArr: tPlate, interactive: interactive, rules: ns.catch_rules, difficulty: ns.difficulty, atCatch: atCatch, spinVec: spin,
            catchPending: false, panelShown: false };
   anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
-  catchG = null; keys = {};
+  catchG = null;
   if (interactive) {
     var p0 = mittPlane(sel.cell);
-    catchG = { x: p0.x, y: p0.y, vx: 0, vy: 0, pressT: null, resolved: false, quality: null, tRes: null, ex: 0, ey: 0, dt: null, detail: '', dropped: false, missPath: null, lastNow: null };
+    catchCount++;
+    catchG = { x: p0.x, y: p0.y, sx: p0.x, sy: p0.y, pressT: null, resolved: false, quality: null, tRes: null, dt: null, word: '', detail: '', guide: ns.difficulty !== 'expert' || catchCount <= 3 };
     anim.tAfter = Infinity;                                                   // it ends once your catch is decided
   }
   anim.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? tContact + 1.2 : (interactive ? Infinity : tCatch + 0.45));
@@ -369,22 +370,16 @@ function startPitchAnim(ns) {
 }
 
 /* ---------------- the catch game ---------------- */
-function resolveCatch(a, cg, t, posErr, dt, passed) {
-  var rules = a.rules, q;
-  if (passed) q = 'miss';
-  else if (dt == null) q = (rules.auto && posErr <= rules.pos[1]) ? 'barely' : 'miss';       // never pressed: the mitt closes by itself on the easier settings
-  else q = BTP.catchlib.judge(posErr, dt, rules);
-  cg.resolved = true; cg.quality = q; cg.tRes = t; cg.dt = dt; cg.auto = (dt == null && q === 'barely');
-  cg.ex = cg.x - a.atCatch.x; cg.ey = cg.y - a.atCatch.y;
-  cg.detail = BTP.catchlib.describe(cg.ex, cg.ey, dt, rules);
-  if (q === 'miss') {
-    if (passed) cg.missPath = BTP.catchlib.keepFlying(a.path, a.spinVec);          // it flew past the mitt
-    else cg.dropped = true;                                                       // it was in the mitt, but you did not close it in time
-  }
+function resolveCatch(a, cg, t, dt) {
+  var rules = a.rules, q = BTP.catchlib.judge(dt, rules);
+  cg.resolved = true; cg.quality = q; cg.tRes = t; cg.dt = dt;
+  cg.word = BTP.catchlib.timingWord(dt, rules);
+  cg.detail = BTP.catchlib.describe(dt, rules);
   a.tAfter = t + 2.2;
   a.panelAt = t + 1.0;
   var label = { clean: 'CLEAN CATCH!', barely: 'BARELY CAUGHT', miss: 'MISSED IT!' }[q];
-  $('banner').innerHTML = '<div class="big ' + (q === 'clean' ? 'r-gold' : (q === 'barely' ? 'r-warn' : 'r-bad')) + '">' + label + '</div><div class="sub f">' + esc(cg.detail) + '</div>';
+  $('banner').innerHTML = '<div class="big ' + (q === 'clean' ? 'r-gold' : (q === 'barely' ? 'r-warn' : 'r-bad')) + '">' + label + '</div>' +
+    '<div class="sub f"><b class="cw-' + cg.word.toLowerCase().replace(' ', '') + '">' + cg.word + '</b> &middot; ' + esc(cg.detail) + '</div>';
   $('banner').className = 'ov show';
   a.catchPending = true;
   post('/catch', { quality: q }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
@@ -392,27 +387,23 @@ function resolveCatch(a, cg, t, posErr, dt, passed) {
   renderBottom();
   $('catchhint').className = 'ov';
 }
+// One press per pitch. The first Space after the ball leaves the pitcher's hand is your catch; holding it down or pressing again does nothing.
 function catchPress(now) {
   var a = anim, cg = catchG;
   if (!a || !cg || cg.resolved || cg.pressT !== null) return;
   var t = (now - a.t0) / 1000 / TS;
-  if (t < a.tCatch - 0.45) return;                                                 // far too early: not counted, press again
-  if (t < a.tCatch) { cg.pressT = t; return; }                                    // judged when the ball arrives
-  resolveCatch(a, cg, t, Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y), t - a.tCatch);
+  if (t < a.tRel) return;                                                          // the pitcher has not thrown yet
+  cg.pressT = t;
+  if (t >= a.tCatch) resolveCatch(a, cg, t, t - a.tCatch);                         // late: judged now. Early presses are judged when the ball arrives
 }
 function updateCatch(a, cg, now, t) {
-  var dtr = clamp((now - (cg.lastNow || now)) / 1000, 0, 0.05); cg.lastNow = now;
-  if (!cg.resolved) {                                                              // the mitt follows your keys, with a little weight
-    var tx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), ty = (keys.up ? 1 : 0) - (keys.down ? 1 : 0), sp = 1.7, k = Math.min(1, dtr * 14);
-    if (tx && ty) { tx *= 0.7071; ty *= 0.7071; }
-    cg.vx += (tx * sp - cg.vx) * k; cg.vy += (ty * sp - cg.vy) * k;
-    cg.x = clamp(cg.x + cg.vx * dtr, -0.75, 0.75); cg.y = clamp(cg.y + cg.vy * dtr, 0.22, 1.6);
+  if (!cg.resolved) {                                                              // the mitt goes to where the ball is heading on its own
+    var u = clamp((t - (a.tRel + 0.25)) / Math.max(0.1, (a.tCatch - 0.10) - (a.tRel + 0.25)), 0, 1), k = ease(u);
+    cg.x = lerp(cg.sx, a.atCatch.x, k); cg.y = lerp(cg.sy, a.atCatch.y, k);
   }
   if (!cg.resolved && t >= a.tCatch) {                                             // the ball arrives
-    var rules = a.rules, posErr = Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y);
-    if (cg.pressT !== null) resolveCatch(a, cg, t, posErr, cg.pressT - a.tCatch);
-    else if (posErr > rules.pos[1] * 1.25) resolveCatch(a, cg, t, posErr, null, true);   // way off: it flies past before you can close the mitt
-    else if (t > a.tCatch + rules.time[1]) resolveCatch(a, cg, t, posErr, null);         // it sat in the open mitt and you never pressed
+    if (cg.pressT !== null) resolveCatch(a, cg, t, cg.pressT - a.tCatch);
+    else if (t > a.tCatch + a.rules.time[1]) resolveCatch(a, cg, t, null);          // it sat in the open mitt and you never pressed
   }
 }
 
@@ -438,7 +429,7 @@ function restorePanel(ns) {                                                     
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data); $('readpanel').className = 'ov show compact'; panelOpen = true;
 }
 function finishAnim() {
-  var ns = pendingState || S; pendingState = null; anim = null; catchG = null; keys = {};
+  var ns = pendingState || S; pendingState = null; anim = null; catchG = null;
   $('catchhint').className = 'ov';
   $('banner').className = 'ov';
   onState(ns);
@@ -529,16 +520,12 @@ function buildModel(now) {
     var rules = a.rules;
     // the ball after it reaches the mitt's plane
     if (t >= a.tCatch) {
-      if (!cg.resolved) { ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }                // in the open mitt, waiting for you
+      if (!cg.resolved) { ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }                // in the open mitt, waiting for your press
       else {
         var age = t - cg.tRes;
         if (cg.quality !== 'miss') {                                                                                          // it sticks: it slides into the pocket
-          if (age < 0.10) { var u = clamp(age / 0.05, 0, 1); ball.visible = true; ball.x = lerp(a.atCatch.x, cg.x, u); ball.y = lerp(a.atCatch.y, cg.y, u); ball.z = CATCH_Z; }
-        } else if (cg.missPath) {                                                                                             // it flew past
-          var sm = cg.missPath.samples, tm = (t - a.tCatch) / a.scale + cg.missPath.t0;
-          var qm = BTP.phys.at({ samples: sm }, tm);
-          if (qm.z > -3.0 && qm.y > 0.05) { ball.visible = true; ball.x = qm.x; ball.y = qm.y; ball.z = qm.z; ball.trail = []; }
-        } else if (age < 0.7) {                                                                                               // it fell out of the open mitt
+          if (age < 0.10) { var u2 = clamp(age / 0.05, 0, 1); ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }
+        } else if (age < 0.7) {                                                                                               // it pops out and falls (closed too early or too late)
           ball.visible = true; ball.x = a.atCatch.x + 0.15 * age; ball.y = Math.max(0.06, a.atCatch.y - 4.9 * age * age); ball.z = CATCH_Z - 0.7 * age;
         }
       }
@@ -558,11 +545,18 @@ function buildModel(now) {
         var amp2 = (q2 === 'clean' ? 6 : (q2 === 'barely' ? 5 : 8)) * (1 - ag / 0.14) * (1 - ag / 0.14);
         m.shake = [Math.sin(ag * 220) * amp2, Math.cos(ag * 260) * amp2 * 0.8];
       }
-    } else if (t >= a.tRel - 0.2) {                                                                                           // the cues: a ring closing on the mitt (not on Expert)
-      if (a.difficulty !== 'expert' && t < a.tCatch + rules.time[1]) m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * clamp((a.tCatch - t) / 0.5, 0, 1)), gold: Math.abs(t - a.tCatch) <= rules.time[0] };
-      if (a.difficulty === 'beginner' && Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y) <= rules.pos[1]) m.aligned = { x: mp.x, y: mp.y, r: mp.size * 1.3 };
-      var hintEl = $('catchhint');
-      if (!a.hintOn) { a.hintOn = true; hintEl.innerHTML = '<b>CATCH</b> &nbsp; WASD / arrows: move the mitt &nbsp;&middot;&nbsp; <b>SPACE</b>: close it as the ball arrives'; hintEl.className = 'ov show'; renderBottom(); }
+    } else if (t >= a.tRel - 0.2) {
+      // the guide: a ring closes on the mitt and turns gold at the right moment (always on the first few catches, then not on Expert)
+      var near = Math.abs(t - a.tCatch) <= rules.time[0];
+      if (cg.guide && t < a.tCatch + rules.time[1]) m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * clamp((a.tCatch - t) / 0.5, 0, 1)), gold: near };
+      var hintEl = $('catchhint'), now2 = cg.pressT !== null ? 'wait' : (cg.guide && near ? 'now' : 'press');
+      if (a.hintState !== now2) {
+        a.hintState = now2;
+        hintEl.innerHTML = now2 === 'wait' ? '<b>GOT IT</b> &nbsp; waiting for the ball...' :
+          (now2 === 'now' ? '<b>NOW!</b> &nbsp; Press <b>SPACE</b>' : '<b>Press SPACE to catch</b> &nbsp;&middot;&nbsp; when the ring turns gold');
+        hintEl.className = 'ov show' + (now2 === 'now' ? ' now' : '');
+        renderBottom();
+      }
     }
     m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: tilt + 0.12 * pop };
   } else {
@@ -732,9 +726,9 @@ function init() {
   document.addEventListener('keydown', function (e) {
     BTP.bgm.start();
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
-    if (catchActive()) {                                                          // during the pitch the keys are your mitt, not the target
-      if (setMittKey(e.code, true)) { e.preventDefault(); return; }
-      if (e.code === 'Space') { e.preventDefault(); catchPress(performance.now()); return; }
+    if (catchActive()) {                                                          // during the pitch the only thing asked of you is Space
+      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(performance.now()); return; }
+      return;
     }
     if (e.code === 'Space' || e.code === 'Enter') {
       if (qteRun) { e.preventDefault(); qteRun.hit(); return; }
@@ -750,16 +744,9 @@ function init() {
     var d = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.code];
     if (d) { e.preventDefault(); sel.cell = { row: clamp(sel.cell.row + d[0], 0, 2), col: clamp(sel.cell.col + d[1], 0, 2) }; updateTargetRead(); }
   });
-  document.addEventListener('keyup', function (e) { setMittKey(e.code, false); });
-  window.addEventListener('blur', function () { keys = {}; });
   renderTop();
   getState().then(onState, function () { toast('Could not reach the game server.', true); });
   requestAnimationFrame(loop);
-}
-function setMittKey(code, down) {
-  var map = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down' };
-  if (!map[code]) return false;
-  keys[map[code]] = down; return true;
 }
 function callPitch() {
   if (!canPlay()) return;
@@ -768,9 +755,8 @@ function callPitch() {
   setPanelCompact(true);
   act('/pitch', { pitch_type: sel.pitch, course: course, intent: sel.intent });
 }
-BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, keys: keys }; };
+BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG }; };
 BTP.catchPress = function () { catchPress(performance.now()); };
-BTP.setKeys = function (k) { keys = k; };
 BTP.setSlow = function (n) { TS = n; };      // for testing and demos
 BTP.finishAnim = function () { if (anim) finishAnim(); };
 BTP.sync = function () { return getState().then(onState); };

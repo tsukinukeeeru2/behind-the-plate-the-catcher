@@ -448,17 +448,23 @@ html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#0407
 .tag-good { color:var(--good); } .tag-risky { color:var(--warn); } .tag-fair { color:#9fb2cc; }
 
 /* the read panel: the batter's face, where the ball and the bat went, the timing, what you have seen */
-#readpanel { left:50%; top:12px; transform:translateX(-50%); width:min(800px, calc(100% - 600px)); display:none; z-index:4;
+#readpanel { left:50%; top:12px; transform:translateX(-50%); width:min(880px, calc(100% - 560px)); display:none; z-index:4;
   padding:10px 14px; border-radius:14px; background:rgba(7,12,20,.80); border:1px solid rgba(120,160,210,.32); backdrop-filter:blur(3px);
-  grid-template-columns:128px 170px 1fr; gap:14px; align-items:center; }
+  grid-template-columns:212px 160px 1fr; gap:14px; align-items:center; }
 #readpanel.show { display:grid; }
-#readpanel.compact { display:flex; width:auto; max-width:min(720px, calc(100% - 600px)); padding:6px 14px; gap:0; }
+#readpanel.compact { display:flex; width:auto; max-width:min(760px, calc(100% - 560px)); padding:6px 14px; gap:0; }
 #readpanel .rp-mini { display:none; align-items:center; gap:12px; white-space:nowrap; overflow:hidden; }
 #readpanel.compact .rp-mini { display:flex; }
 #readpanel.compact .rp-face, #readpanel.compact .rp-zone, #readpanel.compact .rp-main { display:none; }
-.rp-face .portrait { width:128px; height:auto; display:block; }
+.rp-face { text-align:center; min-width:0; }
+.rp-cap { font-size:10px; letter-spacing:.16em; color:var(--faint); font-weight:800; margin-bottom:2px; }
+.rp-kao { white-space:nowrap; overflow:hidden; line-height:1.2; font-weight:700; color:#ffe9b0; letter-spacing:0;
+  font-family:"Noto Sans JP","Yu Gothic UI","Meiryo","Hiragino Kaku Gothic ProN","MS PGothic","Segoe UI Symbol","Arial Unicode MS",sans-serif; }
+.rp-mood { display:inline-block; margin-top:3px; font-size:13px; font-weight:800; letter-spacing:.06em; padding:2px 12px; border-radius:999px; background:rgba(255,233,176,.14); color:#ffe9b0; border:1px solid rgba(255,233,176,.4); }
+.rp-kao-s { white-space:nowrap; font-size:22px; font-weight:700; color:#ffe9b0; font-family:"Noto Sans JP","Yu Gothic UI","Meiryo","Hiragino Kaku Gothic ProN","MS PGothic","Segoe UI Symbol",sans-serif; }
+.rp-mood-s { font-size:12px; font-weight:800; color:#ffe9b0; border:1px solid rgba(255,233,176,.4); border-radius:999px; padding:1px 9px; }
 .rp-say { font-size:11.5px; color:#b9c8dd; text-align:center; line-height:1.3; margin-top:2px; min-height:2.6em; }
-.rp-zone .zonepic { width:170px; height:auto; display:block; }
+.rp-zone .zonepic { width:160px; height:auto; display:block; }
 .rp-vert { text-align:center; font-size:11px; font-weight:800; letter-spacing:.1em; color:#ffd57a; min-height:1.2em; }
 .rp-head { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
 .rp-timing { font-size:32px; font-weight:900; letter-spacing:.05em; line-height:1; text-shadow:0 2px 10px rgba(0,0,0,.5); }
@@ -479,6 +485,8 @@ html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#0407
   color:#fff; background:rgba(8,16,28,.85); border:2px solid #ffd65a; opacity:0; transition:opacity .12s; white-space:nowrap; z-index:6; }
 #catchhint.show { opacity:1; animation:pulsehint 0.8s ease-in-out infinite; }
 #catchhint b { color:#ffd65a; }
+#catchhint.now { background:#ffd65a; color:#1a1200; font-size:19px; } #catchhint.now b { color:#1a1200; }
+.cw-ontime { color:#ffd65a; } .cw-early { color:#6ab8ff; } .cw-late { color:#ff9a5a; } .cw-nopress { color:#ff6a6a; }
 @keyframes pulsehint { 0%,100% { box-shadow:0 0 0 0 rgba(255,214,90,.4); } 50% { box-shadow:0 0 0 8px rgba(255,214,90,0); } }
 .modebadge { font-size:11px; font-weight:900; letter-spacing:.14em; padding:3px 11px; border-radius:999px; margin-left:auto; white-space:nowrap; }
 .modebadge.call { color:#9fd4ff; border:1px solid #2f6fa0; } .modebadge.catch { color:#1a1200; background:#ffd65a; }
@@ -568,7 +576,7 @@ html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#0407
   #bottom { padding:5px 10px 6px; gap:4px; }
   .pbtn { padding:3px 9px 3px 5px; } .callbtn { padding:7px 18px; }
   #batterbox { width:220px; padding:8px 10px; } #batterbox .sc { display:none; }
-  .rp-face .portrait { width:104px; } .rp-zone .zonepic { width:140px; } #readpanel { grid-template-columns:104px 140px 1fr; }
+  .rp-zone .zonepic { width:130px; } #readpanel { grid-template-columns:180px 130px 1fr; }
 }
 @media (max-width:1100px) { .t-brand { display:none; } }
 @media (max-width:1180px) { #mapbox { display:none; } #readpanel { width:min(800px, calc(100% - 300px)); } #readpanel.compact { max-width:calc(100% - 300px); } }
@@ -1357,15 +1365,18 @@ function rotY(v, a) { var c = Math.cos(a), s = Math.sin(a); return [v[0] * c + v
 var K = {
   // pelvis position: a little sway, up on the lift, back over the rear leg for the freeze, then a long drop and drive forward
   py: [[0, 0.96], [0.22, 0.99, 'ss'], [T.set, 0.97], [0.85, 1.04], [T.lift, 1.07], [T.hold, 1.08], [T.plant, 0.84, 'in'], [T.release, 0.88], [T.end, 0.62, 'out']],
+  // he shifts over the back (axis) leg while the front leg is up, then drives forward off it
+  px: [[0, 0], [T.set, 0], [T.lift, 0.10, 'ss'], [T.hold, 0.12], [1.45, 0.04, 'ss'], [T.plant, -0.04, 'in'], [T.end, -0.02]],
   pz: [[0, 0], [T.set, 0], [T.lift, -0.12, 'ss'], [T.hold, -0.16], [T.plant, 0.78, 'in'], [T.release, 0.96, 'out'], [T.end, 1.30]],
   // hips turn first, then the shoulders (which also wound up further back than the hips during the freeze)
-  hip: [[0, 1.25], [T.set, 1.25], [T.lift, 1.38, 'ss'], [T.hold, 1.38], [1.50, 1.30], [T.release - 0.07, -0.55, 'in'], [T.end, -0.95, 'out']],
-  sho: [[0, 1.30], [T.set, 1.30], [T.lift, 1.60, 'ss'], [T.hold, 1.80, 'ss'], [T.plant + 0.03, 1.80], [T.release - 0.04, -0.40, 'in'], [T.release + 0.02, -0.55], [T.end, -1.30, 'out']],
+  hip: [[0, 1.25], [T.set, 1.25], [T.lift, 1.50, 'ss'], [T.hold, 1.50], [1.50, 1.30], [T.release - 0.07, -0.55, 'in'], [T.end, -0.95, 'out']],
+  sho: [[0, 1.30], [T.set, 1.30], [T.lift, 1.70, 'ss'], [T.hold, 1.95, 'ss'], [T.plant + 0.03, 1.95], [T.release - 0.04, -0.40, 'in'], [T.release + 0.02, -0.55], [T.end, -1.30, 'out']],
   // the upper body leans back during the freeze, then folds forward over the front leg
   lean: [[0, 0.02], [T.set, 0.02], [T.lift, -0.20, 'ss'], [T.hold, -0.26], [T.plant, 0.12, 'in'], [T.release, 0.42, 'in'], [T.end, 1.10, 'out']],
   // the feet. Sideways stance: the lead foot toward home, the back foot behind it.
-  lead: [[0, [-0.04, 0.05, 0.24]], [T.set, [-0.04, 0.05, 0.24]], [0.80, [-0.04, 0.55, 0.30], 'ss'], [T.lift, [-0.03, 0.84, 0.16], 'ss'],
-         [T.hold, [-0.03, 0.84, 0.16]], [1.45, [-0.12, 0.55, 0.85], 'in'], [T.plant, [-0.27, 0.05, 1.48], 'in'], [T.end, [-0.27, 0.05, 1.48]]],
+  // the front knee comes up high and swings toward third base (his right, across his body), then unwinds and strides toward home
+  lead: [[0, [-0.04, 0.05, 0.24]], [T.set, [-0.04, 0.05, 0.24]], [0.80, [0.22, 0.58, 0.22], 'ss'], [T.lift, [0.46, 0.94, 0.14], 'ss'],
+         [T.hold, [0.46, 0.94, 0.14]], [1.42, [0.34, 0.72, 0.55], 'ss'], [1.49, [0.05, 0.38, 1.00], 'in'], [T.plant, [-0.27, 0.05, 1.48], 'in'], [T.end, [-0.27, 0.05, 1.48]]],
   back: [[0, [0.12, 0.05, -0.18]], [T.hold, [0.12, 0.05, -0.18]], [T.plant, [0.14, 0.05, 0.14], 'in'], [T.release, [0.16, 0.10, 0.32]],
          [1.98, [0.22, 0.60, 0.98], 'ss'], [T.end, [0.22, 0.08, 1.30], 'out']],
   // the throwing hand, relative to its shoulder, in the shoulder frame (right, up, forward). It goes up with the knee, then back, then the elbow leads.
@@ -1381,7 +1392,7 @@ var K = {
 BTP.deliver = function (t, lefty, idle) {
   var br = idle ? 0.008 * Math.sin(idle * 2.2) : 0;           // a slow breath while he waits
   var py = keyed(K.py, t) + br, pz = keyed(K.pz, t), hy = keyed(K.hip, t), sy = keyed(K.sho, t), lean = keyed(K.lean, t);
-  var pel = [0, py, pz];
+  var pel = [keyed(K.px, t), py, pz];
   var aH = rotY([1, 0, 0], hy), aS = rotY([1, 0, 0], sy), fS = rotY([0, 0, 1], sy);
   var up = [0, 1, 0];
   var trunk = vadd(vmul(up, Math.cos(lean)), vmul(fS, Math.sin(lean)));            // the spine, tilted forward over the lead leg
@@ -1394,7 +1405,8 @@ BTP.deliver = function (t, lefty, idle) {
   var hR = vadd(shR, inFrame(keyed(K.hand, t))), hL = vadd(shL, inFrame(keyed(K.glove, t)));
   var cock = keyed(K.cock, t);
   var bendR = vnorm(vadd(vmul(inFrame([1, 0.35, -0.35]), cock), vmul(inFrame([0.45, -0.85, 0.25]), 1 - cock)));
-  var lead = ik(hiL, keyed(K.lead, t), 0.49, 0.49, [0, 0.15, 1]), back = ik(hiR, keyed(K.back, t), 0.49, 0.49, [0, 0.15, 1]);
+  var bendLeg = rotY([0, 0.15, 1], hy);                      // the knees point where the hips face: toward third base while he is closed, toward home once he opens
+  var lead = ik(hiL, keyed(K.lead, t), 0.49, 0.49, bendLeg), back = ik(hiR, keyed(K.back, t), 0.49, 0.49, bendLeg);
   var armR = ik(shR, hR, 0.31, 0.30, bendR), armL = ik(shL, hL, 0.31, 0.30, vnorm(inFrame([-0.6, -0.7, 0.1])));
   var J = { pel: pel, ch: chest, neck: neck, head: head, shL: shL, shR: shR, hiL: hiL, hiR: hiR,
             knL: lead.mid, knR: back.mid, anL: lead.end, anR: back.end, elL: armL.mid, elR: armR.mid, haL: armL.end, haR: armR.end, glove: 'L' };
@@ -1895,6 +1907,28 @@ HUD.portrait = function (category, pose, bats) {
   return svg;
 };
 
+
+/* ---------- the batter's expression as a Japanese emoticon (kaomoji), with a short English label ----------
+   The category is the one the engine returned for this pitch (honest, misleading or low-information by design). Several faces per category
+   so it is not the same face every time; which one is picked depends only on the pitch number. */
+var KAO = {
+  confident: { label: 'Confident', faces: ['(\u2312,_\u309D\u2312)', '( \u00B4_\u309D`)', '(\uFF40\u30FB\u03C9\u30FB\u00B4)'] },
+  locked_in: { label: 'Focused', faces: ['(\uFF40\u30FB\u03C9\u30FB\u00B4)', '( \u00AF\u30FC\u00AF)', '(`\u0414\u00B4)'] },
+  comfortable: { label: 'Relaxed', faces: ['(\u00B4\u25BD\uFF40)', '(*\u00B4\u03C9\uFF40*)'] },
+  defensive: { label: 'Nervous', faces: ['(\uFF1B\u00B4\u0414\uFF40)', '(\u00B4\u30FB_\u30FB\uFF40)'] },
+  uncertain: { label: 'Unsure', faces: ['(\u00B4\u30FB\u03C9\u30FB\uFF40)', '(\u30FB_\u30FB;)', '(\uFF1B\u30FB\u2200\u30FB)'] },
+  neutral: { label: 'Calm', faces: ['(\u30FB_\u30FB)', '(\u00B4-\u03C9-\uFF40)'] },
+  frustrated: { label: 'Frustrated', faces: ['(\u00B4\uFF1B\u03C9\uFF1B\uFF40)', '(\uFF40\u0414\u00B4)', '(\u2569\u0CA0\u76CA\u0CA0)'] },
+  jammed: { label: 'Jammed up', faces: ['(>_<)', '(;\u00B4\u0414\uFF40)'] },
+  out_front: { label: 'Off balance', faces: ['(\uFF9F\u0434\uFF9F;)', '(;\uFF9F\u0414\uFF9F)'] },
+  surprised: { label: 'Surprised', faces: ['\u03A3(\uFF9F\u0414\uFF9F)', '(\u00B0\u30ED\u00B0)'] }
+};
+HUD.kaomoji = function (category, seq) {
+  var k = KAO[category] || KAO.neutral, text = k.faces[((seq | 0) + category.length) % k.faces.length];
+  var n = Array.from(text).length;                       // size it so the whole face always fits on one line
+  return { text: text, label: k.label, size: Math.round(clamp(196 / (n * 0.92), 24, 48)) };
+};
+
 /* ---------- the strike-zone picture: where the ball went and where the bat went ---------- */
 var ZV = { x0: -0.5, x1: 0.5, y0: 0.25, y1: 1.35, w: 200, h: 220 };
 function zx(x) { return (x - ZV.x0) / (ZV.x1 - ZV.x0) * ZV.w; }
@@ -1967,32 +2001,21 @@ HUD.pitchMap = function (items, bats) {
 var BTP = window.BTP;
 var L = BTP.catchlib = {};
 
-// rules = {pos: [perfect, good] in metres, time: [perfect, good] in seconds, auto: bool} (from the server, by difficulty)
-L.judge = function (posErr, dt, rules) {
-  var p = rules.pos, t = rules.time, adt = Math.abs(dt);
-  if (posErr <= p[0] && adt <= t[0]) return 'clean';
-  if (posErr <= p[1] && adt <= t[1]) return 'barely';
-  return 'miss';
+// rules = {time: [perfect, good]} in seconds (from the server, by difficulty). dt = the press minus the arrival (+ = late); null = never pressed
+L.judge = function (dt, rules) {
+  if (dt == null) return 'miss';
+  var adt = Math.abs(dt);
+  return adt <= rules.time[0] ? 'clean' : (adt <= rules.time[1] ? 'barely' : 'miss');
 };
-// ex, ey = mitt minus ball (metres, x to the right, y up); dt = press minus arrival (seconds, + = late); null if Space was never pressed
-L.describe = function (ex, ey, dt, rules) {
-  var bits = [], big = function (v, lim) { return Math.abs(v) > lim; };
-  if (big(ex, rules.pos[0]) || big(ey, rules.pos[0])) {
-    var how = Math.hypot(ex, ey) > rules.pos[1] ? 'way ' : 'a bit ', words = [];
-    if (big(ey, rules.pos[0] * 0.8)) words.push(ey > 0 ? 'high' : 'low');
-    if (big(ex, rules.pos[0] * 0.8)) words.push(ex > 0 ? 'right' : 'left');
-    bits.push('Mitt ' + how + words.join(' and '));
-  }
-  if (dt == null) bits.push('Space was never pressed');
-  else if (Math.abs(dt) > rules.time[0]) bits.push((Math.abs(dt) > rules.time[1] ? 'Space way ' : 'Space a touch ') + (dt > 0 ? 'late' : 'early'));
-  return bits.length ? bits.join(' · ') : 'Right on the ball';
+L.describe = function (dt, rules) {
+  if (dt == null) return 'Space was never pressed';
+  var ms = Math.round(Math.abs(dt) * 1000) + ' ms';
+  if (Math.abs(dt) <= rules.time[0]) return 'Perfect timing';
+  return (Math.abs(dt) > rules.time[1] ? 'Way too ' : 'A touch ') + (dt > 0 ? 'late' : 'early') + ' (' + ms + ')';
 };
-// a missed ball keeps going: the same forces, past the mitt toward the backstop
-L.keepFlying = function (path, spin) {
-  var s = path.samples, a = s[s.length - 2], b = s[s.length - 1], dt = b[0] - a[0];
-  var v = [(b[1] - a[1]) / dt, (b[2] - a[2]) / dt, (b[3] - a[3]) / dt];
-  var res = BTP.phys.fly([b[1], b[2], b[3]], v, spin, -9, 1 / 240);
-  return { samples: res.s.map(function (r) { return [r[0] + b[0], r[1], r[2], r[3]]; }), t0: b[0] };
+L.timingWord = function (dt, rules) {          // the one-word call shown with the result
+  if (dt == null) return 'NO PRESS';
+  return Math.abs(dt) <= rules.time[0] ? 'ON TIME' : (dt > 0 ? 'LATE' : 'EARLY');
 };
 
 /* ---------- the read panel ---------- */
@@ -2017,11 +2040,12 @@ L.panelHTML = function (a) {
   if (a.catchLabel) catchLine = '<div class="rp-line"><span class="rp-k">CATCH</span><b class="cq-' + a.catchLabel.cls + '">' + esc(a.catchLabel.text) + '</b><span class="rp-why">' + esc(a.catchLabel.detail || '') + '</span></div>';
   var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>'
     : '<div class="rp-none">Not enough swings yet to read a pattern.</div>';
-  return '<div class="rp-face">' + BTP.hud.portrait(rx.category, L.pose(l), a.bats) + '<div class="rp-say">&ldquo;' + esc(rx.text || '') + '&rdquo;</div></div>' +
-    '<div class="rp-zone">' + BTP.hud.zonePicture(a.Pt, sw, a.bats, a.markT) + '<div class="rp-vert">' + esc(sw.vert || '') + '</div></div>' +
+  var kao = BTP.hud.kaomoji(rx.category, l.seq);
+  return '<div class="rp-face"><div class="rp-cap">HIS MOOD</div><div class="rp-kao" style="font-size:' + kao.size + 'px">' + esc(kao.text) + '</div><div class="rp-mood">' + esc(kao.label) + '</div><div class="rp-say">&ldquo;' + esc(rx.text || '') + '&rdquo;</div></div>' +
+    '<div class="rp-zone"><div class="rp-cap">HIS SWING</div>' + BTP.hud.zonePicture(a.Pt, sw, a.bats, a.markT) + '<div class="rp-vert">' + esc(sw.vert || '') + '</div></div>' +
     '<div class="rp-main"><div class="rp-head"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span></div>' +
     callLine + catchLine + '<div class="rp-sub">WHAT YOU HAVE SEEN</div>' + reads + '</div>' +
-    '<div class="rp-mini"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' +
+    '<div class="rp-mini"><span class="rp-kao-s">' + esc(kao.text) + '</span><span class="rp-mood-s">' + esc(kao.label) + '</span><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' +
     (a.catchLabel ? '<span class="rp-chip cq-' + a.catchLabel.cls + '">' + esc(a.catchLabel.text) + '</span>' : '') +
     (a.difficulty === 'expert' ? '' : '<span class="rp-chip tag-' + ev.grade + '">' + esc(ev.title) + '</span>') + '</div>';
 };
@@ -2049,7 +2073,7 @@ var drawerName = null;
 var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1;
 var markers = { T: null, A: null };
 var catchG = null;          // the catch game for the pitch being thrown (your mitt, your press), or null
-var keys = {};              // which of the mitt keys (arrows / WASD) are held
+var catchCount = 0;         // how many catches you have played this session (the first few get a bigger timing guide)
 var panelOpen = false;
 var TS = parseFloat(new URLSearchParams(location.search).get('slow')) || 1;     // ?slow=3 plays the pitch animations three times slower
 
@@ -2229,10 +2253,10 @@ function interceptForms(container) {
 /* ---------------- drawers (History / Defense / Notes & Bench / Help) ---------------- */
 var HELP = '<div class="card"><h3>How to play</h3><p style="font-size:14px;margin:.4em 0">You are the catcher, crouched behind the plate. Each pitch has two parts. ' +
   '<b>CALL:</b> pick a pitch, click where you want it in the strike zone (your mitt moves there), pick an intent, and press <b>CALL PITCH</b> (or Enter). ' +
-  '<b>CATCH:</b> as the ball comes in, move your mitt with <b>WASD / arrow keys</b> to where it is heading, and press <b>SPACE</b> as it arrives.</p>' +
-  '<p style="font-size:13px;color:var(--muted)">Keys: <b>1-9</b> pitch type &middot; <b>arrows</b> move the target (before the pitch) or the mitt (during it) &middot; <b>Enter</b> call &middot; <b>Space</b> catch / timing games &middot; <b>click</b> the stage to skip an animation.</p></div>' +
-  '<div class="card"><h3>Catching</h3><p style="font-size:13px;margin:.4em 0">Both the position and the timing count: <b>clean</b> catch, <b>barely</b> caught, or <b>missed</b> (a passed ball if runners are on). ' +
-  'On Beginner and Normal a ring closes on the mitt as the ball arrives, and the mitt closes by itself if you are on the ball. On Expert there is no ring and no help. ' +
+  '<b>CATCH:</b> the mitt goes to the ball by itself. You only press <b>SPACE</b> once, at the moment the ball reaches it.</p>' +
+  '<p style="font-size:13px;color:var(--muted)">Keys: <b>1-9</b> pitch type &middot; <b>arrows</b> move the target (before the pitch) &middot; <b>Enter</b> call &middot; <b>Space</b> catch / timing games &middot; <b>click</b> the stage to skip an animation.</p></div>' +
+  '<div class="card"><h3>Catching</h3><p style="font-size:13px;margin:.4em 0">One press of <b>Space</b> per pitch, judged by timing alone: <b>clean</b>, <b>barely caught</b>, or <b>missed</b> (too early or too late; a passed ball if runners are on). ' +
+  'A ring closes on the mitt and turns gold at the right moment. It is always shown for your first few catches; after that Expert hides it. ' +
   'A clean catch can steal a strike on a ball just off the edge, and it steadies the pitcher for the next pitch; a miss rattles him.</p></div>' +
   '<div class="card"><h3>Reading the batter</h3><p style="font-size:13px;margin:.4em 0">After each pitch, the panel at the top shows his face, where the ball and the bat went in the strike zone, whether he was early, on time or late, and what you have seen over his last swings. ' +
   'It only reports what happened. What he is looking for is for you to work out. His face is a hint, not proof.</p></div>' +
@@ -2384,10 +2408,11 @@ function startPitchAnim(ns) {
            snd: {}, tArr: tPlate, interactive: interactive, rules: ns.catch_rules, difficulty: ns.difficulty, atCatch: atCatch, spinVec: spin,
            catchPending: false, panelShown: false };
   anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
-  catchG = null; keys = {};
+  catchG = null;
   if (interactive) {
     var p0 = mittPlane(sel.cell);
-    catchG = { x: p0.x, y: p0.y, vx: 0, vy: 0, pressT: null, resolved: false, quality: null, tRes: null, ex: 0, ey: 0, dt: null, detail: '', dropped: false, missPath: null, lastNow: null };
+    catchCount++;
+    catchG = { x: p0.x, y: p0.y, sx: p0.x, sy: p0.y, pressT: null, resolved: false, quality: null, tRes: null, dt: null, word: '', detail: '', guide: ns.difficulty !== 'expert' || catchCount <= 3 };
     anim.tAfter = Infinity;                                                   // it ends once your catch is decided
   }
   anim.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? tContact + 1.2 : (interactive ? Infinity : tCatch + 0.45));
@@ -2398,22 +2423,16 @@ function startPitchAnim(ns) {
 }
 
 /* ---------------- the catch game ---------------- */
-function resolveCatch(a, cg, t, posErr, dt, passed) {
-  var rules = a.rules, q;
-  if (passed) q = 'miss';
-  else if (dt == null) q = (rules.auto && posErr <= rules.pos[1]) ? 'barely' : 'miss';       // never pressed: the mitt closes by itself on the easier settings
-  else q = BTP.catchlib.judge(posErr, dt, rules);
-  cg.resolved = true; cg.quality = q; cg.tRes = t; cg.dt = dt; cg.auto = (dt == null && q === 'barely');
-  cg.ex = cg.x - a.atCatch.x; cg.ey = cg.y - a.atCatch.y;
-  cg.detail = BTP.catchlib.describe(cg.ex, cg.ey, dt, rules);
-  if (q === 'miss') {
-    if (passed) cg.missPath = BTP.catchlib.keepFlying(a.path, a.spinVec);          // it flew past the mitt
-    else cg.dropped = true;                                                       // it was in the mitt, but you did not close it in time
-  }
+function resolveCatch(a, cg, t, dt) {
+  var rules = a.rules, q = BTP.catchlib.judge(dt, rules);
+  cg.resolved = true; cg.quality = q; cg.tRes = t; cg.dt = dt;
+  cg.word = BTP.catchlib.timingWord(dt, rules);
+  cg.detail = BTP.catchlib.describe(dt, rules);
   a.tAfter = t + 2.2;
   a.panelAt = t + 1.0;
   var label = { clean: 'CLEAN CATCH!', barely: 'BARELY CAUGHT', miss: 'MISSED IT!' }[q];
-  $('banner').innerHTML = '<div class="big ' + (q === 'clean' ? 'r-gold' : (q === 'barely' ? 'r-warn' : 'r-bad')) + '">' + label + '</div><div class="sub f">' + esc(cg.detail) + '</div>';
+  $('banner').innerHTML = '<div class="big ' + (q === 'clean' ? 'r-gold' : (q === 'barely' ? 'r-warn' : 'r-bad')) + '">' + label + '</div>' +
+    '<div class="sub f"><b class="cw-' + cg.word.toLowerCase().replace(' ', '') + '">' + cg.word + '</b> &middot; ' + esc(cg.detail) + '</div>';
   $('banner').className = 'ov show';
   a.catchPending = true;
   post('/catch', { quality: q }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
@@ -2421,27 +2440,23 @@ function resolveCatch(a, cg, t, posErr, dt, passed) {
   renderBottom();
   $('catchhint').className = 'ov';
 }
+// One press per pitch. The first Space after the ball leaves the pitcher's hand is your catch; holding it down or pressing again does nothing.
 function catchPress(now) {
   var a = anim, cg = catchG;
   if (!a || !cg || cg.resolved || cg.pressT !== null) return;
   var t = (now - a.t0) / 1000 / TS;
-  if (t < a.tCatch - 0.45) return;                                                 // far too early: not counted, press again
-  if (t < a.tCatch) { cg.pressT = t; return; }                                    // judged when the ball arrives
-  resolveCatch(a, cg, t, Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y), t - a.tCatch);
+  if (t < a.tRel) return;                                                          // the pitcher has not thrown yet
+  cg.pressT = t;
+  if (t >= a.tCatch) resolveCatch(a, cg, t, t - a.tCatch);                         // late: judged now. Early presses are judged when the ball arrives
 }
 function updateCatch(a, cg, now, t) {
-  var dtr = clamp((now - (cg.lastNow || now)) / 1000, 0, 0.05); cg.lastNow = now;
-  if (!cg.resolved) {                                                              // the mitt follows your keys, with a little weight
-    var tx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), ty = (keys.up ? 1 : 0) - (keys.down ? 1 : 0), sp = 1.7, k = Math.min(1, dtr * 14);
-    if (tx && ty) { tx *= 0.7071; ty *= 0.7071; }
-    cg.vx += (tx * sp - cg.vx) * k; cg.vy += (ty * sp - cg.vy) * k;
-    cg.x = clamp(cg.x + cg.vx * dtr, -0.75, 0.75); cg.y = clamp(cg.y + cg.vy * dtr, 0.22, 1.6);
+  if (!cg.resolved) {                                                              // the mitt goes to where the ball is heading on its own
+    var u = clamp((t - (a.tRel + 0.25)) / Math.max(0.1, (a.tCatch - 0.10) - (a.tRel + 0.25)), 0, 1), k = ease(u);
+    cg.x = lerp(cg.sx, a.atCatch.x, k); cg.y = lerp(cg.sy, a.atCatch.y, k);
   }
   if (!cg.resolved && t >= a.tCatch) {                                             // the ball arrives
-    var rules = a.rules, posErr = Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y);
-    if (cg.pressT !== null) resolveCatch(a, cg, t, posErr, cg.pressT - a.tCatch);
-    else if (posErr > rules.pos[1] * 1.25) resolveCatch(a, cg, t, posErr, null, true);   // way off: it flies past before you can close the mitt
-    else if (t > a.tCatch + rules.time[1]) resolveCatch(a, cg, t, posErr, null);         // it sat in the open mitt and you never pressed
+    if (cg.pressT !== null) resolveCatch(a, cg, t, cg.pressT - a.tCatch);
+    else if (t > a.tCatch + a.rules.time[1]) resolveCatch(a, cg, t, null);          // it sat in the open mitt and you never pressed
   }
 }
 
@@ -2467,7 +2482,7 @@ function restorePanel(ns) {                                                     
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data); $('readpanel').className = 'ov show compact'; panelOpen = true;
 }
 function finishAnim() {
-  var ns = pendingState || S; pendingState = null; anim = null; catchG = null; keys = {};
+  var ns = pendingState || S; pendingState = null; anim = null; catchG = null;
   $('catchhint').className = 'ov';
   $('banner').className = 'ov';
   onState(ns);
@@ -2558,16 +2573,12 @@ function buildModel(now) {
     var rules = a.rules;
     // the ball after it reaches the mitt's plane
     if (t >= a.tCatch) {
-      if (!cg.resolved) { ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }                // in the open mitt, waiting for you
+      if (!cg.resolved) { ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }                // in the open mitt, waiting for your press
       else {
         var age = t - cg.tRes;
         if (cg.quality !== 'miss') {                                                                                          // it sticks: it slides into the pocket
-          if (age < 0.10) { var u = clamp(age / 0.05, 0, 1); ball.visible = true; ball.x = lerp(a.atCatch.x, cg.x, u); ball.y = lerp(a.atCatch.y, cg.y, u); ball.z = CATCH_Z; }
-        } else if (cg.missPath) {                                                                                             // it flew past
-          var sm = cg.missPath.samples, tm = (t - a.tCatch) / a.scale + cg.missPath.t0;
-          var qm = BTP.phys.at({ samples: sm }, tm);
-          if (qm.z > -3.0 && qm.y > 0.05) { ball.visible = true; ball.x = qm.x; ball.y = qm.y; ball.z = qm.z; ball.trail = []; }
-        } else if (age < 0.7) {                                                                                               // it fell out of the open mitt
+          if (age < 0.10) { var u2 = clamp(age / 0.05, 0, 1); ball.visible = true; ball.x = a.atCatch.x; ball.y = a.atCatch.y; ball.z = CATCH_Z; }
+        } else if (age < 0.7) {                                                                                               // it pops out and falls (closed too early or too late)
           ball.visible = true; ball.x = a.atCatch.x + 0.15 * age; ball.y = Math.max(0.06, a.atCatch.y - 4.9 * age * age); ball.z = CATCH_Z - 0.7 * age;
         }
       }
@@ -2587,11 +2598,18 @@ function buildModel(now) {
         var amp2 = (q2 === 'clean' ? 6 : (q2 === 'barely' ? 5 : 8)) * (1 - ag / 0.14) * (1 - ag / 0.14);
         m.shake = [Math.sin(ag * 220) * amp2, Math.cos(ag * 260) * amp2 * 0.8];
       }
-    } else if (t >= a.tRel - 0.2) {                                                                                           // the cues: a ring closing on the mitt (not on Expert)
-      if (a.difficulty !== 'expert' && t < a.tCatch + rules.time[1]) m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * clamp((a.tCatch - t) / 0.5, 0, 1)), gold: Math.abs(t - a.tCatch) <= rules.time[0] };
-      if (a.difficulty === 'beginner' && Math.hypot(cg.x - a.atCatch.x, cg.y - a.atCatch.y) <= rules.pos[1]) m.aligned = { x: mp.x, y: mp.y, r: mp.size * 1.3 };
-      var hintEl = $('catchhint');
-      if (!a.hintOn) { a.hintOn = true; hintEl.innerHTML = '<b>CATCH</b> &nbsp; WASD / arrows: move the mitt &nbsp;&middot;&nbsp; <b>SPACE</b>: close it as the ball arrives'; hintEl.className = 'ov show'; renderBottom(); }
+    } else if (t >= a.tRel - 0.2) {
+      // the guide: a ring closes on the mitt and turns gold at the right moment (always on the first few catches, then not on Expert)
+      var near = Math.abs(t - a.tCatch) <= rules.time[0];
+      if (cg.guide && t < a.tCatch + rules.time[1]) m.ring = { x: mp.x, y: mp.y, r: mp.size * (1.1 + 2.6 * clamp((a.tCatch - t) / 0.5, 0, 1)), gold: near };
+      var hintEl = $('catchhint'), now2 = cg.pressT !== null ? 'wait' : (cg.guide && near ? 'now' : 'press');
+      if (a.hintState !== now2) {
+        a.hintState = now2;
+        hintEl.innerHTML = now2 === 'wait' ? '<b>GOT IT</b> &nbsp; waiting for the ball...' :
+          (now2 === 'now' ? '<b>NOW!</b> &nbsp; Press <b>SPACE</b>' : '<b>Press SPACE to catch</b> &nbsp;&middot;&nbsp; when the ring turns gold');
+        hintEl.className = 'ov show' + (now2 === 'now' ? ' now' : '');
+        renderBottom();
+      }
     }
     m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: tilt + 0.12 * pop };
   } else {
@@ -2761,9 +2779,9 @@ function init() {
   document.addEventListener('keydown', function (e) {
     BTP.bgm.start();
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
-    if (catchActive()) {                                                          // during the pitch the keys are your mitt, not the target
-      if (setMittKey(e.code, true)) { e.preventDefault(); return; }
-      if (e.code === 'Space') { e.preventDefault(); catchPress(performance.now()); return; }
+    if (catchActive()) {                                                          // during the pitch the only thing asked of you is Space
+      if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(performance.now()); return; }
+      return;
     }
     if (e.code === 'Space' || e.code === 'Enter') {
       if (qteRun) { e.preventDefault(); qteRun.hit(); return; }
@@ -2779,16 +2797,9 @@ function init() {
     var d = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.code];
     if (d) { e.preventDefault(); sel.cell = { row: clamp(sel.cell.row + d[0], 0, 2), col: clamp(sel.cell.col + d[1], 0, 2) }; updateTargetRead(); }
   });
-  document.addEventListener('keyup', function (e) { setMittKey(e.code, false); });
-  window.addEventListener('blur', function () { keys = {}; });
   renderTop();
   getState().then(onState, function () { toast('Could not reach the game server.', true); });
   requestAnimationFrame(loop);
-}
-function setMittKey(code, down) {
-  var map = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down' };
-  if (!map[code]) return false;
-  keys[map[code]] = down; return true;
 }
 function callPitch() {
   if (!canPlay()) return;
@@ -2797,9 +2808,8 @@ function callPitch() {
   setPanelCompact(true);
   act('/pitch', { pitch_type: sel.pitch, course: course, intent: sel.intent });
 }
-BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, keys: keys }; };
+BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG }; };
 BTP.catchPress = function () { catchPress(performance.now()); };
-BTP.setKeys = function (k) { keys = k; };
 BTP.setSlow = function (n) { TS = n; };      // for testing and demos
 BTP.finishAnim = function () { if (anim) finishAnim(); };
 BTP.sync = function () { return getState().then(onState); };

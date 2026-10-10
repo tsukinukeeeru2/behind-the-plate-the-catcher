@@ -57,6 +57,28 @@ HUD.portrait = function (category, pose, bats) {
   return svg;
 };
 
+
+/* ---------- the batter's expression as a Japanese emoticon (kaomoji), with a short English label ----------
+   The category is the one the engine returned for this pitch (honest, misleading or low-information by design). Several faces per category
+   so it is not the same face every time; which one is picked depends only on the pitch number. */
+var KAO = {
+  confident: { label: 'Confident', faces: ['(\u2312,_\u309D\u2312)', '( \u00B4_\u309D`)', '(\uFF40\u30FB\u03C9\u30FB\u00B4)'] },
+  locked_in: { label: 'Focused', faces: ['(\uFF40\u30FB\u03C9\u30FB\u00B4)', '( \u00AF\u30FC\u00AF)', '(`\u0414\u00B4)'] },
+  comfortable: { label: 'Relaxed', faces: ['(\u00B4\u25BD\uFF40)', '(*\u00B4\u03C9\uFF40*)'] },
+  defensive: { label: 'Nervous', faces: ['(\uFF1B\u00B4\u0414\uFF40)', '(\u00B4\u30FB_\u30FB\uFF40)'] },
+  uncertain: { label: 'Unsure', faces: ['(\u00B4\u30FB\u03C9\u30FB\uFF40)', '(\u30FB_\u30FB;)', '(\uFF1B\u30FB\u2200\u30FB)'] },
+  neutral: { label: 'Calm', faces: ['(\u30FB_\u30FB)', '(\u00B4-\u03C9-\uFF40)'] },
+  frustrated: { label: 'Frustrated', faces: ['(\u00B4\uFF1B\u03C9\uFF1B\uFF40)', '(\uFF40\u0414\u00B4)', '(\u2569\u0CA0\u76CA\u0CA0)'] },
+  jammed: { label: 'Jammed up', faces: ['(>_<)', '(;\u00B4\u0414\uFF40)'] },
+  out_front: { label: 'Off balance', faces: ['(\uFF9F\u0434\uFF9F;)', '(;\uFF9F\u0414\uFF9F)'] },
+  surprised: { label: 'Surprised', faces: ['\u03A3(\uFF9F\u0414\uFF9F)', '(\u00B0\u30ED\u00B0)'] }
+};
+HUD.kaomoji = function (category, seq) {
+  var k = KAO[category] || KAO.neutral, text = k.faces[((seq | 0) + category.length) % k.faces.length];
+  var n = Array.from(text).length;                       // size it so the whole face always fits on one line
+  return { text: text, label: k.label, size: Math.round(clamp(196 / (n * 0.92), 24, 48)) };
+};
+
 /* ---------- the strike-zone picture: where the ball went and where the bat went ---------- */
 var ZV = { x0: -0.5, x1: 0.5, y0: 0.25, y1: 1.35, w: 200, h: 220 };
 function zx(x) { return (x - ZV.x0) / (ZV.x1 - ZV.x0) * ZV.w; }
