@@ -474,7 +474,7 @@ function fillResult(a, ns, l) {
   if (!a.duel || (a.online === 'catcher' && !pending)) { a.swung = l.swung; a.tContact = a.tHitZ + (l.swung ? l.swing.off : 0); }   // early (-) or late (+), in seconds: the engine's own judgement of the swing
   var tAfter = a.tCatch + 1.5;
   if (script) tAfter = a.tContact + script.duration - 0.2 + 0.5;
-  else if (res === 'Foul') tAfter = a.tContact + 2.2;
+  else if (res === 'Foul') tAfter = a.tContact + 3.8;                         // long enough to watch where it went
   a.foul = null;                                                              // a foul ball goes up and off to the side
   if (res === 'Foul') {
     var fr = BTP.rng(l.seq * 31 + 7), side = (l.timing === 'late') ? (a.bats === 'R' ? 1 : -1) : (a.bats === 'R' ? -1 : 1);
@@ -483,7 +483,7 @@ function fillResult(a, ns, l) {
   a.caught = !script && res !== 'Foul';                                       // the mitt takes it unless the bat does
   a.interactive = !!(l.catchable && ns.phase === 'play' && a.online !== 'batter');     // you catch it yourself when the pitch ended in the mitt
   a.tAfter = (a.interactive || (pending && a.online)) ? Infinity : tAfter;    // with a catch, it ends once your catch is decided
-  a.panelAt = script ? tAfter - 0.9 : (res === 'Foul' ? a.tContact + 1.2 : ((a.interactive || (pending && a.online)) ? Infinity : a.tCatch + 0.45));
+  a.panelAt = script ? tAfter - 0.45 : (res === 'Foul' ? tAfter - 0.45 : ((a.interactive || (pending && a.online)) ? Infinity : a.tCatch + 0.45));
   a.waitCatch = false;
   if (a.online === 'batter' && !pending && !a.practice && l.catchable && !l.catch) { a.waitCatch = true; a.tAfter = Infinity; a.panelAt = Infinity; }   // the batter sees the final call once the catcher has caught it
 }
@@ -536,7 +536,7 @@ function startPitchAnim(ns, opts) {
   fillResult(anim, ns, l);
   catchG = null;
   if (anim.interactive) makeCatchG(anim, ns);
-  setPanelCompact(true);                                                      // the read panel steps aside while the pitch is on its way
+  hidePanel();                                                                // the result of the last pitch is gone before this one starts
   hint('');
   renderBottom();
   $('banner').className = 'ov';
@@ -636,7 +636,6 @@ function duelSend(a, swing) {
 function duelClick(e) {
   var a = anim, d = a && a.duel;
   if (!d || paused) return;
-  if (a.panelShown) { skipAnim(); return; }
   if (d.sent) return;                                                         // already swung (a held button or a second click does nothing)
   var t = (clk() - a.t0) / 1000 / TS;
   if (t < a.tRel || t > d.tClose) return;
@@ -688,7 +687,7 @@ function batterReady(e) {
 function lockCall(course) {
   lockedCall = { pitch: sel.pitch, course: course, intent: sel.intent };
   duelPh = 'locked'; markers.T = markers.A = null;
-  setPanelCompact(true); showHandoff(); renderAll();
+  hidePanel(); showHandoff(); renderAll();
 }
 
 /* ---------------- the practice pitch (no timer, not counted, nothing is sent to the server) ---------------- */
@@ -765,7 +764,10 @@ function updateCatch(a, cg, now, t) {
 }
 
 /* ---------------- the read panel ---------------- */
-function setPanelCompact(on) { var el = $('readpanel'); if (el.className.indexOf('show') >= 0) el.className = 'ov show' + (on ? ' compact' : ''); }
+var panelPinned = false;     // the player opened the details himself: they stay until he closes them (or the next pitch starts)
+function setPanelCompact(on) { var el = $('readpanel'); if (el.className.indexOf('show') >= 0) el.className = 'ov show' + (on ? ' compact' : ''); if (on) panelPinned = false; }
+function hidePanel() { $('readpanel').className = 'ov'; panelOpen = false; panelPinned = false; }       // before every pitch: nothing of the last result stays in the way
+function openDetails() { var el = $('readpanel'); if (el.className.indexOf('show') >= 0) { el.className = 'ov show'; panelPinned = true; panelShownAt = performance.now(); } }
 function showPanel(a) {
   var ns2 = a.ns, l2 = ns2.last || a.l, cg = a.interactive ? catchG : null, label = null;
   if (cg && cg.resolved) {
@@ -842,6 +844,36 @@ function scriptBall(sc, t) {
   return { p: p, z: z };
 }
 
+/* the chase camera: it swings round to where the ball is going, follows it, then settles on the whole play */
+function followPoint(getter, st) {                                                 // the spot under the ball, smoothed over its last third of a second (so the camera glides, never jerks)
+  var sx = 0, sz = 0, sw = 0;
+  for (var k = 0; k < 14; k++) { var q = getter(Math.max(0.2, st - k * 0.05)), wt = Math.exp(-k * 0.05 / 0.32); sx += q.x * wt; sz += q.z * wt; sw += wt; }
+  return { x: sx / sw, z: sz / sw };
+}
+function chaseCamFor(a, st, getter, ballW, fr, tLand) {
+  var u = clamp((st - 0.2) / 2.4, 0, 1), uc = clamp((st - 0.2) / 2.8, 0, 1);
+  var w = 0.7 * ease(clamp((st - (tLand - 0.2)) / 1.6, 0, 1)) + 0.3 * ease(clamp((st - (tLand + 1.8)) / 1.0, 0, 1));    // first the ball, then the whole play
+  var ball = followPoint(getter, st), cover1 = fr.cover, cover0 = Math.min(cover1, 62), cv = 1, cam;
+  for (var i = 0; i < 6; i++) {                                                    // the ball must stay on screen: if it would leave, the view widens a little
+    cam = BTP.chaseCam(W, H, { ball: ball, F: fr, u: u, w: w, uc: uc, cover0: cover0 * cv, cover1: cover1 * cv });
+    var save = BTP.camGet(); BTP.camSet(cam); var q = BTP.P(ballW.x, ballW.y, ballW.z); BTP.camSet(save);
+    if (q && q.x > W * 0.1 && q.x < W * 0.9 && q.y > H * 0.2 && q.y < H * 0.86) break;
+    cv *= 1.12;
+  }
+  var sv = BTP.camGet(); BTP.camSet(cam); var q2 = BTP.P(ballW.x, ballW.y, ballW.z); BTP.camSet(sv);       // a high ball still sits above its spot on the ground: slide the picture so it never leaves the frame
+  if (q2) {
+    if (q2.y < H * 0.2) cam.cy += H * 0.2 - q2.y; else if (q2.y > H * 0.86) cam.cy -= q2.y - H * 0.86;
+    if (q2.x < W * 0.1) cam.cx += W * 0.1 - q2.x; else if (q2.x > W * 0.9) cam.cx -= q2.x - W * 0.9;
+  }
+  return cam;
+}
+function foulPos(a, ft) {                                                          // the foul ball: up and off to the side, then it comes down and rolls to a stop
+  var f = a.foul, c = a.contactAt, y0 = c.y, tl = (f.vy + Math.sqrt(f.vy * f.vy + 19.6 * y0)) / 9.8;
+  if (ft <= tl) return { x: c.x + f.vx * ft, z: f.vz * ft + 0.22, y: y0 + f.vy * ft - 4.9 * ft * ft };
+  var k = (1 - Math.exp(-1.1 * (ft - tl))) / 1.1;
+  return { x: c.x + f.vx * (tl + k), z: f.vz * (tl + k) + 0.22, y: 0.1 };
+}
+function trailPush(a, x, y, z, now) { a.atrail = a.atrail || []; a.atrail.push([x, y, z, now]); while (a.atrail.length && now - a.atrail[0][3] > 900) a.atrail.shift(); }
 function aerialFraming(sc) {                          // where the high camera looks: the infield plus wherever the ball goes
   var pts = [[0, 0], [19.4, 19.4], [-19.4, 19.4], [0, 38.8]], i;
   for (i = 0; i <= 14; i++) {
@@ -1002,25 +1034,43 @@ function buildModel(now) {
         return o;
       });
       m.batterHidden = true;
-      // the high camera: framed once from where the ball goes, blended in right after contact and out again before the panel
-      if (!a.fr) a.fr = aerialFraming(a.script);
-      var aT0 = a.tContact + 0.20, aT1 = a.tAfter - 1.25;
+      // the chase camera: it follows the ball, then rises to show the whole play; it fades in right after contact and back out to the catcher before the result panel
+      if (!a.fr) { a.fr = aerialFraming(a.script); a.fr.lz = BTP.aerialFitTarget(W, H, a.fr.lx, a.fr.lz, a.fr.cover); a.tLandS = a.script.ball.segs.length ? a.script.ball.segs[0][1] : 1.5; }
+      var aT0 = a.tContact + 0.20, aT1 = a.tAfter - 1.45;
       var bl = clamp((t - aT0) / 0.6, 0, 1) * (1 - clamp((t - aT1) / 0.6, 0, 1)), eb = ease(bl);
       m.aerial = eb;
+      trailPush(a, w.x, y, w.z, now);
       var pops = [];
       (a.script.marks || []).forEach(function (mk) {                                      // SAFE / OUT / RUN n, at the moment the plan says it happens
         var age = st2 - mk[0];
         if (age >= 0 && age < 1.3) { var wp = BTP.fieldToWorld(mk[2], mk[3]); pops.push({ x: wp.x, z: wp.z, text: mk[1], age: age }); }
       });
-      m.aerialM = { cam: BTP.aerialCamFit(W, H, a.fr.lx, a.fr.lz, a.fr.cover * (1.14 - 0.14 * eb)), fielders: m.fielders, runners: m.runners, ball: ball,
-                    trail: a.trail, pops: pops, alignment: m.alignment, bats: m.bats, t: now };
+      var gsc = function (q) { var b2 = scriptBall(a.script, q), w2 = BTP.fieldToWorld(b2.p[0], b2.p[1]); return { x: w2.x, z: Math.min(w2.z, 112) }; };
+      var seg0 = a.script.ball.segs[0], landing = null;
+      if (seg0 && st2 < seg0[1] + 0.4) { var lw = BTP.fieldToWorld(seg0[4], seg0[5]); landing = { x: lw.x, z: Math.min(lw.z, 118), a: clamp((seg0[1] + 0.4 - st2) / 0.4, 0, 1), line: (seg0[6] || 0) < 3 }; }
+      m.aerialM = { cam: chaseCamFor(a, st2, gsc, { x: w.x, y: y, z: w.z }, a.fr, a.tLandS), fielders: m.fielders, runners: m.runners, ball: ball,
+                    trail: a.atrail, pops: pops, alignment: m.alignment, bats: m.bats, t: now, landing: landing };
       m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
     } else if (a.foul) {
-      var ft = t - a.tContact;
-      ball.visible = true; ball.x = contactAt.x + a.foul.vx * ft; ball.z = a.foul.vz * ft + 0.22;
-      ball.y = Math.max(0.1, contactAt.y + a.foul.vy * ft - 4.9 * ft * ft); ball.radius = 0.12; ball.trail = null;
+      var ft = t - a.tContact, fp = foulPos(a, ft);
+      ball.visible = true; ball.x = fp.x; ball.z = fp.z; ball.y = fp.y; ball.radius = 0.12; ball.trail = null;
       a.trail.push([ball.x, ball.y, ball.z]); if (a.trail.length > 12) a.trail.shift();
       m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
+      // a foul ball is followed too, so you can see where it went
+      if (!a.fr) {
+        var ftl = (a.foul.vy + Math.sqrt(a.foul.vy * a.foul.vy + 19.6 * a.contactAt.y)) / 9.8, lp = foulPos(a, ftl + 1.6);
+        a.fr = { lx: lp.x * 0.5, lz: Math.max(24, lp.z * 0.55), cover: clamp(Math.abs(lp.x) * 1.3 + 40, 90, 150) };
+        a.fr.lz = BTP.aerialFitTarget(W, H, a.fr.lx, a.fr.lz, a.fr.cover); a.tLandS = ftl + 0.2; a.fl = foulPos(a, ftl);
+      }
+      var fst = ft + 0.2, faT0 = a.tContact + 0.20, faT1 = a.tAfter - 1.45;
+      var fbl = clamp((t - faT0) / 0.6, 0, 1) * (1 - clamp((t - faT1) / 0.6, 0, 1)), feb = ease(fbl);
+      m.aerial = feb;
+      trailPush(a, fp.x, fp.y, fp.z, now);
+      var fgt = function (q) { var p2 = foulPos(a, q - 0.2); return { x: p2.x, z: p2.z }; };
+      m.aerialM = { cam: chaseCamFor(a, fst, fgt, fp, a.fr, a.tLandS), fielders: null, runners: m.runners, ball: ball, trail: a.atrail, pops: [], alignment: m.alignment, bats: m.bats, t: now,
+                    landing: ft < a.tLandS ? { x: a.fl.x, z: a.fl.z, a: 1, line: false } : null };
+      var foulLbl = ft > 0.5 && ft < a.tAfter - a.tContact - 1.5;
+      if (foulLbl) m.aerialM.pops = [{ x: a.fl.x, z: a.fl.z, text: 'FOUL', age: clamp((ft - 0.5) * 0.6, 0, 0.8) }];
     }
   }
   m.ball = ball;
@@ -1070,7 +1120,7 @@ function buildModel(now) {
   // then the read of the batter, once the pitch (and your catch) are done
   if (!a.panelShown && t >= a.panelAt && !a.catchPending && (!a.interactive || (cg && cg.resolved))) showPanel(a);
   if (a.interactive && cg && cg.resolved && t >= a.tAfter - 1.0) $('catchhint').className = 'ov';
-  if (t >= a.tAfter || a.skip) { a.done = true; if (!a.panelShown && !a.catchPending) showPanel(a); }
+  if (t >= a.tAfter) { a.done = true; if (!a.panelShown && !a.catchPending) showPanel(a); }
   return m;
 }
 
@@ -1284,7 +1334,7 @@ function loop(rawNow) {
   requestAnimationFrame(loop);
   if (!ctx) return;
   timerTick(performance.now()); updateGuide();
-  if (panelOpen && !anim && performance.now() - panelShownAt > 5000 && $('readpanel').className.indexOf('compact') < 0 && (canPlay() || (online() && roomInfo.phase === 'call'))) setPanelCompact(true);   // out of the way of the next call
+  if (panelOpen && !panelPinned && performance.now() - panelShownAt > 4000 && $('readpanel').className.indexOf('compact') < 0) setPanelCompact(true);   // a few seconds, then just the small result
   var now = clk();
   var m = buildModel(now);
   var ab = m.aerialM ? (m.aerial || 0) : 0;
@@ -1297,11 +1347,12 @@ function loop(rawNow) {
     }
   }
   $('mask').style.opacity = String(S && S.mode === 'duel' ? 0 : 1 - 0.92 * ab);   // the mask fades while you watch the play from above (two players: never there, it would hide the cursor)
+  var dim = String(1 - 0.8 * ab);                                                // the side cards fade while you watch the play, so nothing of the field is hidden
+  if ($('batterbox').style.opacity !== dim) { $('batterbox').style.opacity = dim; $('mapbox').style.opacity = dim; }
   var cur = (anim && anim.duel && !anim.panelShown) ? 'none' : '';
   if (cur !== viewCursor) { viewCursor = cur; $('view').style.cursor = cur; }
   if (anim && anim.done && !anim.catchPending) finishAnim();
 }
-function skipAnim() { if (anim && !catchActive() && (!anim.duel || anim.panelShown) && !paused) { anim.done = true; } }
 
 /* ---------------- setup ---------------- */
 function resize() {
@@ -1336,7 +1387,7 @@ function init() {
     BTP.bgm.start();
     if (e.button !== 0) return;                                                    // only the left button swings or selects
     if (anim && anim.duel) { duelClick(e); return; }
-    if (anim) { skipAnim(); return; }
+    if (anim) return;                                                              // nothing is skipped by clicking the picture
     if (!canPlay()) return;
     var p = stageXY(e), c = zoneCellAt(p.x, p.y);
     if (c) { sel.cell = c; updateTargetRead(); }
@@ -1359,10 +1410,20 @@ function init() {
     if (!b.dataset.drawer) return;
     if (drawerName === b.dataset.drawer) closeDrawer(); else loadDrawer(b.dataset.drawer);
   });
+  $('readpanel').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-rp]') : null;
+    if (!b) return;
+    e.stopPropagation();                                                          // closing the panel never advances anything
+    if (b.dataset.rp === 'close') setPanelCompact(true); else openDetails();
+    b.blur();
+  });
   $('drawer').innerHTML = '<div class="dh"><b class="ttl" style="flex:1"></b><button class="t-btn" id="drawer-close">Close</button></div><div class="db"></div>';
   $('drawer-close').onclick = closeDrawer;
   interceptForms($('drawer')); interceptForms($('modal'));
   document.addEventListener('pointerdown', function () { BTP.bgm.start(); }, true);
+  document.addEventListener('keyup', function (e) {                               // (a focused button would otherwise "click" when Space comes back up)
+    if (e.code === 'Space' && !(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))) e.preventDefault();
+  });
   document.addEventListener('keydown', function (e) {
     BTP.bgm.start();
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
@@ -1379,8 +1440,8 @@ function init() {
       return;
     }
     if (e.code === 'Space' || e.code === 'Enter') {
-      if (qteRun) { e.preventDefault(); qteRun.hit(); return; }
-      if (anim) { e.preventDefault(); skipAnim(); return; }                       // (never in a duel until the result is up: the batter uses the mouse)
+      if (qteRun) { e.preventDefault(); if (!e.repeat) qteRun.hit(); return; }      // (a held key is not a mash)
+      if (anim) { e.preventDefault(); return; }                                   // Space and Enter never skip the pitch, the result or the play
       if (duelPh) { e.preventDefault(); return; }
       if (e.code === 'Enter' && canPlay() && !e.repeat) { e.preventDefault(); callPitch(); }
       else if (e.code === 'Space') e.preventDefault();
@@ -1409,10 +1470,10 @@ function callPitch(auto) {
   var duel = S && S.mode === 'duel';
   if (auto) toast(duel || online() ? 'Time up: your current pick was locked in' : 'Time up: thrown ' + pickName(), false);
   if (practice) { markers.T = markers.A = null; runPractice(course); return; }
-  if (online()) { markers.T = markers.A = null; setPanelCompact(true); act('/pitch2p', { pitch_type: sel.pitch, course: course, intent: sel.intent }); return; }   // online: the call goes straight to the room
+  if (online()) { markers.T = markers.A = null; hidePanel(); act('/pitch2p', { pitch_type: sel.pitch, course: course, intent: sel.intent }); return; }   // online: the call goes straight to the room
   if (duel) { lockCall(course); return; }
   markers.T = markers.A = null;
-  setPanelCompact(true);
+  hidePanel();
   act('/pitch', { pitch_type: sel.pitch, course: course, intent: sel.intent });
 }
 BTP.debug = function () { return { anim: anim, shown: shown, S: S, sel: sel, catchG: catchG, tm: tm, duelPh: duelPh, paused: paused, practice: practice, cursorW: cursorW, clk: clk,

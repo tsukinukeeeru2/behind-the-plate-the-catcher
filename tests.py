@@ -2568,6 +2568,20 @@ class StadiumPieceTests(unittest.TestCase):
         for sound in ("'pop'", "'whoosh'", "'crack'"):
             self.assertIn(sound, js)
 
+    def test_nothing_can_be_skipped_and_the_result_panel_can_be_closed(self):
+        js = stadium._assets()[1]
+        self.assertNotIn("skipAnim", js)                                   # no key and no click skips a pitch, a result or a play
+        self.assertNotIn("a.skip", js)
+        self.assertIn("Space and Enter never skip the pitch, the result or the play", js)
+        self.assertIn("if (!e.repeat) catchPress", js)                      # a held Space is one press at most
+        self.assertIn("if (t < a.tRel) return;", js)                        # a press before the pitch is thrown is ignored, not saved for later
+        self.assertIn("function hidePanel()", js)                           # the last result is gone before the next pitch starts
+        self.assertIn('data-rp="close"', js)
+        self.assertIn('data-rp="open"', js)
+        self.assertIn("e.stopPropagation();                                                          // closing the panel never advances anything", js)
+        self.assertIn("function chaseCamFor", js)                           # the camera follows the ball
+
+
     def test_pages_do_not_reload_between_pitches(self):
         js = stadium._assets()[1]
         self.assertNotIn("location.reload", js)

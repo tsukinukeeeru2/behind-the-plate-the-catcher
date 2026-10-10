@@ -326,3 +326,13 @@ html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#0407
 .ho-ready.alt { background:linear-gradient(180deg,#8fd8ff,#52b7ff); box-shadow:0 6px 20px rgba(82,183,255,.3); }
 .lb-votes { font-size:12.5px; color:#9fb2cc; } .lb-votes b { color:#eaf2ff; }
 .t-match { font-size:12px; } .t-match b { color:#eaf2ff; } .t-match .m-you { color:#7be0a8; }
+
+/* the result panel: a close button, a small result with Details, and a smaller banner so the play stays visible */
+#readpanel.show { pointer-events:auto; }
+.rp-x { position:absolute; top:6px; right:8px; width:30px; height:30px; border-radius:50%; border:1px solid rgba(160,190,230,.5); background:rgba(20,34,52,.95); color:#eaf2ff; font-size:22px; line-height:26px; font-weight:700; cursor:pointer; padding:0; z-index:2; }
+.rp-x:hover { background:#ff6a6a; border-color:#ff6a6a; color:#fff; }
+#readpanel.compact .rp-x { display:none; }
+.rp-more { display:none; margin-left:6px; padding:3px 12px; border-radius:999px; border:1px solid #52b7ff; background:#12263c; color:#bfe6ff; font-size:12px; font-weight:800; cursor:pointer; }
+#readpanel.compact .rp-more { display:inline-block; }
+#banner .big { font-size:clamp(22px, 4.2vh, 42px); }
+#banner { top:66px; }

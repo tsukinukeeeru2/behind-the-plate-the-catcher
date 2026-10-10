@@ -20,6 +20,34 @@ BTP.aerialCam = function (W, H, lx, lz, cover) {
   return { x: eye.x, y: eye.y, z: eye.z, pitch: pitch, F: F, cx: W / 2, cy: H * 0.54, cp: Math.cos(pitch), sp: Math.sin(pitch), hy: 0 };
 };
 
+// a camera at `eye` looking at the ground point (tx, tz) with `cover` metres across the screen, that point sitting at the middle of the picture
+function camAt(W, H, eye, tx, tz, cover) {
+  var dz = tz - eye.z, pitch = Math.atan2(eye.y, Math.max(2, dz)), dist = Math.hypot(eye.y, Math.max(2, dz));
+  var cam = { x: eye.x, y: eye.y, z: eye.z, pitch: pitch, F: (W / 2) * dist / (cover / 2), cx: W / 2, cy: H * 0.54, cp: Math.cos(pitch), sp: Math.sin(pitch), hy: 0 };
+  var save = BTP.camGet(); BTP.camSet(cam); var q = BTP.P(tx, 0, tz); BTP.camSet(save);
+  if (q) { cam.cx += W / 2 - q.x; cam.cy += H * 0.54 - q.y; }
+  return cam;
+}
+// the chase: o = { ball: {x, z} (the smoothed spot on the ground under the ball), F: {lx, lz} (where the whole play is), u: how far up the camera has risen (0..1),
+// w: how much it looks at the whole play instead of the ball (0..1), uc: how far it has widened (0..1), cover0, cover1 }
+BTP.chaseCam = function (W, H, o) {
+  var eye0 = { x: 0, y: 14, z: -12 }, eye1 = { x: o.F.lx * 0.35, y: 46, z: -26 }, k = ease(o.u);
+  var eye = { x: lerp(eye0.x, eye1.x, k), y: lerp(eye0.y, eye1.y, k), z: lerp(eye0.z, eye1.z, k) };
+  return camAt(W, H, eye, lerp(o.ball.x, o.F.lx, o.w), lerp(o.ball.z, o.F.lz, o.w), lerp(o.cover0, o.cover1, ease(o.uc)));
+};
+// the look-at point nudged toward the pitcher until home plate fits on screen (for the final, whole-play picture)
+BTP.aerialFitTarget = function (W, H, lx, lz, cover) {
+  var save = BTP.camGet();
+  for (var i = 0; i < 10; i++) {
+    BTP.camSet(BTP.aerialCam(W, H, lx, lz, cover));
+    var p = BTP.P(0, 0, -3.5);
+    if (p && p.y < H * 0.93) break;
+    lz -= 3;
+  }
+  BTP.camSet(save);
+  return lz;
+};
+
 // the same camera, nudged so home plate (where runs score) always stays on screen
 BTP.aerialCamFit = function (W, H, lx, lz, cover) {
   var save = BTP.camGet(), cam = BTP.aerialCam(W, H, lx, lz, cover);
@@ -151,20 +179,34 @@ BTP.renderAerial = function (ctx, W, H, m) {
   });
   items.sort(function (a, b) { return a.d - b.d; });
   items.forEach(function (it) { BTP.drawChibi(ctx, it.c); });
+  if (m.landing) {                                                                  // where it is going to come down (or stop): a ring on the ground, and a dotted line to it
+    var lq = P(m.landing.x, 0.02, m.landing.z), pulse = 0.5 + 0.5 * Math.sin(t * 0.012);
+    if (lq) {
+      if (m.landing.line && m.ball && m.ball.visible) {
+        var from = P(m.ball.x, 0.02, m.ball.z);
+        if (from) { ctx.save(); ctx.setLineDash([6, 7]); ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(lq.x, lq.y); ctx.stroke(); ctx.restore(); }
+      }
+      var rr = Math.max(9, lq.s * 1.5) * (0.85 + 0.25 * pulse);
+      ctx.save(); ctx.strokeStyle = 'rgba(255,214,90,' + (0.9 * m.landing.a).toFixed(3) + ')'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(lq.x, lq.y, rr, rr * 0.42, 0, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(lq.x - rr * 0.5, lq.y); ctx.lineTo(lq.x + rr * 0.5, lq.y); ctx.moveTo(lq.x, lq.y - rr * 0.2); ctx.lineTo(lq.x, lq.y + rr * 0.2); ctx.stroke(); ctx.restore();
+    }
+  }
   if (m.ball && m.ball.visible) {
     var b = m.ball, sp = P(b.x, 0.02, b.z), bp = P(b.x, b.y, b.z);
-    if (sp) { ctx.fillStyle = 'rgba(0,15,5,.4)'; ctx.beginPath(); ctx.ellipse(sp.x, sp.y, 7, 3, 0, 0, 7); ctx.fill(); }
-    if (m.trail) {
-      ctx.lineCap = 'round'; var prev = null;
-      for (var i = 0; i < m.trail.length; i++) {
+    if (sp) { ctx.fillStyle = 'rgba(0,15,5,.45)'; ctx.beginPath(); ctx.ellipse(sp.x, sp.y, 8, 3.4, 0, 0, 7); ctx.fill(); }
+    if (m.trail && m.trail.length > 1) {                                           // the path so far: thin and faint far back, thick and bright near the ball
+      ctx.lineCap = 'round'; var prev = null, n = m.trail.length;
+      for (var i = 0; i < n; i++) {
         var q = P(m.trail[i][0], m.trail[i][1], m.trail[i][2]);
-        if (q && prev) { ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 * i / m.trail.length).toFixed(3) + ')'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke(); }
+        if (q && prev) { var k = i / n; ctx.strokeStyle = 'rgba(255,255,255,' + (0.12 + 0.75 * k).toFixed(3) + ')'; ctx.lineWidth = 1.5 + 4.5 * k; ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke(); }
         prev = q;
       }
     }
     if (bp) {
-      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(bp.x, bp.y, 7, 0, 7); ctx.fill(); ctx.stroke();
-      ctx.strokeStyle = '#c63c3c'; ctx.beginPath(); ctx.arc(bp.x - 3, bp.y, 5, -0.9, 0.9); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.28)'; ctx.beginPath(); ctx.arc(bp.x, bp.y, 15, 0, 7); ctx.fill();                  // a halo so a small ball never sinks into the field
+      ctx.strokeStyle = 'rgba(255,214,90,.9)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bp.x, bp.y, 15, 0, 7); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(bp.x, bp.y, 8.5, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#c63c3c'; ctx.beginPath(); ctx.arc(bp.x - 3.5, bp.y, 6, -0.9, 0.9); ctx.stroke();
     }
   }
   (m.pops || []).forEach(function (p) { drawPop(ctx, p); });

@@ -30,7 +30,7 @@ Your browser opens at `http://127.0.0.1:8765` (use `--no-browser` to stop that, 
 4. After each pitch you get the result, a one-line grade of your call, and the reason.
 5. After the third out you get your **Catcher Rating** (S to D), badges, and a full review of your calling.
 
-Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** catch and timing games, **P** pause, **click the stage** to skip an animation. A strip under the top bar always shows where you are (**1 Choose the pitch, 2 The pitch, 3 Catch it**), the one thing to do now, and the **call timer**.
+Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** catch and timing games, **P** pause. Nothing can be skipped: Space only works in the moment it is for (the catch or the swing), and pressing it at any other time does nothing. A strip under the top bar always shows where you are (**1 Choose the pitch, 2 The pitch, 3 Catch it**), the one thing to do now, and the **call timer**.
 
 **The call timer.** You have 15 seconds to choose a pitch (change or turn it off in **Settings**). The last five seconds turn red and tick. When time runs out, **your current pick is thrown**; if you have not picked anything, the standard call is used (Four-seam, middle, Get ahead). That rule is written on the screen. The timer stops while a help, settings or history panel is open, while the game is paused, during an animation and during the practice pitch, and it is separate from the Space-press timing of the catch.
 
