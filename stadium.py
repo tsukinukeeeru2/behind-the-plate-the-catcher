@@ -10,7 +10,7 @@ import os
 from bgm_js import MUSIC_CORE
 
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_draw.js", "js_game.js")
+_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_draw.js", "js_hud.js", "js_catch.js", "js_game.js")
 _cache = {}
 
 
@@ -35,7 +35,9 @@ _BODY = """
     <canvas id="view" aria-label="The field as seen by the catcher"></canvas>
     <canvas id="mask" aria-hidden="true"></canvas>
     <div id="batterbox" class="ov glass"></div>
-    <div id="rightbox" class="ov"><div id="reactbox" class="glass"></div><div id="lastbox" class="glass"></div></div>
+    <div id="mapbox" class="ov glass"></div>
+    <div id="readpanel" class="ov"></div>
+    <div id="catchhint" class="ov"></div>
     <canvas id="mini" class="ov" width="250" height="162" aria-label="Top-down view of the play"></canvas>
     <div id="banner" class="ov"></div>
     <div id="hint" class="ov"></div>

@@ -464,7 +464,9 @@ def catcher_rating(state, report=None, analysis=None):
     end_lead = state.our_score - state.opp_score
     lead_pts = 10 if end_lead >= min(start_lead, 0) else 0
 
-    score = max(0, min(100, round(runs_pts + dq_pts + k_pts + frame_pts + lead_pts)))
+    cs = getattr(state, "catch_stats", None) or {"clean": 0, "barely": 0, "miss": 0}
+    catch_pts = min(4, cs["clean"]) - 3 * min(3, cs["miss"])                   # clean hands help a little, a passed ball hurts
+    score = max(0, min(100, round(runs_pts + dq_pts + k_pts + frame_pts + lead_pts + catch_pts)))
     grade, title = next((g, t) for floor, g, t in _RATING_TITLES if score >= floor)
 
     badges = []
@@ -478,6 +480,8 @@ def catcher_rating(state, report=None, analysis=None):
         badges.append(("Mind Games", f"Fooled the batter's guess {len(analysis['fooled_moments'])} times"))
     if state.events.count("Caught stealing") >= 1:
         badges.append(("Cannon Arm", "Threw out a base stealer"))
+    if cs["miss"] == 0 and cs["clean"] + cs["barely"] >= 4:
+        badges.append(("Sure Hands", f"Caught all {cs['clean'] + cs['barely']} pitches you handled"))
     if len(analysis["unlucky"]) >= 2:
         badges.append(("Hard Luck", "Good calls that did not get the result they deserved"))
     return {"score": score, "grade": grade, "title": title, "badges": badges}

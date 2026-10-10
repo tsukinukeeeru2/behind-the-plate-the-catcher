@@ -267,7 +267,7 @@ function drawTrail(ctx, pts, color, alpha, widthM) {
     var q = P(pts[i][0], pts[i][1], pts[i][2]);
     if (q && prev) {
       var a = alpha * (i / pts.length);
-      ctx.strokeStyle = 'rgba(' + color + ',' + a.toFixed(3) + ')'; ctx.lineWidth = Math.max(1, widthM * (q.s + prev.s) / 2);
+      ctx.strokeStyle = 'rgba(' + color + ',' + (a * 0.6).toFixed(3) + ')'; ctx.lineWidth = Math.min(3, Math.max(1.2, widthM * (q.s + prev.s) / 2));      // a thin trace, never a fat blob
       ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke();
     }
     prev = q;
@@ -390,6 +390,15 @@ BTP.renderFrame = function (ctx, scene, m) {
   // the mitt hangs just behind the plate; the grid is drawn over it so the target stays readable
   if (m.mitt) drawMitt(ctx, m.mitt.x, m.mitt.y, m.mitt.size, m.mitt.pop || 0, m.mitt.tilt);
   drawZone(ctx, m.zone);
+  // the timing ring: it closes on the mitt as the ball arrives (a cue for the easier difficulties only)
+  if (m.ring) {
+    ctx.strokeStyle = m.ring.gold ? 'rgba(255,214,90,.95)' : 'rgba(255,255,255,.7)'; ctx.lineWidth = m.ring.gold ? 4 : 2.5;
+    ctx.beginPath(); ctx.arc(m.ring.x, m.ring.y, m.ring.r, 0, 7); ctx.stroke();
+  }
+  if (m.aligned) {
+    ctx.strokeStyle = 'rgba(80,230,160,.9)'; ctx.lineWidth = 3; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.arc(m.aligned.x, m.aligned.y, m.aligned.r, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  }
   // a flash where the ball hits the mitt
   if (m.pop && m.pop.a > 0) {
     var pp = m.pop;

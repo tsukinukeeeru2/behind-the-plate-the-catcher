@@ -5,10 +5,11 @@ What the player gets after each pitch is a one-line plain-language evaluation (g
 the same words the post-game review uses.
 """
 
+import random
 import re
 
 import playview
-from constants import COURSE_SHORT
+from constants import COURSE_SHORT, zone_x, zone_y
 from pitch_data import family_of, pitch_name, repertoire_options, velocity_of
 from strategy import PITCH_INTENTS, intent_label
 
@@ -20,6 +21,84 @@ PITCH_MOVE = {
     "cutter": (0.24, -0.32), "slider": (0.50, -0.55), "sweeper": (0.52, -0.92),
     "curveball": (0.88, -0.30), "changeup": (0.58, 0.40), "splitter": (0.80, 0.10),
 }
+
+# How forgiving the catch is, by difficulty. Position is in metres on the plane of the mitt, time in seconds.
+# [perfect, good] limits: both inside "perfect" is a clean catch, both inside "good" is a catch (barely), anything else is a miss.
+# `auto` means that if you never press Space the mitt still closes by itself, but only as a "barely" catch.
+CATCH_RULES = {
+    "beginner": {"pos": [0.16, 0.34], "time": [0.14, 0.30], "auto": True},
+    "normal": {"pos": [0.11, 0.24], "time": [0.11, 0.22], "auto": True},
+    "expert": {"pos": [0.065, 0.14], "time": [0.065, 0.13], "auto": False},
+}
+_BLOCK_KINDS = ("wild_block", "d3_block", "d3_throw", "steal_throw", "field_bunt")
+_TIMING_LABEL = {"early": "EARLY", "on_time": "ON TIME", "late": "LATE"}
+
+
+def swing_info(seq, result, timing, swung):
+    """Where and when the bat went, for the pitch-by-pitch read. It comes straight from the judged swing: the timing the engine
+    decided (early / on time / late) and whether it was a miss, a foul or contact. Only the small vertical wobble is seeded
+    (by the pitch number) so the same pitch always draws the same picture.
+
+    off    : seconds the bat was early (-) or late (+) at the plate
+    ahead  : metres the bat's sweet spot was ahead of (+) or behind (-) the ball along the swing
+    dy     : metres the bat was above (+) or below (-) the ball
+    """
+    if not swung:
+        return {"swung": False, "timing": None, "label": "TOOK IT", "off": 0.0, "ahead": 0.0, "dy": 0.0, "vert": ""}
+    rnd = random.Random(seq * 7919 + 3)
+    sign = {"early": -1.0, "late": 1.0}.get(timing, rnd.choice([-1.0, 1.0]) if result in ("Whiff", "Foul") else 0.0)
+    if result == "Whiff":
+        off = sign * (rnd.uniform(0.07, 0.11) if timing in ("early", "late") else rnd.uniform(0.015, 0.03))
+        dy = rnd.choice([-1.0, 1.0]) * (rnd.uniform(0.0, 0.05) if timing in ("early", "late") else rnd.uniform(0.08, 0.15))
+    elif result == "Foul":
+        off = sign * (0.04 if timing in ("early", "late") else 0.015)
+        dy = rnd.choice([-1.0, 1.0]) * rnd.uniform(0.02, 0.06)
+    else:
+        off = sign * (0.03 if timing in ("early", "late") else 0.0)
+        dy = rnd.choice([-1.0, 1.0]) * rnd.uniform(0.0, 0.025)
+    vert = "OVER THE TOP" if dy > 0.07 else ("UNDER IT" if dy < -0.07 else "")
+    return {"swung": True, "timing": timing, "label": _TIMING_LABEL.get(timing, "ON TIME"), "off": round(off, 3),
+            "ahead": round(-off * 3.2, 3), "dy": round(dy, 3), "vert": vert}
+
+
+def batter_reads(state, limit=6):
+    """Short facts about the current batter from what has actually been observed (never a claim about his plan).
+
+    Looks at the last few pitches thrown to him this game. A fact is only stated when there are at least two observations behind it.
+    Returns (facts, the pitches used).
+    """
+    name = state.batter.name
+    used = [e for e in reversed(state.pitch_log) if e.get("batter") == name][:limit]
+    used.reverse()
+    swings = [e for e in used if e["outcome_flags"]["swung"]]
+    facts = []
+    late = [e for e in swings if e.get("timing") == "late"]
+    early = [e for e in swings if e.get("timing") == "early"]
+
+    def families(es):
+        return {family_of(e["pitch_type"]) for e in es}
+    if len(late) >= 2:
+        fam = families(late)
+        tail = " (all against fastballs)" if fam == {"fastball"} else (" (all against off-speed)" if "fastball" not in fam else "")
+        facts.append(f"Late on {len(late)} of his last {len(swings)} swings{tail}")
+    if len(early) >= 2:
+        fam = families(early)
+        tail = " (all against off-speed)" if "fastball" not in fam else ""
+        facts.append(f"Early on {len(early)} of his last {len(swings)} swings{tail}")
+    missed = [e for e in swings if e["result"] in ("Whiff", "Foul")]
+    for key, label, pick in (("lo", "low", lambda c: zone_y(c) == "lo"), ("hi", "high", lambda c: zone_y(c) == "hi"),
+                             ("in", "inside", lambda c: zone_x(c) == "in"), ("out", "away", lambda c: zone_x(c) == "out")):
+        hits = [e for e in missed if pick(e["actual_course"])]
+        if len(hits) >= 2:
+            facts.append(f"Missing or fouling off pitches {label} ({len(hits)})")
+            break
+    chased = [e for e in swings if not e["outcome_flags"]["in_zone"]]
+    if len(chased) >= 2:
+        facts.append(f"Swung at {len(chased)} pitches off the plate")
+    took = [e for e in used if not e["outcome_flags"]["swung"] and e["result"] == "Strike"]
+    if len(took) >= 2:
+        facts.append(f"Took {len(took)} strikes without swinging")
+    return facts[:3], used
 
 _TAGS = re.compile(r"<[^>]+>")
 GOOD_CALL, FAIR_CALL, RISKY_CALL = "good", "fair", "risky"
@@ -80,7 +159,13 @@ def _outcome_json(session):
         "at_bat_end": o.get("at_bat_end"), "good_call": bool(o.get("good_call")),
         "eval": {"grade": grade, "title": title, "reason": reason},
         "batted": None,
+        "swing": swing_info(session.event_seq, o["result"], o.get("timing"), bool(o.get("swung"))),
+        "qtes": list(session.pitch_qtes),
+        "catch": session.last_catch,
     }
+    # the mitt game applies when the pitch ended in the mitt and no other catching game (a block, a throw) already covered it
+    out["catchable"] = bool(session.state.can_apply_catch() and session.last_catch is None
+                            and not any(k in _BLOCK_KINDS for k in out["qtes"]))
     if bb is not None and fielding and play:
         key = len(session.state.pitch_log)
         out["batted"] = {
@@ -124,6 +209,7 @@ def build_state(session, qte_specs):
         phase = "play"
 
     lu = st.lineup
+    reads_facts, reads_used = batter_reads(st)
     nxt = lu.batters[(lu.index + 1) % 9]
     repertoire = [{"key": k, "name": name, "velocity": velocity_of(k), "family": family_of(k),
                    "move": list(PITCH_MOVE.get(k, (0.35, 0.0)))}
@@ -155,5 +241,10 @@ def build_state(session, qte_specs):
                 qte=_qte_json(session, qte_specs),
                 over={"run_txt": run_txt, "status": status},
                 alignment=st.defense.alignment,
+                reads=reads_facts,
+                pitch_map=[{"n": e["pitch_number"], "pitch": pitch_name(e["pitch_type"]), "course": e["actual_course"], "result": e["result"],
+                            "swung": e["outcome_flags"]["swung"]} for e in reads_used],
+                catch_stats=dict(st.catch_stats),
+                catch_rules=CATCH_RULES.get(session.difficulty, CATCH_RULES["normal"]),
                 can_walk=not all(st.runners),
                 can_change=st.can_change_pitcher())

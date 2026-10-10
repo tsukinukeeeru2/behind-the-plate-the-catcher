@@ -133,6 +133,8 @@ def log_pitch(state, outcome):
         "quality": round(outcome["quality"], 2),
         "framed": outcome.get("framed", False),
         "outcome_flags": {"swung": outcome["swung"], "in_zone": outcome["in_zone"]},
+        "timing": outcome.get("timing"),            # early / on_time / late (only meaningful if he swung)
+        "batter": state.batter.name,
     })
 
 

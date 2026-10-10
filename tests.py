@@ -2391,6 +2391,121 @@ import api as api_module
 import stadium
 
 
+# ---------- Catching with the mitt, reading the batter (built during the hackathon) ----------
+class CatchTests(unittest.TestCase):
+    def _state_with_a_pitch(self, result="Ball", runners=(False, False, False), balls=1, strikes=0, course="out_lo", swung=False):
+        st = generate_random_situation(random.Random(4))
+        st.runners = list(runners)
+        st.runner_speeds = [55 if r else None for r in runners]
+        st.balls, st.strikes = balls, strikes
+        st.pitch_log.append({"pitch_number": 1, "pitch_type": "four_seam", "target_course": course, "actual_course": course, "intent": "strike",
+                             "result": result, "missed": False, "quality": 0.5, "framed": False, "decision_quality": 0.0,
+                             "outcome_flags": {"swung": swung, "in_zone": False}, "timing": "on_time", "batter": st.batter.name})
+        st.history.add("four_seam", course, result, "on_time", swung, actual_course=course, in_zone=False)
+        return st
+
+    def test_a_miss_with_runners_is_a_passed_ball_and_without_runners_is_not(self):
+        st = self._state_with_a_pitch(runners=(True, False, False))
+        out = st.apply_catch("miss", random.Random(1))
+        self.assertTrue(out["passed"])
+        self.assertEqual(st.runners, [False, True, False])
+        st2 = self._state_with_a_pitch()
+        out2 = st2.apply_catch("miss", random.Random(1))
+        self.assertFalse(out2["passed"])
+        self.assertEqual(st2.runners, [False, False, False])
+        self.assertEqual((st.catch_stats["miss"], st2.catch_stats["miss"]), (1, 1))
+
+    def test_a_catch_is_applied_once_and_only_for_pitches_that_ended_in_the_mitt(self):
+        st = self._state_with_a_pitch(result="Strike")
+        self.assertTrue(st.can_apply_catch())
+        st.apply_catch("barely", random.Random(1))
+        self.assertFalse(st.can_apply_catch())
+        before = dict(st.catch_stats)
+        st.apply_catch("clean", random.Random(1))                  # a repeat is ignored
+        self.assertEqual(st.catch_stats, before)
+        self.assertFalse(self._state_with_a_pitch(result="Single").can_apply_catch())
+        self.assertFalse(self._state_with_a_pitch(result="Foul").can_apply_catch())
+
+    def test_a_clean_catch_can_frame_a_close_ball_but_never_a_strikeout_a_swing_or_the_middle(self):
+        stolen = 0
+        for seed in range(200):
+            st = self._state_with_a_pitch(balls=2, strikes=1, course="out_lo")
+            if st.apply_catch("clean", random.Random(seed))["stolen"]:
+                stolen += 1
+                self.assertEqual((st.balls, st.strikes), (1, 2))
+                self.assertEqual(st.pitch_log[-1]["result"], "Strike")
+                self.assertEqual(st.history.records[-1]["result"], "Strike")
+        self.assertTrue(10 < stolen < 100)                         # it happens, but not always
+        for kwargs in ({"strikes": 2}, {"swung": True}, {"course": "mid_mid"}):
+            args = dict({"balls": 2, "strikes": 1}, **kwargs)
+            for seed in range(100):
+                self.assertFalse(self._state_with_a_pitch(**args).apply_catch("clean", random.Random(seed))["stolen"])
+        for seed in range(100):                                    # a catch that only just held does not frame anything
+            self.assertFalse(self._state_with_a_pitch(balls=2).apply_catch("barely", random.Random(seed))["stolen"])
+
+    def test_rating_counts_the_catching_separately_from_the_call(self):
+        st = _play_random_game(5)
+        base = catcher_rating(st)["score"]
+        st.catch_stats = {"clean": 6, "barely": 0, "miss": 0}
+        better = catcher_rating(st)
+        st.catch_stats = {"clean": 0, "barely": 0, "miss": 3}
+        worse = catcher_rating(st)["score"]
+        self.assertGreaterEqual(better["score"], base)
+        self.assertLessEqual(worse, base)
+        self.assertIn("Sure Hands", [n for n, _ in better["badges"]])
+
+    def test_judging_rules_get_stricter_with_difficulty(self):
+        r = api_module.CATCH_RULES
+        for key in ("pos", "time"):
+            for i in (0, 1):
+                self.assertGreater(r["beginner"][key][i], r["normal"][key][i])
+                self.assertGreater(r["normal"][key][i], r["expert"][key][i])
+        self.assertTrue(r["beginner"]["auto"] and r["normal"]["auto"] and not r["expert"]["auto"])
+
+
+class BatterReadTests(unittest.TestCase):
+    def test_swing_info_follows_the_judged_timing(self):
+        for seq in range(40):
+            for result in ("Whiff", "Foul", "Single", "Out"):
+                early = api_module.swing_info(seq, result, "early", True)
+                late = api_module.swing_info(seq, result, "late", True)
+                self.assertLess(early["off"], 0)                          # early = the bat is ahead of the ball
+                self.assertGreater(late["off"], 0)
+                self.assertGreater(early["ahead"], 0)
+                self.assertLess(late["ahead"], 0)
+                self.assertEqual((early["label"], late["label"]), ("EARLY", "LATE"))
+        self.assertEqual(api_module.swing_info(3, "Whiff", "late", True), api_module.swing_info(3, "Whiff", "late", True))
+        took = api_module.swing_info(1, "Strike", "late", False)
+        self.assertFalse(took["swung"])
+        self.assertEqual((took["label"], took["off"]), ("TOOK IT", 0.0))
+        self.assertGreater(abs(api_module.swing_info(2, "Whiff", "on_time", True)["dy"]), 0.07)   # an on-time miss is over or under the ball
+
+    def test_reads_only_state_what_was_seen_with_at_least_two_observations(self):
+        st = generate_random_situation(random.Random(2))
+        name = st.batter.name
+
+        def add(n, result, swung, timing, course="out_lo", in_zone=True, pitch="four_seam"):
+            st.pitch_log.append({"pitch_number": n, "pitch_type": pitch, "target_course": course, "actual_course": course, "intent": "strike",
+                                 "result": result, "missed": False, "quality": 0.5, "framed": False, "decision_quality": 0.0,
+                                 "outcome_flags": {"swung": swung, "in_zone": in_zone}, "timing": timing, "batter": name})
+        self.assertEqual(api_module.batter_reads(st)[0], [])
+        add(1, "Whiff", True, "late")
+        self.assertEqual(api_module.batter_reads(st)[0], [])             # one swing is not a pattern
+        add(2, "Foul", True, "late")
+        facts, used = api_module.batter_reads(st)
+        self.assertEqual(len(used), 2)
+        self.assertTrue(any(f.startswith("Late on 2 of his last 2 swings") and "fastballs" in f for f in facts))
+        self.assertTrue(any("low" in f for f in facts))                    # both misses were low
+        add(3, "Strike", False, "on_time", course="mid_mid")
+        add(4, "Strike", False, "on_time", course="mid_mid")
+        self.assertTrue(any(f.startswith("Took 2 strikes") for f in api_module.batter_reads(st)[0]))
+        st.pitch_log[-1]["batter"] = "Someone Else"                       # pitches to another batter are not counted
+        self.assertEqual(len(api_module.batter_reads(st)[1]), 3)
+        for f in api_module.batter_reads(st)[0]:
+            for banned in ("looking for", "sitting on", "guess", "plan", "wants", "expect"):
+                self.assertNotIn(banned, f.lower())                       # facts, never a claim about his plan
+
+
 class StadiumPieceTests(unittest.TestCase):
     def test_evaluate_call_grades_and_always_explains(self):
         for dq, grade in ((0.4, "good"), (0.25, "good"), (0.0, "fair"), (-0.24, "fair"), (-0.25, "risky"), (-0.6, "risky")):

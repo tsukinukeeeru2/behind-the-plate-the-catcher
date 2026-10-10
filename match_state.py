@@ -9,6 +9,7 @@ MatchState holds exactly the attributes judge.py expects:
 
 import random
 
+from constants import zone_x, zone_y
 from defense import make_default_defense
 from lineup import Lineup, build_sample_lineup
 from pitch_history import PitchHistory
@@ -59,6 +60,8 @@ class MatchState:
         self.tactic_decided = False       # whether this at-bat's tactic is decided (makes begin_at_bat idempotent)
         self.framed_strikes = 0          # how many times framing made a "ball" look like a "strike" (#catcher's craft)
         self.good_call_streak = 0        # how many "good calls" in a row (a lenient test; the number itself is never shown)
+        self.catch_stats = {"clean": 0, "barely": 0, "miss": 0}   # the catcher's own mitt work (the 3D page's catch game)
+        self.catch_applied_for = 0       # the pitch number whose catch has already been applied (a repeat is ignored)
 
     # ---- Used by judge.py ----
     @property
@@ -193,6 +196,51 @@ class MatchState:
         self.runner_speeds = [None, self.runner_speeds[0], self.runner_speeds[1]]
         self.events.append("Passed ball")
         return "Passed ball! The runners move up"
+
+    # ---- The catcher's own catch (the mitt game on the 3D page) ----
+    CATCHABLE = ("Ball", "Strike", "Whiff")
+
+    def can_apply_catch(self):
+        """True if the last pitch ended in the mitt (not hit, not fouled) and its catch has not been applied yet."""
+        if not self.pitch_log or self.catch_applied_for >= len(self.pitch_log):
+            return False
+        return self.pitch_log[-1]["result"] in self.CATCHABLE
+
+    def apply_catch(self, quality, rng):
+        """Apply how the catcher caught the last pitch: "clean" / "barely" / "miss". Returns a dict describing what changed.
+
+        - miss: the ball gets away. With runners on, it is a passed ball and they move up a base.
+        - clean: a ball that only just missed the zone can be framed into a strike (never a strikeout).
+        - barely: you held on. Nothing changes.
+        The count of clean / barely / miss catches is kept for the post-game review.
+        This is deliberately separate from the quality of the pitch call (decision quality): a great call can still be dropped.
+        """
+        out = {"passed": False, "stolen": False, "message": None}
+        if quality not in self.catch_stats or not self.can_apply_catch():
+            return out
+        self.catch_applied_for = len(self.pitch_log)
+        self.catch_stats[quality] += 1
+        entry = self.pitch_log[-1]
+        if quality == "miss":
+            if any(self.runners):
+                msg = self.resolve_block(-1.0, rng)             # a passed ball: the runners move up
+                out["passed"], out["message"] = bool(msg), msg
+            else:
+                out["message"] = "Dropped it, but nobody was on"
+        elif quality == "clean" and entry["result"] == "Ball" and not entry.get("at_bat_end"):
+            flags = entry.get("outcome_flags", {})
+            edge = zone_x(entry["actual_course"]) != "mid" or zone_y(entry["actual_course"]) != "mid"
+            both_edge = zone_x(entry["actual_course"]) != "mid" and zone_y(entry["actual_course"]) != "mid"
+            if (not flags.get("swung") and not flags.get("in_zone") and edge and self.balls >= 1 and self.strikes < 2
+                    and rng.random() < (0.30 if both_edge else 0.18)):
+                self.balls -= 1
+                self.strikes += 1
+                entry["result"], entry["framed"] = "Strike", True
+                self.framed_strikes += 1
+                if self.history.records:
+                    self.history.records[-1]["result"] = "Strike"
+                out["stolen"], out["message"] = True, "You stole a strike with a clean catch!"
+        return out
 
     # ---- Changing the signs (#game feel, rhythm) ----
     def sign_steal_chance(self, rng):

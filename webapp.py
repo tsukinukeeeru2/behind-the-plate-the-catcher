@@ -183,6 +183,9 @@ class GameSession:
         self.log_path = None
         self.play_shown = None     # which pitch's Play Viewer has already auto-played
         self.event_seq = 0         # +1 every time a pitch is resolved (the 3D page animates when it changes)
+        self.next_tempo = 0.0      # how the last catch leaves the pitcher: a clean catch steadies him, a dropped one rattles him
+        self.last_catch = None     # the catch of the last pitch: {"quality", "message", "stolen", "passed"}
+        self.pitch_qtes = []       # the rhythm games that ran during the pitch being resolved
 
     def start_new_game(self, challenge_seed=None, scenario=_KEEP, difficulty=None):
         """Start a game. Every game gets a seed (its Challenge Code): the one typed on the start screen,
@@ -1870,6 +1873,7 @@ def _advance_pitch_gen(answer):
         return
     try:
         SESSION.pending_qte = gen.send(answer)          # (kind, payload)
+        SESSION.pitch_qtes.append(SESSION.pending_qte[0])
     except StopIteration as stop:
         SESSION.pitch_gen = None
         SESSION.pending_qte = None
@@ -1882,6 +1886,7 @@ def _advance_pitch_gen(answer):
             outcome.setdefault("at_bat_end",
                                SESSION.state.pitch_log[-1].get("at_bat_end"))
         SESSION.last_outcome = outcome
+        SESSION.last_catch = None
         SESSION.event_seq += 1
 
 
@@ -2045,9 +2050,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             SESSION.last_batter_bats = state.batter.bats
             SESSION.last_call = {"pitch_type": pitch_type, "target_course": course, "intent": intent}
             # Start judging one pitch with the engine generator. If a QTE is needed, it is pushed to pending_qte.
-            SESSION.pitch_gen = resolve_pitch_flow(state, pitch_type, course, intent, SESSION.rng,
-                                                   tempo=_tempo_bonus(form))
+            tempo = _tempo_bonus(form) + SESSION.next_tempo
+            SESSION.next_tempo = 0.0
+            SESSION.pitch_qtes = []
+            SESSION.pitch_gen = resolve_pitch_flow(state, pitch_type, course, intent, SESSION.rng, tempo=tempo)
             _advance_pitch_gen(None)
+            while self._wants_json() and SESSION.pending_qte is not None and SESSION.pending_qte[0] == "frame":
+                _advance_pitch_gen(None)        # the 3D page frames with the mitt after the pitch, not with a timing bar before it
+            self._redirect()
+            return
+
+        if self.path == "/catch":
+            quality = form.get("quality")
+            if quality in ("clean", "barely", "miss") and SESSION.last_catch is None and state.can_apply_catch():
+                res = state.apply_catch(quality, SESSION.rng)
+                SESSION.next_tempo = {"clean": 0.10, "barely": 0.02, "miss": -0.10}[quality]
+                SESSION.last_catch = dict(res, quality=quality)
+                if res["message"]:
+                    SESSION.messages = SESSION.messages + [">>> " + res["message"]]
             self._redirect()
             return
 

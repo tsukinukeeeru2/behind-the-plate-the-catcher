@@ -102,6 +102,10 @@ BTP.bgm = (function () {
       o.connect(f); f.connect(g); g.connect(sfxOut); o.start(t); o.stop(t + 0.22);
     } else if (name === 'crack') {              // wood on ball
       sfxNoise(t, 0.05, 'highpass', 2500, 0.9 * k); sfxTone(t, 900, 260, 0.07, 0.6 * k, 'square'); sfxNoise(t, 0.1, 'bandpass', 1200, 0.5 * k);
+    } else if (name === 'thud') {               // the ball getting away and hitting the ground behind you
+      sfxNoise(t, 0.12, 'lowpass', 380, 0.9 * k); sfxTone(t, 110, 45, 0.2, 0.8 * k, 'sine');
+    } else if (name === 'dull') {               // a ball that only just stuck in the mitt: less snap, more thump
+      sfxNoise(t, 0.08, 'lowpass', 900, 0.8 * k); sfxTone(t, 130, 60, 0.15, 0.7 * k, 'sine');
     } else if (name === 'grunt') {
       sfxTone(t, 180, 90, 0.2, 0.18 * k, 'sawtooth');
     }
@@ -125,14 +129,14 @@ BTP.bgm = (function () {
 /* ---------------- the catcher's camera ----------------
    World units are metres: x to the right, y up, z toward the pitcher; home plate's front edge is (0, 0, 0).
    The camera is the catcher's eye: crouched about three metres behind the plate, looking a little downward. */
-var CAM = BTP.CAM = { x: 0, y: 1.12, z: -3.1, pitch: 0.0 };
+var CAM = BTP.CAM = { x: 0, y: 1.0, z: -3.1, pitch: 0.0 };      // eye height of a deep crouch
 var V = BTP.V = { W: 800, H: 450, F: 600, cx: 400, cy: 200, hy: 150, cp: 1, sp: 0 };
 
 BTP.setupView = function (W, H) {
   V.W = W; V.H = H;
   V.F = Math.min(2.6 * H, 1.15 * W);                         // a long lens: the pitcher fills the middle of the picture
   V.cx = W / 2;
-  V.hy = 0.36 * H;                                          // where the horizon sits on the screen
+  V.hy = 0.30 * H;                                          // where the horizon sits on the screen
   V.cp = Math.cos(CAM.pitch); V.sp = Math.sin(CAM.pitch);
   V.cy = V.hy + V.F * Math.tan(CAM.pitch);
 };
