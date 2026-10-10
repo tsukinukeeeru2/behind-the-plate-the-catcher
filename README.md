@@ -29,7 +29,7 @@ Your browser opens at `http://127.0.0.1:8765` (use `--no-browser` to stop that, 
 Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** timing games, **click the stage** to skip an animation.
 The old page-style layout is still available at `/classic`. Terminal version: `python main.py` (Enter = pitch, `d` = defense, `m` = note a read, `w` = intentional walk, `p` = pitching change, `q` = quit).
 
-Run the tests: `python tests.py` (182 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
+Run the tests: `python tests.py` (183 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
 
 ![The start screen](screenshots/stadium_start.png)
 
@@ -37,23 +37,26 @@ Run the tests: `python tests.py` (182 tests, including 1000 simulated games). De
 
 ## Seen through the mask
 
-The main screen is the view from a crouch behind the plate, in perspective, with a catcher's mask around the edge of your vision. About 80% of the screen is the stadium.
+The main screen is a first-person view from a crouch behind the plate, in perspective, looking out through a catcher's mask. About 80% of the screen is the stadium.
 
-- **A real 3D scene, no libraries.** The stadium, stands, crowd, mowed grass, infield dirt, players, ball and shadows are drawn with a small perspective camera on a plain canvas, so it also runs offline.
-- **Your mitt is on screen.** It sits at the target you picked, then reaches for the ball. The pitcher and the ball are kept clear of the mask bars.
-- **Pitches look different.** The ball leaves the pitcher's hand and comes at your mitt on a path that depends on the pitch: a four-seam is nearly straight, a slider sweeps, a curveball drops late, a changeup arrives slower. A faint trail traces the path.
+- **Your eyes, behind the plate.** The camera is at a catcher's eye height, a few metres back, with a long lens, so the pitcher fills the middle of the picture and you can follow his whole body and the release.
+- **The batter is where a batter stands.** He is in his real box, right beside you. His shoulder, arm, helmet and bat come into view, and the bat can cross in front of the pitcher while he waits and when he swings. A right-handed batter fills the left side, a left-handed batter the right.
+- **A narrow opening.** The mask's padding and bars come in from all four sides, soft and out of focus. They stay toward the edges, so the pitcher, the release point and the line of the pitch stay clear.
+- **A full-body delivery, right- or left-handed.** The pitcher starts calmly, lifts the knee, loads his weight over the back leg, takes a long stride, then turns hips first and chest after, with the elbow leading the arm to release and a follow-through. It is a heavy, deliberate motion with a sudden snap (inspired by the general look of a power left-hander), but it is an original animation, not a reconstruction of any real pitcher. A left-hander is the same motion mirrored, so the stride foot, arm and release point stay consistent.
+- **The ball obeys physics.** It leaves the pitcher's hand at the release point and flies under gravity, air drag and the Magnus force from spin (`0.5 * rho * A * Cl * v^2` along `spin x velocity`, with `Cl` from the spin factor so spin rate matters). The game decides where the pitch ends up, and the code solves for the throw that gets there, so a four-seam, a curveball and a slider all arrive at the spot you can see but on visibly different paths. The speeds and spin rates are placeholders, not measurements of any real player. Playback uses the clock, not the frame count, so the speed never depends on your frame rate (the flight is stretched by one fixed factor so the eye can follow it).
+- **It gets big fast.** The ball keeps its real size: tiny far away, then rapidly bigger because of the perspective, with a short afterimage. It meets your mitt at a catch point behind the plate, with a sharp pop, a short jolt of the picture and a recoil of the mitt, all synthesized in the browser.
 - **Click the zone.** The 3x3 strike zone is overlaid on the 3D scene. Click a cell to call the location. After the pitch it shows where you asked (dashed) and where it really went (orange dot).
 - **Short result, then your grade.** "STRIKE", "SWING & MISS", "FALLS IN!", then a line like *Good call: first-pitch off-speed threw off a fastball-sitter*.
-- **Balls in play are replayed.** You watch the fielder run it down, the throw, and the runners. A small top-down **field view** appears for balls that leave your line of sight.
+- **Balls in play are replayed** with the fielder running it down, the throw and the runners. A small top-down **field view** appears for balls that leave your line of sight.
 - **No scrolling.** Score, count, outs and runners are in the top bar; pitch buttons are at the bottom; the batter's card is on the left; history, defense, notes and help open as side panels over the picture.
 
-![Pitch on the way in](screenshots/stadium_pitch.png)
-![The result, and your grade with the reason](screenshots/stadium_result.png)
+![The ball coming in](screenshots/stadium_pitch.png)
+![The catch, the result, and your grade with the reason](screenshots/stadium_result.png)
 ![Playing a ball in play with the field view](screenshots/stadium_play.png)
 
 ### Music
 
-One original trumpet-and-drums loop (synthesized in the browser, no audio files). It never restarts while you play: the page does not reload between pitches, there is a single audio player, and the loop continues from the last bar back to the first. The top bar has a mute button and a volume slider, and both are remembered.
+One original trumpet-and-drums loop (synthesized in the browser, no audio files). The catch pop, the swing and the bat crack use the same audio player and follow the same mute and volume. It never restarts while you play: the page does not reload between pitches, there is a single audio player, and the loop continues from the last bar back to the first. The top bar has a mute button and a volume slider, and both are remembered.
 
 ---
 
@@ -85,7 +88,7 @@ These rhythm games never decide a play on their own. They only nudge the odds (a
 
 See [the next section](#built-on-a-pre-existing-base-be-upfront-about-this) for what existed before. These features are new:
 
-- **The catcher's-eye 3D view** (`stadium.py`, `web/`, `api.py`): a one-screen stadium page seen through the mask, a clickable strike zone, a mitt that follows your target, pitch paths that differ by pitch type, a one-line grade and reason after every pitch, and a top-down field view for balls out of sight. The page talks to the same Python game rules through a small JSON API, so it never reloads.
+- **The catcher's-eye 3D view** (`stadium.py`, `web/`, `api.py`): a one-screen stadium page seen through the mask, a clickable strike zone, a mitt that follows your target, a full-body pitching motion for either hand, a ball flown by gravity, drag and spin (Magnus force), the batter and his bat close beside you, a one-line grade and reason after every pitch, and a top-down field view for balls out of sight. The page talks to the same Python game rules through a small JSON API, so it never reloads.
 - **Music that does not restart**: one audio player independent of the screen, a seamless loop, mute and volume that are remembered (`bgm_js.py`).
 - **Play Viewer**: an animated replay of every ball in play (flight, the fielder's run, the throw, and the baserunners), drawn from the same result the game already decided (`playview.py`). It never changes the outcome and uses no game randomness.
 - **Catcher Rating (S, A, B, C, D)** with a title and badges (Shutdown, Strikeout Artist, Pickpocket, Mind Games, Cannon Arm, Hard Luck), computed from runs allowed, decision quality, strikeouts, framing, and holding the lead.
@@ -93,7 +96,7 @@ See [the next section](#built-on-a-pre-existing-base-be-upfront-about-this) for 
 - **Challenge Codes**: every game gets a short code. Type a friend's code on the start screen and you get the exact same opening situation. "Replay this situation" on the report screen reuses yours.
 - **Difficulty** from the start screen: Beginner (hints), Normal, Expert (no spray chart).
 - **Judge-proofing**: the web server is threaded with a request lock and idle timeouts (browsers open speculative connections that used to be able to freeze a single-threaded server), unexpected errors show a recovery page instead of a dead tab, bad or hand-typed form values are ignored, the port auto-falls back, and the browser opens by itself.
-- **A fuzz pass** that drove 270 web games (120 through the classic forms, 150 through the JSON API) with junk input (bad QTE answers, invalid forms, random actions). It found and fixed one real crash (an invalid note value broke the post-game review). The 182 unit tests now cover that case.
+- **A fuzz pass** that drove 270 web games (120 through the classic forms, 150 through the JSON API) with junk input (bad QTE answers, invalid forms, random actions). It found and fixed one real crash (an invalid note value broke the post-game review). The 183 unit tests now cover that case.
 - **Full English version** of the game: UI text, hints, analysis, replay viewer, stats, lineups, and tests.
 
 ---
@@ -150,7 +153,7 @@ opponent.py        the opposing bench (bunts, hit-and-run)
 qte.py             the catcher's rhythm mini-games (terminal)
 main.py            terminal version                      webapp.py        web version (http.server)
 playview.py        the Play Viewer (classic page) and the replay script the 3D page also uses
-stadium.py         the 3D catcher's-eye page; its canvas code is in web/ (camera, stadium, players, game loop)
+stadium.py         the 3D catcher's-eye page; its canvas code is in web/ (camera and ball physics, stadium, the pitcher's delivery, players, game loop)
 api.py             the JSON the 3D page reads (state, evaluation text); never the hidden score
 bgm_js.py          the background music (one player, seamless loop)
 tests.py           182 unittest tests incl. a 1000-game stress test

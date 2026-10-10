@@ -2409,6 +2409,21 @@ class StadiumPieceTests(unittest.TestCase):
         self.assertIn("step = (step + 1) % STEPS", js)                           # after the last bar it goes back to the first
         self.assertNotIn("suspend()", js)                                        # muting only moves a gain knob
 
+
+    def test_the_pitch_is_computed_from_forces_and_the_delivery_is_a_full_body_motion(self):
+        js = stadium._assets()[1]
+        for needle in ("BTP.phys = (function", "function solve(", "function fly(", "RHO = 1.2", "G = 9.81", "CD = 0.35",
+                       "1 / (2 + 1 / Math.max(S, 1e-4))",              # the lift coefficient comes from the spin factor
+                       "wm * sp",                                      # the force direction is spin x velocity, normalised
+                       "BTP.deliver = function", "BTP.DELIVERY", "hip:", "sho:",           # hips and shoulders turn separately
+                       "BTP.releasePoint", "BALL_TIME_SCALE"):
+            self.assertIn(needle, js, needle)
+        self.assertIn("lefty ? -s[1] : s[1]", js)                      # a left-hander mirrors the side spin
+        self.assertIn("if (lefty) Object.keys(J)", js)                 # ...and the whole body motion
+        self.assertNotIn("pitchPath", js)                              # the old hand-drawn curve is gone
+        for sound in ("'pop'", "'whoosh'", "'crack'"):
+            self.assertIn(sound, js)
+
     def test_pages_do_not_reload_between_pitches(self):
         js = stadium._assets()[1]
         self.assertNotIn("location.reload", js)

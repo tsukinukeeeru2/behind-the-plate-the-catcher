@@ -93,10 +93,10 @@ var POSE = {
   // the batter, from behind. In his own frame he faces the plate (+z); his left shoulder points at the pitcher (-x).
   batStance: function (bobble) {
     var b = bobble || 0;
-    var hands = [0.18, 1.48 + 0.02 * b, 0.12];
+    var hands = [0.18 + 0.02 * b, 1.48 + 0.035 * b, 0.12];                                 // the bat waggles while he waits on the pitch
     return body({ pel: [0, 0.90, 0], lean: 0.12, twist: 0.0, anL: [-0.42, 0.05, 0.0], anR: [0.40, 0.05, 0.02],
                   haL: add(hands, [-0.03, -0.01, 0.0]), haR: add(hands, [0.03, 0.01, 0.0]),
-                  bat: { grip: hands, dir: norm([-0.30, 0.93, 0.16]) } });
+                  bat: { grip: hands, dir: norm([-0.30 + 0.09 * b, 0.93, 0.16 - 0.06 * b]) } });
   },
   batSwing: function (u) {
     var load = ease(u / 0.22);                           // a small step and load
@@ -162,8 +162,9 @@ function drawFigure(ctx, W3, team, opts) {
   if (W3.batA) limb(W3.batC, W3.batB, 0.07, hex('#d6ae72'), -0.2);
   parts.sort(function (a, b) { return b.d - a.d; });
   ctx.lineCap = 'round';
+  var bulk = opts.bulk || 1;
   parts.forEach(function (p) {
-    var px = Math.max(1.2, p.w * (p.pa.s + p.pb.s) / 2);
+    var px = Math.max(1.2, p.w * bulk * (p.pa.s + p.pb.s) / 2);
     ctx.strokeStyle = rgb(p.col, 0.55); ctx.lineWidth = px + Math.min(2, px * 0.14);
     ctx.beginPath(); ctx.moveTo(p.pa.x, p.pa.y); ctx.lineTo(p.pb.x, p.pb.y); ctx.stroke();
     ctx.strokeStyle = rgb(p.col, 1); ctx.lineWidth = px;
@@ -216,10 +217,11 @@ function drawPlayer(ctx, p) {
 }
 
 /* ---------- the ball ---------- */
+// b.trail is a short list of recent positions (newest last); they make the afterimage. The ball keeps its real size:
+// it only looks small far away and huge up close because of the perspective.
 function drawBall(ctx, b, o) {
   o = o || {};
-  var r = o.radius || 0.09;
-  // its shadow on the ground
+  var r = o.radius || 0.052;
   var sp = P(b.x, 0.02, b.z);
   if (sp && b.y > 0.05) {
     var sr = Math.max(1.5, r * sp.s * 1.1);
@@ -228,12 +230,27 @@ function drawBall(ctx, b, o) {
   }
   var p = P(b.x, b.y, b.z);
   if (!p) return null;
-  var pr = Math.max(o.minPx || 2.4, r * p.s);
-  if (pr < 7) { ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y, pr * 2.1, 0, 7); ctx.stroke(); }
+  var pr = Math.max(o.minPx || 2.2, r * p.s);
+  // the afterimage: soft capsules along the last few positions, fading and thinning
+  if (b.trail && b.trail.length) {
+    var prev = p, n = b.trail.length;
+    ctx.lineCap = 'round';
+    for (var i = n - 1; i >= 0; i--) {
+      var q = P(b.trail[i][0], b.trail[i][1], b.trail[i][2]); if (!q) break;
+      var k = 1 - (n - i) / (n + 1), w = Math.max(1, pr * 2 * (0.35 + 0.55 * k));
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.30 * k * k).toFixed(3) + ')'; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      prev = q;
+    }
+  }
+  if (pr < 6) {                                        // far away: a faint ring so the eye can still follow a tiny ball
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 * (1 - pr / 6)).toFixed(3) + ')'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(p.x, p.y, pr * 2.0 + 2, 0, 7); ctx.stroke();
+  }
   var g = ctx.createRadialGradient(p.x - pr * 0.35, p.y - pr * 0.4, pr * 0.1, p.x, p.y, pr);
-  g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#d9dde6');
+  g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#d4d8e2');
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, pr, 0, 7); ctx.fill();
-  if (pr > 5) {                                            // the seams, turning with the spin
+  if (pr > 5) {                                        // the seams, turning with the spin
     ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(o.spin || 0);
     ctx.strokeStyle = '#c63c3c'; ctx.lineWidth = Math.max(1, pr * 0.14);
     ctx.beginPath(); ctx.arc(-pr * 0.95, 0, pr * 0.95, -0.9, 0.9); ctx.stroke();
@@ -315,7 +332,7 @@ function drawZone(ctx, z) {
     var q = P(z.markA.x, z.markA.y, Z.z);
     if (q) {
       ctx.fillStyle = 'rgba(255,170,60,.95)'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(4, 0.045 * q.s), 0, 7); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(3.5, 0.028 * q.s), 0, 7); ctx.fill(); ctx.stroke();
     }
   }
 }
@@ -324,6 +341,8 @@ function drawZone(ctx, z) {
 BTP.renderFrame = function (ctx, scene, m) {
   var W = V.W, H = V.H;
   ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if (m.shake) ctx.translate(m.shake[0], m.shake[1]);
   ctx.drawImage(scene, 0, 0, W, H);
   var items = [];                                           // everything drawn as a player, sorted far to near
   var t = m.t || 0;
@@ -342,9 +361,8 @@ BTP.renderFrame = function (ctx, scene, m) {
     items.push({ x: w.x, z: w.z, y: 0, yaw: yaw, J: J, team: TEAM.us, opts: { glove: true }, d: w.z });
   });
   // the pitcher
-  var pu = m.pitcherU;
-  var pJ = pu == null ? POSE.pitch(0.0 + 0.012 * Math.sin(t * 0.003), m.lefty) : POSE.pitch(Math.min(1, pu), m.lefty);
-  items.push({ x: 0, z: 18.44, y: 0.25, yaw: Math.PI, J: pJ, team: TEAM.us, opts: {}, d: 18.44, isPitcher: true });
+  var pJ = m.pitcherT == null ? BTP.deliver(0, m.lefty, t * 0.001) : BTP.deliver(Math.min(m.pitcherT, BTP.DELIVERY.end), m.lefty, 0);
+  items.push({ x: 0, z: 18.44, y: 0.25, yaw: Math.PI, J: pJ, team: TEAM.us, opts: { bulk: 1.28, glove: true }, d: 18.44, isPitcher: true });
   // runners
   var base = BTP.BASES;
   (m.runners || []).forEach(function (r) {
@@ -353,8 +371,8 @@ BTP.renderFrame = function (ctx, scene, m) {
     items.push({ x: r.x, z: r.z, y: 0, yaw: yaw, J: r.out ? POSE.stand() : J, team: TEAM.them, opts: { helmet: true }, d: r.z });
   });
   // the batter (big, close to the camera); once he has hit the ball he is a runner, drawn from the replay
-  var bx = (m.bats === 'R' ? -1 : 1) * 1.18;
-  var bJ = m.batterU == null ? POSE.batStance(Math.sin(t * 0.005)) : POSE.batSwing(m.batterU);
+  var bx = (m.bats === 'R' ? -1 : 1) * 0.80;
+  var bJ = m.batterU == null ? POSE.batStance(Math.sin(m.pitcherT != null ? m.pitcherT * 7 : t * 0.005)) : POSE.batSwing(m.batterU);
   if (!m.batterHidden) items.push({ x: bx, z: 0.12, y: 0, yaw: m.bats === 'R' ? Math.PI / 2 : -Math.PI / 2, J: bJ, team: TEAM.them,
                opts: { helmet: true, flapSide: m.bats === 'R' ? 0.45 : -0.45, sleeves: true }, d: 0.12 });
   // the ball is part of the same far-to-near order so the batter can pass in front of it
@@ -383,6 +401,7 @@ BTP.renderFrame = function (ctx, scene, m) {
       ctx.lineTo(pp.x + Math.cos(an) * pp.r * 1.25, pp.y + Math.sin(an) * pp.r * 1.25); ctx.stroke();
     }
   }
+  ctx.restore();
   // a ball that left the top of the screen: an arrow at the edge
   if (ball) {
     var bp = P(ball.x, ball.y, ball.z);
@@ -395,9 +414,4 @@ BTP.renderFrame = function (ctx, scene, m) {
   }
 };
 BTP.POSE = POSE; BTP.ik2 = ik2; BTP.toWorld = toWorld;
-BTP.releasePoint = function (lefty) {                       // where the ball leaves the pitcher's hand (world)
-  var J = POSE.pitch(0.72, lefty);
-  var W3 = toWorld(J, Math.PI, 0, 0.25, 18.44);
-  return { x: W3.haR[0], y: W3.haR[1], z: W3.haR[2] };
-};
 })();

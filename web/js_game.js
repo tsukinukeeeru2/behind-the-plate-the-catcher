@@ -288,7 +288,8 @@ function zoneCellAt(sx, sy) {
 function stageXY(e) { var r = $('view').getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
 /* ---------------- pitch geometry and timing ---------------- */
-var G = 17.4;                                     // metres from the release point to the plate
+var BALL_TIME_SCALE = 1.35;                       // the flight is played a little slower than real life so the eye can follow it (never tied to the frame rate)
+var CATCH_Z = -0.55;                              // the mitt is held this far behind the front of the plate
 function pitchTarget(last, bats, rnd) {
   var cell = BTP.courseCell(last.actual_course, bats), c = BTP.cellCenter(cell.row, cell.col);
   var x = c.x + (rnd() - 0.5) * c.cw * 0.55, y = c.y + (rnd() - 0.5) * c.ch * 0.55;
@@ -296,62 +297,58 @@ function pitchTarget(last, bats, rnd) {
   if (outside) {                                   // a ball: push it out of the zone, away from the middle
     var Z = BTP.ZONE, dx = c.x - (Z.x0 + Z.x1) / 2, dy = c.y - (Z.y0 + Z.y1) / 2;
     if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) { dy = -1; }
-    var l = Math.hypot(dx / 0.2, dy / 0.2) || 1, push = last.framed ? 0.07 : (0.09 + rnd() * 0.10);
+    var push = last.framed ? 0.07 : (0.09 + rnd() * 0.10);
     x += dx / (Math.hypot(dx, dy) || 1) * push; y += dy / (Math.hypot(dx, dy) || 1) * push;
     if (!last.framed && cell.row === 2) y -= 0.12;
   }
   return { x: x, y: y };
 }
-function pitchPath(R, Pt, move, lefty) {            // returns f(tau) -> [x,y,z]; tau 1 = the plate, > 1 keeps going into the mitt
-  var drop = move[0], sweep = move[1];
-  var hx = (lefty ? 1 : -1) * sweep * 0.9 * (lefty ? 1 : 1), hy = drop * 0.8;
-  if (lefty) hx = sweep * 0.9; else hx = -sweep * 0.9;
-  return function (tau) {
-    var base = [R.x + (Pt.x - R.x) * tau, R.y + (Pt.y - R.y) * tau, R.z + (0 - R.z) * tau];
-    if (tau <= 1) { var k = 2.58 * Math.sin(Math.PI * tau) * tau * tau; base[0] += hx * k; base[1] += hy * k; }
-    return base;
-  };
-}
-function mittScreen(wx, wy) {                       // the mitt hangs just behind the plate, on the line of sight to the target
-  var zc = -0.55, k = (zc - BTP.CAM.z) / (0 - BTP.CAM.z);
+function mittScreen(wx, wy) {                       // the idle mitt hangs behind the plate, on the line of sight to the target
+  var k = (CATCH_Z - BTP.CAM.z) / (0 - BTP.CAM.z);
   var X = BTP.CAM.x + (wx - BTP.CAM.x) * k, Y = BTP.CAM.y + (wy - BTP.CAM.y) * k;
-  var p = P(X, Y, zc); if (!p) return { x: V.W / 2, y: V.H * 0.7, size: 40 };
-  return { x: p.x, y: p.y, size: 0.125 * p.s };
+  var p = P(X, Y, CATCH_Z); if (!p) return { x: V.W / 2, y: V.H * 0.7, size: 40 };
+  return { x: p.x, y: p.y, size: 0.092 * p.s };
 }
+function mittAtWorld(x, y) { var p = P(x, y, CATCH_Z); return p ? { x: p.x, y: p.y, size: 0.092 * p.s } : null; }
 
 function startPitchAnim(ns) {
   var l = ns.last, prev = shown, bats = prev.batter.bats, lefty = prev.pitcher.throws === 'L';
   var rep = null; prev.repertoire.forEach(function (p) { if (p.key === l.pitch_type) rep = p; });
-  rep = rep || { velocity: 90, move: [0.3, 0] };
+  rep = rep || { key: l.pitch_type, velocity: 90, move: [0.3, 0], family: 'fastball' };
   var rnd = BTP.rng(l.seq * 977 + 13);
-  var R = BTP.releasePoint(lefty), Pt = pitchTarget(l, bats, rnd);
-  var path = pitchPath(R, Pt, rep.move, lefty);
-  var flight = G / (rep.velocity * 0.447 * 0.9) * 2.4, windup = 1.0;
-  var tRel = windup, tArr = windup + flight;
+  var Rp = BTP.releasePoint(lefty), Pt = pitchTarget(l, bats, rnd);
+  // the game decided where this pitch ended up (its control error is already in that spot); we find the throw that gets there
+  var spin = BTP.phys.spinFor(rep.key, rep.move, lefty);
+  var path = BTP.phys.solve([Rp.x, Rp.y, Rp.z], [Pt.x, Pt.y], rep.velocity * BTP.phys.MPH, spin);
+  var tRel = BTP.DELIVERY.release, S_ = BALL_TIME_SCALE;
+  var tPlate = tRel + path.tPlate * S_, tCatch = tRel + BTP.phys.timeAtZ(path, CATCH_Z) * S_;
+  var tHitZ = tRel + BTP.phys.timeAtZ(path, 0.22) * S_;                       // the bat meets the ball just over the front of the plate
   var swung = l.swung, res = l.result, batted = l.batted;
-  // when the bat meets (or misses) the ball
-  var off = 0;
+  var off = 0;                                                                // early or late, in seconds
   if (swung) {
-    if (res === 'Whiff') off = (rnd() < 0.5 ? -1 : 1) * (0.11 + rnd() * 0.05);
-    else if (res === 'Foul') off = (l.timing === 'early' ? -1 : 1) * 0.05;
-    else off = l.timing === 'early' ? -0.04 : (l.timing === 'late' ? 0.04 : 0);
+    if (res === 'Whiff') off = (rnd() < 0.5 ? -1 : 1) * (0.07 + rnd() * 0.05);
+    else if (res === 'Foul') off = (l.timing === 'early' ? -1 : 1) * 0.04;
+    else off = l.timing === 'early' ? -0.03 : (l.timing === 'late' ? 0.03 : 0);
   }
-  var tContact = tArr + off, swingDur = 0.62;
-  var tAfter = tArr + 1.7, script = batted ? batted.script : null;
+  var tContact = tHitZ + off, swingDur = 0.52;
+  var tAfter = tCatch + 1.5, script = batted ? batted.script : null;
   if (script) tAfter = tContact + script.duration - 0.2 + 0.5;
   else if (res === 'Foul') tAfter = tContact + 2.2;
-  // a foul ball's flight: up and to the side, then out of sight
-  var foul = null;
+  var foul = null;                                                            // a foul ball goes up and off to the side
   if (res === 'Foul') {
     var side = (l.timing === 'late') ? (bats === 'R' ? 1 : -1) : (bats === 'R' ? -1 : 1);
     foul = { vx: side * (9 + rnd() * 5), vy: 9 + rnd() * 4, vz: 2 + rnd() * 7 };
   }
-  var tx = BTP.cellCenter(sel.cell.row, sel.cell.col);     // where the mitt was set
-  var mittT = mittScreen(tx.x, tx.y), mittA = mittScreen(Pt.x + (rnd() - 0.5) * 0.02, Pt.y);
-  var caught = !script && res !== 'Foul';                  // the mitt takes it unless the bat does
-  anim = { t0: performance.now(), tRel: tRel, tArr: tArr, tContact: tContact, swingDur: swingDur, flight: flight, windup: windup,
-           path: path, R: R, Pt: Pt, bats: bats, lefty: lefty, l: l, script: script, foul: foul, caught: caught, swung: swung,
-           mittT: mittT, mittA: mittA, tAfter: tAfter, spin: rnd() * 6, trail: [], pathPts: [], banner: -1, rep: rep, done: false, ns: ns };
+  var tx = BTP.cellCenter(sel.cell.row, sel.cell.col);                        // where the mitt was set
+  var atCatch = BTP.phys.at(path, BTP.phys.timeAtZ(path, CATCH_Z));
+  var mittT = mittScreen(tx.x, tx.y), mittA = mittAtWorld(atCatch.x, atCatch.y) || mittT;
+  var caught = !script && res !== 'Foul';                                     // the mitt takes it unless the bat does
+  var pts = [];                                                               // the whole path, kept for the faint trace afterwards
+  for (var q = 0; q <= 40; q++) { var pp = BTP.phys.at(path, path.tPlate * q / 40); pts.push([pp.x, pp.y, pp.z]); }
+  anim = { t0: performance.now(), tRel: tRel, tPlate: tPlate, tCatch: tCatch, tContact: tContact, swingDur: swingDur, scale: S_,
+           path: path, R: Rp, Pt: Pt, bats: bats, lefty: lefty, l: l, script: script, foul: foul, caught: caught, swung: swung,
+           mittT: mittT, mittA: mittA, tAfter: tAfter, spin: rnd() * 6, trail: [], pathPts: pts, banner: -1, rep: rep, done: false, ns: ns,
+           snd: {}, tArr: tPlate };
   anim.markT = { row: sel.cell.row, col: sel.cell.col }; anim.markA = { x: Pt.x, y: Pt.y };
   hint('');
   renderBottom();
@@ -422,45 +419,53 @@ function buildModel(now) {
   /* ---- the pitch / play animation ---- */
   var a = anim, t = (now - a.t0) / 1000 / TS;
   var l = a.l;
-  // the pitcher's delivery
-  m.pitcherU = t < a.windup ? (t / a.windup) * 0.72 : Math.min(1, 0.72 + 0.28 * (t - a.windup) / 0.55);
-  // the batter's swing
-  if (a.swung) { var su = (t - (a.tContact - 0.62 * a.swingDur)) / a.swingDur; if (su > -0.05) m.batterU = clamp(su, 0, 1); }
-  else if (t > a.tArr + 0.2) m.batterU = null;
-  // the mitt: set at your target, then moves to where the ball is really going
-  var mv = ease((t - (a.tArr - 0.40)) / 0.30);
+  function once(name, cond, fn) { if (cond && !a.snd[name]) { a.snd[name] = 1; fn(); } }
+  // the pitcher's whole-body delivery, in real time
+  m.pitcherT = t;
+  // the batter: the swing starts so that the bat arrives at the right moment
+  if (a.swung) {
+    var su = (t - (a.tContact - 0.62 * a.swingDur)) / a.swingDur;
+    if (su > -0.05) m.batterU = clamp(su, 0, 1);
+    once('swing', su > 0.30, function () { BTP.bgm.sfx('whoosh', 1.0); });
+  } else if (t > a.tCatch + 0.2) m.batterU = null;
+  // the ball, from the physics
+  var ball = { visible: false, x: 0, y: 0, z: 0, spin: a.spin + t * 20, radius: 0.052 };
+  var ts = (t - a.tRel) / a.scale;                                  // seconds of flight time since release (real-life seconds)
+  var flying = t >= a.tRel && (a.caught ? t <= a.tCatch + 0.12 : t < a.tContact);
+  if (flying) {
+    var q = BTP.phys.at(a.path, ts);
+    ball.visible = true; ball.x = q.x; ball.y = q.y; ball.z = q.z;
+    ball.trail = [];                                                // a short afterimage: where it was a few frames ago
+    for (var k = 7; k >= 1; k--) { var qq = BTP.phys.at(a.path, ts - k * 0.0065); ball.trail.push([qq.x, qq.y, qq.z]); }
+    once('pass', a.caught && ts > a.path.tPlate - 0.10, function () { BTP.bgm.sfx('whoosh', 0.5); });
+  }
+  // the mitt: set at your target, then it reaches for where the ball really is going; a quick recoil when it lands
+  var mv = ease((t - (a.tCatch - 0.28)) / 0.20);
   var mp = a.caught ? { x: lerp(a.mittT.x, a.mittA.x, mv), y: lerp(a.mittT.y, a.mittA.y, mv), size: lerp(a.mittT.size, a.mittA.size, mv) } : a.mittT;
-  var popAge = t - a.tArr;
-  var pop = a.caught && popAge >= 0 && popAge < 0.5 ? Math.sin(Math.min(1, popAge / 0.12) * Math.PI / 2) * (1 - ease(popAge / 0.5)) : 0;
-  m.mitt = { x: mp.x, y: mp.y, size: mp.size, pop: pop, tilt: -0.12 + 0.1 * pop };
-  if (a.caught && popAge >= 0 && popAge < 0.45) m.pop = { x: mp.x, y: mp.y, r: mp.size * (0.9 + popAge * 5), a: 1 - popAge / 0.45 };
-  if (!a.marked && t >= a.tArr) { a.marked = true; markers.T = a.markT; markers.A = a.markA; }
+  var popAge = t - a.tCatch;
+  var pop = a.caught && popAge >= 0 && popAge < 0.45 ? Math.sin(Math.min(1, popAge / 0.07) * Math.PI / 2) * (1 - ease(popAge / 0.45)) : 0;
+  m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: -0.12 + 0.12 * pop };
+  if (a.caught && popAge >= 0 && popAge < 0.40) m.pop = { x: mp.x, y: mp.y, r: mp.size * (0.8 + popAge * 4), a: 1 - popAge / 0.40 };
+  if (a.caught) once('pop', popAge >= 0, function () { BTP.bgm.sfx('pop', 1.0); });
+  var shakeAge = a.caught ? popAge : t - a.tContact;
+  if ((a.caught || a.swung) && shakeAge >= 0 && shakeAge < 0.14) {          // one short jolt, then still again
+    var amp = (a.caught ? 7 : 4) * (1 - shakeAge / 0.14) * (1 - shakeAge / 0.14);
+    m.shake = [Math.sin(shakeAge * 220) * amp, Math.cos(shakeAge * 260) * amp * 0.8];
+  }
+  if (!a.marked && t >= a.tPlate) { a.marked = true; markers.T = a.markT; markers.A = a.markA; }
   m.zone.markT = markers.T; m.zone.markA = markers.A;
   m.zone.enabled = false; m.zone.sel = null; m.zone.hover = null;
-
-  // the ball
-  var ball = { visible: false, x: 0, y: 0, z: 0, spin: a.spin + t * 18, radius: 0.09 };
-  var tau = (t - a.tRel) / a.flight;
-  if (t >= a.tRel && (tau <= 1.032 || (!a.caught && t < a.tContact))) {
-    if (tau <= 1.032 && (a.caught || t < a.tContact)) {
-      var q = a.path(Math.min(tau, 1.032));
-      ball.visible = true; ball.x = q[0]; ball.y = q[1]; ball.z = q[2];
-      if (a.caught && tau > 1) { ball.x = q[0]; ball.y = q[1]; }
-      a.pathPts.push(q);
-      if (a.pathPts.length > 160) a.pathPts.shift();
-    }
-  }
-  if (a.caught && t > a.tArr + 0.45) ball.visible = false;
-  m.pathTrail = a.pathPts.slice(); m.trailColor = a.rep && a.rep.family === 'breaking' ? '255,200,110' : (a.rep && a.rep.family === 'offspeed' ? '140,220,255' : '255,255,255');
-  m.trailFade = clamp(1 - (t - a.tArr) / 1.6, 0, 1);
-  if (!a.caught && t < a.tContact) { /* the bat is coming */ }
-  var contactAt = a.path(1);
+  // the whole path stays on screen as a faint trace for a moment, so you can see how it moved
+  m.pathTrail = t > a.tPlate ? a.pathPts : null; m.trailColor = a.rep && a.rep.family === 'breaking' ? '255,200,110' : (a.rep && a.rep.family === 'offspeed' ? '140,220,255' : '255,255,255');
+  m.trailFade = clamp(1 - (t - a.tPlate) / 1.4, 0, 1);
+  var contactAt = BTP.phys.at(a.path, BTP.phys.timeAtZ(a.path, 0.22));
   // the ball off the bat
   if (!a.caught && t >= a.tContact) {
+    once('crack', true, function () { BTP.bgm.sfx('crack', a.script ? 1.0 : 0.6); });
     if (a.script) {
       var st2 = t - a.tContact + 0.2, sb = scriptBall(a.script, st2), w = BTP.fieldToWorld(sb.p[0], sb.p[1]);
       var y = 0.11 + sb.z * BTP.HEIGHT_PER_PX + 0.8 * Math.max(0, 1 - (st2 - 0.2) / 0.15);
-      ball.visible = true; ball.x = w.x; ball.y = y; ball.z = w.z; ball.radius = 0.32; ball.minPx = 4.5;
+      ball.visible = true; ball.x = w.x; ball.y = y; ball.z = w.z; ball.radius = 0.32; ball.minPx = 4.5; ball.trail = null;
       a.trail.push([w.x, y, w.z]); if (a.trail.length > 14) a.trail.shift();
       // fielders and runners from the replay script
       m.fielders = {};
@@ -472,7 +477,7 @@ function buildModel(now) {
         if (dd < 2.4 && y > 0.9 && !r.moving) o.catching = true;
         m.fielders[pos] = o;
       });
-      var boxX = (a.bats === 'R' ? -1 : 1) * 1.18;
+      var boxX = (a.bats === 'R' ? -1 : 1) * 0.8;
       m.runners = a.script.runners.map(function (rn, ix) {
         var r = scriptSeg(rn, st2), rw = BTP.fieldToWorld(r.p[0], r.p[1]), o = { id: ix + 1, x: rw.x, z: rw.z, moving: r.moving, out: false };
         if (rn.id === 'b') o.x += boxX * Math.max(0, 1 - Math.hypot(rw.x, rw.z) / 7);      // he starts in the batter's box, not on the plate
@@ -481,20 +486,19 @@ function buildModel(now) {
         return o;
       });
       m.batterHidden = true; m.miniOn = true; drawMini(a, st2);
-      m.pathTrail = a.trail.map(function (q) { return q; }); m.trailColor = '255,255,255'; m.trailFade = 1;
+      m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
     } else if (a.foul) {
       var ft = t - a.tContact;
-      ball.visible = true; ball.x = contactAt[0] + a.foul.vx * ft; ball.z = a.foul.vz * ft - 0.3 + 0.2;
-      ball.y = Math.max(0.1, contactAt[1] + a.foul.vy * ft - 4.9 * ft * ft); ball.radius = 0.14;
+      ball.visible = true; ball.x = contactAt.x + a.foul.vx * ft; ball.z = a.foul.vz * ft + 0.22;
+      ball.y = Math.max(0.1, contactAt.y + a.foul.vy * ft - 4.9 * ft * ft); ball.radius = 0.12; ball.trail = null;
       a.trail.push([ball.x, ball.y, ball.z]); if (a.trail.length > 12) a.trail.shift();
       m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
     }
-  } else if (a.swung && t >= a.tContact && a.caught) { /* whiff: the ball goes on into the mitt */ }
+  }
   m.ball = ball;
-  if (m.pathTrail && !ball.visible && a.caught) m.trailFade *= 0.8;
 
   // banner timing
-  var showAt = a.script ? a.tContact + 0.25 : a.tArr + 0.12;
+  var showAt = a.script ? a.tContact + 0.25 : a.tCatch + 0.10;
   if (a.banner < 0 && t >= showAt) {
     a.banner = 0;
     if (a.script) { showResult(l, a.script.events.length ? a.script.events[0][1] : plainLabel(l), a.script.events.length ? (a.script.events[0][2] === 'good' ? 'r-good' : 'r-bad') : null); a.evIdx = 1; }

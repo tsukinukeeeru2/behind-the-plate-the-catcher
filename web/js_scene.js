@@ -163,7 +163,9 @@ BTP.buildScene = function (W, H, dpr) {
   return cv;
 };
 
-/* ---- the catcher's mask: the steel cage seen from the inside, painted once ---- */
+/* ---- the catcher's mask: the steel cage seen from the inside, painted once ----
+   The opening is narrow, like peering out of a mask, and the bars come in from every side. They sit toward the edges, where
+   the batter, the stands and the foul ground are; the middle (the pitcher, the release point and the line of the pitch) stays clear. */
 BTP.buildMask = function (W, H, dpr) {
   var cv = document.createElement('canvas');
   cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
@@ -172,12 +174,12 @@ BTP.buildMask = function (W, H, dpr) {
   ctx.clearRect(0, 0, W, H);
 
   // the lens: darker toward the edges, clear in the middle
-  var v = ctx.createRadialGradient(W / 2, H * 0.48, Math.min(W, H) * 0.34, W / 2, H * 0.5, Math.max(W, H) * 0.72);
-  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(0.7, 'rgba(0,0,0,.20)'); v.addColorStop(1, 'rgba(0,0,0,.62)');
+  var v = ctx.createRadialGradient(W / 2, H * 0.50, Math.min(W, H) * 0.30, W / 2, H * 0.5, Math.max(W, H) * 0.66);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(0.6, 'rgba(0,0,0,.26)'); v.addColorStop(1, 'rgba(0,0,0,.74)');
   ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
 
-  // the padded frame: a dark rounded window with a big clear opening
-  var ox = W * 0.018, oy = H * 0.026, ow = W - ox * 2, oh = H - oy * 2, rad = Math.min(W, H) * 0.20;
+  // the padded frame: a dark rounded window with a smaller opening than before
+  var ox = W * 0.050, oy = H * 0.052, ow = W - ox * 2, oh = H - oy * 2, rad = Math.min(W, H) * 0.24;
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, W, H);
@@ -186,34 +188,43 @@ BTP.buildMask = function (W, H, dpr) {
   ctx.arcTo(ox, oy + oh, ox, oy, rad); ctx.arcTo(ox, oy, ox + ow, oy, rad);
   ctx.closePath();
   var pad = ctx.createLinearGradient(0, 0, 0, H);
-  pad.addColorStop(0, 'rgba(14,15,19,.97)'); pad.addColorStop(0.5, 'rgba(10,11,14,.95)'); pad.addColorStop(1, 'rgba(14,15,19,.97)');
+  pad.addColorStop(0, 'rgba(14,15,19,.98)'); pad.addColorStop(0.5, 'rgba(10,11,14,.97)'); pad.addColorStop(1, 'rgba(14,15,19,.98)');
   ctx.fillStyle = pad; ctx.fill('evenodd');
   ctx.restore();
+  // a soft shadow just inside the edge of the opening, as if the padding were a little in front of the eyes
+  ctx.save();
+  try { ctx.filter = 'blur(' + Math.max(6, W * 0.009) + 'px)'; } catch (e) {}
+  ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = Math.max(10, W * 0.016);
+  ctx.beginPath();
+  ctx.moveTo(ox + rad, oy); ctx.arcTo(ox + ow, oy, ox + ow, oy + oh, rad); ctx.arcTo(ox + ow, oy + oh, ox, oy + oh, rad);
+  ctx.arcTo(ox, oy + oh, ox, oy, rad); ctx.arcTo(ox, oy, ox + ow, oy, rad); ctx.closePath(); ctx.stroke();
+  ctx.restore();
 
-  // steel bars. The bars are close to the eye, so they are soft (blurred) and slightly see-through.
+  // steel bars. They are close to the eye, so they are soft (out of focus) and slightly see-through.
   function bar(pts, w, alpha) {
     ctx.save();
-    try { ctx.filter = 'blur(' + Math.max(0.6, w * 0.16) + 'px)'; } catch (e) {}
+    try { ctx.filter = 'blur(' + Math.max(0.8, w * 0.20) + 'px)'; } catch (e) {}
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.strokeStyle = 'rgba(8,9,12,' + alpha + ')'; ctx.lineWidth = w;
     ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.bezierCurveTo(pts[1][0], pts[1][1], pts[2][0], pts[2][1], pts[3][0], pts[3][1]); ctx.stroke();
-    ctx.strokeStyle = 'rgba(150,160,175,' + (alpha * 0.35) + ')'; ctx.lineWidth = Math.max(1, w * 0.22);
-    ctx.beginPath(); ctx.moveTo(pts[0][0] - w * 0.18, pts[0][1]); ctx.bezierCurveTo(pts[1][0] - w * 0.18, pts[1][1], pts[2][0] - w * 0.18, pts[2][1], pts[3][0] - w * 0.18, pts[3][1]); ctx.stroke();
+    ctx.strokeStyle = 'rgba(150,160,175,' + (alpha * 0.30) + ')'; ctx.lineWidth = Math.max(1, w * 0.20);
+    ctx.beginPath(); ctx.moveTo(pts[0][0] - w * 0.2, pts[0][1]); ctx.bezierCurveTo(pts[1][0] - w * 0.2, pts[1][1], pts[2][0] - w * 0.2, pts[2][1], pts[3][0] - w * 0.2, pts[3][1]); ctx.stroke();
     ctx.restore();
   }
-  var bw = Math.max(5, W * 0.0085);
+  var bw = Math.max(6, W * 0.0105);
   [-1, 1].forEach(function (s) {
     var x = function (f) { return s < 0 ? W * f : W * (1 - f); };
-    bar([[x(0.075), -4], [x(0.03), H * 0.30], [x(0.03), H * 0.70], [x(0.075), H + 4]], bw * 1.5, 0.92);       // outer vertical bar
-    bar([[x(0.135), -4], [x(0.10), H * 0.30], [x(0.10), H * 0.70], [x(0.135), H + 4]], bw * 0.9, 0.55);       // inner vertical bar
+    bar([[x(0.085), -4], [x(0.040), H * 0.30], [x(0.040), H * 0.70], [x(0.085), H + 4]], bw * 1.7, 0.94);       // outer bar
+    bar([[x(0.150), -4], [x(0.108), H * 0.30], [x(0.108), H * 0.70], [x(0.150), H + 4]], bw * 1.2, 0.72);       // middle bar
+    bar([[x(0.215), -4], [x(0.178), H * 0.30], [x(0.178), H * 0.70], [x(0.215), H + 4]], bw * 0.8, 0.46);       // inner bar, fainter
   });
-  bar([[-4, H * 0.075], [W * 0.30, H * 0.045], [W * 0.70, H * 0.045], [W + 4, H * 0.075]], bw * 1.5, 0.92);    // brow bar
-  bar([[-4, H * 0.935], [W * 0.30, H * 0.965], [W * 0.70, H * 0.965], [W + 4, H * 0.935]], bw * 1.5, 0.92);   // chin bar
-  bar([[-4, H * 0.145], [W * 0.30, H * 0.12], [W * 0.70, H * 0.12], [W + 4, H * 0.145]], bw * 0.8, 0.40);     // second brow bar
+  bar([[-4, H * 0.085], [W * 0.30, H * 0.052], [W * 0.70, H * 0.052], [W + 4, H * 0.085]], bw * 1.7, 0.94);    // brow bar
+  bar([[-4, H * 0.165], [W * 0.30, H * 0.128], [W * 0.70, H * 0.128], [W + 4, H * 0.165]], bw * 0.9, 0.48);   // second brow bar, fainter
+  bar([[-4, H * 0.925], [W * 0.30, H * 0.962], [W * 0.70, H * 0.962], [W + 4, H * 0.925]], bw * 1.7, 0.94);   // chin bar
 
   // a touch of lens glare from the sun in the upper left
   var gl = ctx.createRadialGradient(W * 0.14, H * 0.1, 2, W * 0.14, H * 0.1, W * 0.18);
-  gl.addColorStop(0, 'rgba(255,244,214,.20)'); gl.addColorStop(1, 'rgba(255,244,214,0)');
+  gl.addColorStop(0, 'rgba(255,244,214,.18)'); gl.addColorStop(1, 'rgba(255,244,214,0)');
   ctx.fillStyle = gl; ctx.fillRect(0, 0, W, H);
   return cv;
 };

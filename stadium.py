@@ -10,7 +10,7 @@ import os
 from bgm_js import MUSIC_CORE
 
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-_JS_PARTS = ("js_core.js", "js_scene.js", "js_draw.js", "js_game.js")
+_JS_PARTS = ("js_core.js", "js_scene.js", "js_pitcher.js", "js_draw.js", "js_game.js")
 _cache = {}
 
 

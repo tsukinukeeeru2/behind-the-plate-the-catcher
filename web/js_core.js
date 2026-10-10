@@ -70,7 +70,44 @@ BTP.bgm = (function () {
       sched = setInterval(tick, 40);
     }, function () { starting = false; });
   }
+  // short sound effects (catch, swing, bat crack) through the same context; they follow the same mute and volume
+  var sfxOut = null;
+  function sfxNoise(t, dur, type, freq, gain) {
+    var len = Math.max(1, Math.floor(A.sampleRate * dur)), b = A.createBuffer(1, len, A.sampleRate), d = b.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    var n = A.createBufferSource(); n.buffer = b;
+    var f = A.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = 0.9;
+    var g = A.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(f); f.connect(g); g.connect(sfxOut); n.start(t); n.stop(t + dur);
+  }
+  function sfxTone(t, f0, f1, dur, gain, type) {
+    var o = A.createOscillator(), g = A.createGain();
+    o.type = type || 'sine'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(sfxOut); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function sfx(name, strength) {
+    if (!A || A.state !== 'running') return;
+    if (!sfxOut) { sfxOut = A.createGain(); sfxOut.connect(A.destination); }
+    sfxOut.gain.value = muted ? 0 : Math.min(1, 0.25 + vol * 0.85);
+    var t = A.currentTime + 0.005, k = strength == null ? 1 : strength;
+    if (name === 'pop') {                       // the ball hitting the mitt: a sharp leather slap and a low thump
+      sfxNoise(t, 0.045, 'bandpass', 2300, 0.9 * k); sfxNoise(t, 0.09, 'lowpass', 700, 0.8 * k);
+      sfxTone(t, 150, 55, 0.16, 0.9 * k, 'sine'); sfxTone(t, 420, 120, 0.05, 0.35 * k, 'triangle');
+    } else if (name === 'whoosh') {             // the bat or the ball going past
+      var o = A.createOscillator(), f = A.createBiquadFilter(), g = A.createGain();
+      o.type = 'sawtooth'; o.frequency.value = 90; f.type = 'bandpass'; f.Q.value = 1.2;
+      f.frequency.setValueAtTime(500, t); f.frequency.exponentialRampToValueAtTime(2600, t + 0.16);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12 * k, t + 0.07); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+      o.connect(f); f.connect(g); g.connect(sfxOut); o.start(t); o.stop(t + 0.22);
+    } else if (name === 'crack') {              // wood on ball
+      sfxNoise(t, 0.05, 'highpass', 2500, 0.9 * k); sfxTone(t, 900, 260, 0.07, 0.6 * k, 'square'); sfxNoise(t, 0.1, 'bandpass', 1200, 0.5 * k);
+    } else if (name === 'grunt') {
+      sfxTone(t, 180, 90, 0.2, 0.18 * k, 'sawtooth');
+    }
+  }
   var api = {
+    sfx: sfx,
     start: start,
     isRunning: function () { return running; },
     isMuted: function () { return muted; },
@@ -88,14 +125,14 @@ BTP.bgm = (function () {
 /* ---------------- the catcher's camera ----------------
    World units are metres: x to the right, y up, z toward the pitcher; home plate's front edge is (0, 0, 0).
    The camera is the catcher's eye: crouched about three metres behind the plate, looking a little downward. */
-var CAM = BTP.CAM = { x: 0, y: 1.22, z: -3.4, pitch: 0.06 };
+var CAM = BTP.CAM = { x: 0, y: 1.12, z: -3.1, pitch: 0.0 };
 var V = BTP.V = { W: 800, H: 450, F: 600, cx: 400, cy: 200, hy: 150, cp: 1, sp: 0 };
 
 BTP.setupView = function (W, H) {
   V.W = W; V.H = H;
-  V.F = Math.min(1.42 * H, 0.95 * W);
+  V.F = Math.min(2.6 * H, 1.15 * W);                         // a long lens: the pitcher fills the middle of the picture
   V.cx = W / 2;
-  V.hy = 0.34 * H;                                          // where the horizon sits on the screen
+  V.hy = 0.36 * H;                                          // where the horizon sits on the screen
   V.cp = Math.cos(CAM.pitch); V.sp = Math.sin(CAM.pitch);
   V.cy = V.hy + V.F * Math.tan(CAM.pitch);
 };
@@ -142,6 +179,110 @@ BTP.polyPath = function (ctx, pts) {
   ctx.closePath();
   return true;
 };
+
+
+/* ---------------- the pitch, from the laws of motion ----------------
+   Forces on the ball: gravity, air drag (0.5 rho A Cd v^2 against the motion), and the Magnus force from spin
+   (0.5 rho A Cl v^2 along  spin x velocity, so it is proportional to v squared and its direction comes from the cross product).
+   The lift coefficient Cl depends on the spin factor S = r * omega / v (the common empirical form Cl = 1 / (2 + 1/S)),
+   so a faster-spinning ball breaks more and a slower one breaks less.
+   Speeds and spin rates below are placeholders for a generic pitcher, not measurements of any real player. */
+BTP.phys = (function () {
+  var RHO = 1.2, RAD = 0.0366, MASS = 0.145, AREA = Math.PI * RAD * RAD, G = 9.81, CD = 0.35;
+  var MPH = 0.44704;
+  // spin axis (x = backspin(+) / topspin(-), y = sidespin) and rate in rpm, for a right-hander. A left-hander mirrors the side spin.
+  var SPIN = {
+    four_seam: [1.0, 0.05, 2300], two_seam: [0.80, -0.45, 2100], sinker: [0.45, -0.60, 2000], cutter: [0.90, 0.40, 2400],
+    slider: [0.15, 0.95, 2500], sweeper: [0.0, 1.0, 2500], curveball: [-1.0, 0.25, 2700], changeup: [0.40, -0.50, 1700],
+    splitter: [-0.25, -0.10, 1100]
+  };
+  function spinFor(key, move, lefty) {
+    var s = SPIN[key];
+    if (!s) { var d = move ? move[0] : 0.35, sw = move ? move[1] : 0; s = [BTP.clamp(0.9 - 1.7 * d, -1, 1), -sw, 2200]; }
+    // for a right-hander a positive "sweep" runs in toward first base (+x), which needs a negative y spin; a left-hander is the mirror image
+    var sy = lefty ? -s[1] : s[1];
+    var rad = s[2] * Math.PI * 2 / 60, n = Math.hypot(s[0], sy) || 1;
+    return [rad * s[0] / n, rad * sy / n, 0];
+  }
+  function cl(S) { return 1 / (2 + 1 / Math.max(S, 1e-4)); }
+  function accel(v, w, a) {
+    var sp = Math.hypot(v[0], v[1], v[2]) || 1e-6;
+    var k = 0.5 * RHO * AREA / MASS;
+    var ax = -k * CD * sp * v[0], ay = -k * CD * sp * v[1] - G, az = -k * CD * sp * v[2];
+    var wm = Math.hypot(w[0], w[1], w[2]);
+    if (wm > 1e-6) {
+      var S = RAD * wm / sp, cx = w[1] * v[2] - w[2] * v[1], cy = w[2] * v[0] - w[0] * v[2], cz = w[0] * v[1] - w[1] * v[0];
+      var f = k * cl(S) * sp * sp / (wm * sp);          // 0.5 rho A Cl v^2 * (spin x v) / (|spin| |v|), divided by the mass
+      ax += f * cx; ay += f * cy; az += f * cz;
+    }
+    a[0] = ax; a[1] = ay; a[2] = az;
+  }
+  // fly the ball (RK4) until it reaches z = stopZ; returns samples and the time it crossed z = 0
+  function fly(p0, v0, w, stopZ, dt) {
+    var p = p0.slice(), v = v0.slice(), t = 0, out = [[0, p[0], p[1], p[2]]], tPlate = null;
+    var a1 = [0, 0, 0], a2 = [0, 0, 0], a3 = [0, 0, 0], a4 = [0, 0, 0];
+    for (var i = 0; i < 4000; i++) {
+      var pz = p[2];
+      accel(v, w, a1);
+      var v2 = [v[0] + a1[0] * dt / 2, v[1] + a1[1] * dt / 2, v[2] + a1[2] * dt / 2]; accel(v2, w, a2);
+      var v3 = [v[0] + a2[0] * dt / 2, v[1] + a2[1] * dt / 2, v[2] + a2[2] * dt / 2]; accel(v3, w, a3);
+      var v4 = [v[0] + a3[0] * dt, v[1] + a3[1] * dt, v[2] + a3[2] * dt]; accel(v4, w, a4);
+      for (var k = 0; k < 3; k++) {
+        p[k] += dt * (v[k] + 2 * v2[k] + 2 * v3[k] + v4[k]) / 6;
+        v[k] += dt * (a1[k] + 2 * a2[k] + 2 * a3[k] + a4[k]) / 6;
+      }
+      t += dt;
+      if (tPlate === null && p[2] <= 0) { var u = pz / (pz - p[2]); tPlate = t - dt + dt * u; }
+      out.push([t, p[0], p[1], p[2]]);
+      if (p[2] <= stopZ || p[1] < 0.03) break;
+    }
+    return { s: out, tPlate: tPlate, v: v };
+  }
+  function crossing(res) {                                         // the (x, y) where it crossed z = 0
+    var s = res.s;
+    for (var i = 1; i < s.length; i++) if (s[i][3] <= 0) {
+      var u = s[i - 1][3] / (s[i - 1][3] - s[i][3]);
+      return [s[i - 1][1] + (s[i][1] - s[i - 1][1]) * u, s[i - 1][2] + (s[i][2] - s[i - 1][2]) * u];
+    }
+    return null;
+  }
+  function launch(speed, az, el) { return [speed * Math.sin(az) * Math.cos(el), speed * Math.sin(el), -speed * Math.cos(az) * Math.cos(el)]; }
+  // choose the launch direction that sends this spinning ball through `target` = [x, y] on the plate plane
+  function solve(R, target, speed, w) {
+    var dx = target[0] - R[0], dy = target[1] - R[1], dz = -R[2];
+    var az = Math.atan2(dx, -dz), el = Math.atan2(dy, Math.hypot(dx, dz)) + 0.03, DT = 1 / 600, h = 0.002, res, e, it;
+    for (it = 0; it < 14; it++) {
+      res = fly(R, launch(speed, az, el), w, -0.6, DT);
+      var c = crossing(res); if (!c) { el += 0.03; continue; }              // it hit the ground first: aim higher
+      e = [c[0] - target[0], c[1] - target[1]];
+      if (Math.hypot(e[0], e[1]) < 0.002) break;
+      var ca = crossing(fly(R, launch(speed, az + h, el), w, -0.6, DT)), cb = crossing(fly(R, launch(speed, az, el + h), w, -0.6, DT));
+      if (!ca || !cb) { el += 0.01; continue; }
+      var j11 = (ca[0] - c[0]) / h, j21 = (ca[1] - c[1]) / h, j12 = (cb[0] - c[0]) / h, j22 = (cb[1] - c[1]) / h;
+      var det = j11 * j22 - j12 * j21; if (Math.abs(det) < 1e-9) break;
+      az -= (j22 * e[0] - j12 * e[1]) / det; el -= (-j21 * e[0] + j11 * e[1]) / det;
+    }
+    res = fly(R, launch(speed, az, el), w, -0.6, 1 / 600);
+    var c2 = crossing(res) || [NaN, NaN];
+    return { v0: launch(speed, az, el), samples: res.s, tPlate: res.tPlate, hit: c2, miss: Math.hypot(c2[0] - target[0], c2[1] - target[1]) };
+  }
+  // where the ball is t seconds after it left the hand
+  function at(path, t) {
+    var s = path.samples;
+    if (t <= 0) return { x: s[0][1], y: s[0][2], z: s[0][3] };
+    var lo = 0, hi = s.length - 1;
+    if (t >= s[hi][0]) return { x: s[hi][1], y: s[hi][2], z: s[hi][3] };
+    while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (s[mid][0] <= t) lo = mid; else hi = mid; }
+    var u = (t - s[lo][0]) / (s[hi][0] - s[lo][0]);
+    return { x: s[lo][1] + (s[hi][1] - s[lo][1]) * u, y: s[lo][2] + (s[hi][2] - s[lo][2]) * u, z: s[lo][3] + (s[hi][3] - s[lo][3]) * u };
+  }
+  function timeAtZ(path, z) {
+    var s = path.samples;
+    for (var i = 1; i < s.length; i++) if (s[i][3] <= z) { var u = (s[i - 1][3] - z) / (s[i - 1][3] - s[i][3]); return s[i - 1][0] + (s[i][0] - s[i - 1][0]) * u; }
+    return s[s.length - 1][0];
+  }
+  return { RAD: RAD, MPH: MPH, spinFor: spinFor, solve: solve, at: at, timeAtZ: timeAtZ, fly: fly, cl: cl, SPIN: SPIN, accel: accel };
+})();
 
 /* ---------------- the field, in the game's own units ----------------
    The game's field plan (playview.py) is 400 x 400 "field pixels" with home plate at (200, 372). We map it to metres.
