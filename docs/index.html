@@ -3568,7 +3568,7 @@ function endBatPractice() {
 function duelSend(a, swing) {
   var d = a.duel;
   if (d.sent) return;
-  d.sent = true;
+  d.sent = true; d.sentAt = clk();
   var data = swing ? { swung: 1, dx: swing.dx.toFixed(4), dy: swing.dy.toFixed(4), off: swing.off.toFixed(4), mode: d.mode } : { swung: 0 };
   post('/swing', data).then(function (ns2) { resolveDuel(a, ns2); }, function () {
     toast('The swing could not be sent. Trying again...', true);
@@ -3853,6 +3853,10 @@ function buildModel(now) {
   }
   var t = (now - a.t0) / 1000 / TS;
   if (a.duel && !a.duel.sent && t >= a.duel.tClose) { if (a.practice) practiceResolve(a, null); else duelSend(a, null); }     // nobody swung in time: he took it
+  if (a.duel && a.online && !a.practice && a.duel.sent && !a.duel.resolved && now - (a.duel.pullAt || a.duel.sentAt || (a.duel.sentAt = now)) > 1500) {      // sent, yet no result for a while: ask the room again,
+    a.duel.pullAt = now; a.duel.pulls = (a.duel.pulls || 0) + 1;                       // whatever its version number says (a lost answer must never freeze the picture)
+    net.fetch('/room/poll?since=-1', { cache: 'no-store' }).then(parseJSON).then(function (v) { if (v && v.room && anim === a) { net.view = v; net.ver = v.room.ver; onRoomView(v, true); } }, function () {});
+  }
   if (a.waitCatch && t > a.tCatch + 12) resumeAfterCatch(a, a.ns);                 // (the catcher never answered: carry on)
   var l = a.l;
   function once(name, cond, fn) { if (cond && !a.snd[name]) { a.snd[name] = 1; fn(); } }
