@@ -11,16 +11,16 @@ Behind the Plate drops you into a late-inning, one-half-inning situation: score,
 Every pitch you pick a pitch type, a spot on a 3×3 zone, and an intent (get ahead, chase, induce weak contact, waste, freeze, pitchout).
 The game never tells you what was right. You read the batter's face (which sometimes lies), the pitch history, the batter's hot and weak zones, and your defense.
 Then the catching starts: frame borderline pitches, throw down on steals, block balls in the dirt, field bunts, change signs when a runner peeks, and keep a steady return-throw tempo. These timing mini-games only nudge the odds, never decide the play.
-Every ball in play is replayed on a **yakyuban-style board**: you watch the ball fly, the fielder run it down, the throw, and the runners move, with slow-mo and replay.
+The main screen is **the view from behind the plate, through a catcher's mask**: a 3D stadium on one screen (no scrolling), a strike zone you click in the 3D scene, your mitt at the target, and pitches whose paths differ by type. After each pitch you see the result plus a one-line grade of your call and why. Every ball in play is replayed with the fielder running it down, the throw, and the runners, plus a small top-down field view.
 After the third out you get a **Catcher Rating (S to D)**, badges, and a review that grades your decisions separately from the results: "good call, unlucky result" versus "bad call, lucky result".
 Start from a random game, a **drill** (steal, dirt ball, dropped third, bunt, sign stealer), or a friend's **Challenge Code** to play the exact same opening situation.
 
 ## How we built it
-Pure Python standard library, no dependencies. A single engine (`engine.resolve_one_pitch`) judges every pitch and is shared by the terminal and web versions. The web version is a small `http.server` app with a little JavaScript for the timing games and a Web Audio soundtrack synthesized in the browser. Randomness is seeded end to end, which makes games reproducible and shareable. 172 unit tests, including 1000 simulated full games, plus a fuzz run of 120 web games with junk input.
+Pure Python standard library, no dependencies. A single engine (`engine.resolve_one_pitch`) judges every pitch and is shared by the terminal and web versions. The web version is a small `http.server` app with a little JavaScript for the timing games and a Web Audio soundtrack synthesized in the browser. Randomness is seeded end to end, which makes games reproducible and shareable. 182 unit tests, including 1000 simulated full games, plus a fuzz run of 120 web games with junk input.
 
 ## Built before vs. during the hackathon (honest disclosure)
 - **Before:** a Japanese-language catcher simulator I wrote as a personal project: engine, models, judging, CLI and web versions, the six rhythm games, music, tests. The organizers confirmed that rebuilding on it was fine. It is the first commit of the repo ("Base snapshot"), so `git log` shows exactly what came after.
-- **During the hackathon:** full English conversion of the whole game; the animated Play Viewer; Catcher Rating and badges; drills; Challenge Codes; difficulty select; a threaded, crash-resistant server with a recovery page and port fallback; auto-opening browser; a fuzz pass that found and fixed a real crash; new tests; README and docs.
+- **During the hackathon:** full English conversion of the whole game; the catcher's-eye 3D view with its JSON API and a music player that never restarts; the animated Play Viewer; Catcher Rating and badges; drills; Challenge Codes; difficulty select; a threaded, crash-resistant server with a recovery page and port fallback; auto-opening browser; a fuzz pass that found and fixed a real crash; new tests; README and docs.
 - **AI use:** Claude Code (Anthropic) helped with the translation and the new features, and with the original project. I directed it, tested it, and made the design calls. Co-authored commits are marked.
 
 ## Challenges
@@ -52,7 +52,7 @@ python webapp.py
 |---|---|---|
 | 0:00 | Start screen | "Most baseball games make you the batter or the pitcher. This one makes you the catcher. It's Behind the Plate." |
 | 0:10 | START GAME, situation card | "Late innings, a one-run lead, runner on first. Three outs to hold it." |
-| 0:20 | Pitch call: pick pitch, location, intent | "Every pitch I choose the pitch, the spot, and my intent. The game never shows me the answer." |
+| 0:20 | Pitch call: pick pitch, click the zone, pick intent | "Every pitch I pick the pitch, click the spot in the 3D zone, and choose my intent. The mitt moves to my target." |
 | 0:35 | Batter reaction face + history table | "I read his reaction, the pitch history, his weak zone. Faces can lie." |
 | 0:45 | Framing mini-game | "Now I'm the catcher: stop the line in the green band to frame a borderline pitch into a strike." |
 | 1:00 | Steal, throw-down game | "He's going! Transfer, mash, throw to second." |

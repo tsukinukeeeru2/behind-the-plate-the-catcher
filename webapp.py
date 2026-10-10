@@ -31,6 +31,7 @@ the Web shows its own rhythm UI through the generator, so QTEs DO happen.
 import argparse
 import html
 import http.server
+import json
 import os
 import random
 import re
@@ -50,6 +51,8 @@ from fielders import POSITIONS, position_fit, weakest_fielder
 from lineup import load_lineup_file
 from match_state import generate_random_situation
 import playview
+from api import PITCH_MOVE, build_state
+from stadium import render_stadium_page
 from pitch_data import pitch_name, repertoire_options, velocity_of
 from strategy import (PITCH_INTENTS, build_analysis, build_postgame_report, catcher_rating, grade_reads,
                       intent_label)
@@ -71,11 +74,7 @@ def _course_grid(bats):
 # how it bends and drops (rough is fine -- it only has to read at a glance).
 #   drop  : how much it drops (0 = no drop ... 1 = a big drop)
 #   sweep : lateral break (- = slides toward third base / + = runs in toward first base. A guide for a right-handed pitcher)
-_PITCH_MOVE = {
-    "four_seam": (0.10, 0.05), "two_seam": (0.30, 0.35), "sinker": (0.44, 0.42),
-    "cutter": (0.24, -0.32), "slider": (0.50, -0.55), "sweeper": (0.52, -0.92),
-    "curveball": (0.88, -0.30), "changeup": (0.58, 0.40), "splitter": (0.80, 0.10),
-}
+_PITCH_MOVE = PITCH_MOVE
 
 
 def _pitch_arc_svg(key, size=34):
@@ -183,6 +182,7 @@ class GameSession:
         self.tutorial_skipped = False
         self.log_path = None
         self.play_shown = None     # which pitch's Play Viewer has already auto-played
+        self.event_seq = 0         # +1 every time a pitch is resolved (the 3D page animates when it changes)
 
     def start_new_game(self, challenge_seed=None, scenario=_KEEP, difficulty=None):
         """Start a game. Every game gets a seed (its Challenge Code): the one typed on the start screen,
@@ -685,164 +685,21 @@ pre.spray {{ background:var(--bg); border:1px solid var(--line); color:#9fe3b6;
 # D natural minor, quarter = 162, a 16-bar loop. Bars 8-11 are the rousing "hook".
 # The page reloads on every form submit, so the start time is kept in localStorage, and
 # playback restarts from the correct position in the song (a tiny gap on every pitch).
-_BGM_JS = """
-window.CCBGM = (function () {
-  // An original trumpet + drums piece (no copyrighted material). D natural minor, quarter = 162, a 16-bar loop.
-  // Bars 8-11 are the "hook": higher notes + harmony + 16th-note drums for a big lift.
-  var A = null, running = false, sched = null, step = 0, nextT = 0, master = null;
-  var BPM = 162, SPB = 60 / BPM / 4;
-  var N = {
-    A4:440.00, C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99,
-    A5:880.00, Bb5:932.33, C6:1046.50, D6:1174.66, E6:1318.51
-  };
-  var H3b = {D6:'Bb5', C6:'A5', E6:'C6', Bb5:'G5', A5:'F5', G5:'E5', F5:'D5'}; // harmony a third below
-  // --- Melody (one cell = a 16th note, 0 = rest) ---
-  var MEL = [
-    'D5',0,'D5',0, 'F5',0,'D5',0, 'A5',0,0,0, 'A5',0,'G5',0,        // m1
-    'F5',0,0,0, 'E5',0,'F5',0, 'D5',0,0,0, 0,0,0,0,                 // m2
-    'D5',0,'D5',0, 'F5',0,'A5',0, 'C6',0,0,0, 'C6',0,'Bb5',0,       // m3
-    'A5',0,0,0, 'G5',0,'A5',0, 'F5',0,0,0, 0,0,'A5','C6',           // m4
-    'D6',0,'A5',0, 'F5',0,'A5',0, 'D6',0,'A5',0, 'F5',0,0,0,        // m5
-    'C6',0,'A5',0, 'Bb5',0,'C6',0, 'A5',0,0,0, 0,'G5','A5','Bb5',   // m6
-    'C6',0,'C6',0, 'A5',0,'C6',0, 'D6',0,0,0, 'D6',0,'C6',0,        // m7
-    'Bb5',0,'C6',0, 'D6',0,'E6',0, 'D6',0,'C6',0, 'A5','C6','D6','E6', // m8 (into the hook)
-    'E6',0,0,0, 'D6',0,'C6',0, 'D6',0,0,0, 0,0,0,0,                 // m9  hook
-    'C6',0,0,0, 'D6',0,'A5',0, 'Bb5',0,0,0, 0,'A5','Bb5','C6',      // m10 hook
-    'D6',0,0,0, 'E6',0,'D6',0, 'C6',0,'A5',0, 0,0,0,0,              // m11 hook
-    'Bb5',0,'A5',0, 'G5',0,'A5',0, 'D6',0,0,0, 'C6',0,'Bb5',0,      // m12 hook
-    'A5',0,0,0, 'F5',0,'A5',0, 'D5',0,'F5',0, 'A5',0,0,0,           // m13
-    'G5',0,'F5',0, 'E5',0,'F5',0, 'D5',0,0,0, 0,0,'E5',0,           // m14
-    'F5',0,0,0, 'E5',0,'D5',0, 'E5',0,'F5',0, 'G5',0,'A5',0,        // m15
-    'Bb5',0,'A5',0, 'G5',0,'F5',0, 'E5',0,0,0, 0,'A4','C5','D5'     // m16
-  ];
-  var STEPS = MEL.length, LOOP = SPB * STEPS;                      // 16 bars = 256 cells
-  function osc(freq, t, dur, type, gain, slideTo) {
-    var o = A.createOscillator(), g = A.createGain();
-    o.type = type; o.frequency.setValueAtTime(freq, t);
-    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur * 0.6);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(gain, t + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.04);
-  }
-  function noise(t, dur, type, freq, gain) {
-    var len = Math.max(1, Math.floor(A.sampleRate * dur));
-    var b = A.createBuffer(1, len, A.sampleRate), d = b.getChannelData(0);
-    for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    var n = A.createBufferSource(); n.buffer = b;
-    var f = A.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = 1;
-    var g = A.createGain(); g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    n.connect(f); f.connect(g); g.connect(master); n.start(t); n.stop(t + dur);
-  }
-  function taiko(t, f0, gain) {                          // big drum: boom
-    osc(f0, t, 0.34, 'sine', gain, f0 * 0.4);
-    osc(f0 * 1.5, t, 0.12, 'triangle', gain * 0.45, f0 * 0.7);
-    noise(t, 0.06, 'lowpass', 160, gain * 0.5);
-  }
-  function snare(t, gain) { noise(t, 0.10, 'bandpass', 1900, gain); noise(t, 0.09, 'highpass', 3600, gain * 0.55); }
-  function hat(t, gain) { noise(t, 0.03, 'highpass', 9000, gain); }
-  function crash(t) { noise(t, 1.0, 'highpass', 4200, 0.20); noise(t, 0.4, 'bandpass', 7000, 0.12); }
-  function trumpet(t, dur, freq, gain) {                 // trumpet (unison)
-    osc(freq, t, dur, 'sawtooth', gain, freq * 1.004);
-    osc(freq * 1.006, t, dur, 'sawtooth', gain * 0.7);
-    osc(freq, t, dur * 0.85, 'square', gain * 0.28);
-    osc(freq * 2, t, dur * 0.4, 'triangle', gain * 0.18);
-  }
-  function scheduleStep(s, t) {
-    var bar = Math.floor(s / 16), k = s % 16;
-    var hook = (bar >= 8 && bar < 12);                    // the hook (the big lift)
-    var fill = (bar === 7 || bar === 15);                 // fills before the hook / before the loop
+from bgm_js import CLASSIC_HEAD as _BGM_HEAD, CLASSIC_TAIL as _BGM_TAIL, MUSIC_CORE as _MUSIC_CORE
 
-    // --- Drums ---
-    if (k === 0 || k === 8) taiko(t, 100, 0.68);          // big drum on beats 1 and 3
-    if (hook && (k === 4 || k === 12)) taiko(t, 116, 0.44); // the hook goes nearly four-on-the-floor
-    if (k === 4 || k === 12) snare(t, 0.28);              // snare on beats 2 and 4
-    else if (k % 2 === 1) snare(t, hook ? 0.09 : 0.03);   // 16ths (louder in the hook)
-    if (k % 2 === 0) hat(t, hook ? 0.045 : 0.03);         // hi-hat on 8ths
-    if (hook && k % 2 === 1) hat(t, 0.02);                // 16th hi-hats in the hook
-    if (k === 0 && (bar === 0 || bar === 8)) crash(t);    // loop start / hook start
-    if (fill && k >= 10) snare(t, 0.06 + (k - 10) * 0.02); // fill
-    if (bar === 15 && k === 14) taiko(t, 84, 0.85);       // the closing hit
+_BGM_JS = (_BGM_HEAD + "  var A = null, running = false, sched = null, step = 0, nextT = 0, master = null;" + chr(10)
+           + "  var LOOKAHEAD = 0.12;" + chr(10) + _MUSIC_CORE + _BGM_TAIL)
 
-    // --- Melody (trumpet) ---
-    var m = MEL[s];
-    if (m) {
-      var held = (MEL[(s + 1) % STEPS] === 0 && MEL[(s + 2) % STEPS] === 0);
-      var dur = SPB * (held ? 3.4 : 1.9);
-      trumpet(t, dur, N[m], hook ? 0.17 : 0.15);
-      osc(N[m] / 2, t, dur, 'sawtooth', 0.055);           // an octave below for body
-      if (hook && held && H3b[m]) trumpet(t, dur, N[H3b[m]], 0.06); // a third-below harmony on held notes in the hook
-    }
-  }
-  function tick() {
-    if (!A) return;
-    while (nextT < A.currentTime + 0.12) {
-      scheduleStep(step, nextT); nextT += SPB; step = (step + 1) % STEPS;
-    }
-  }
-  function startAt(phaseSec) {
-    step = Math.floor(((phaseSec % LOOP) + LOOP) % LOOP / SPB) % STEPS;
-    nextT = A.currentTime + 0.06; running = true;
-    if (sched) clearInterval(sched);
-    sched = setInterval(tick, 25);
-  }
-  // On by default. It is silent only when the user turned it off themselves ('0').
-  function want() { try { return localStorage.getItem('cc_bgm') !== '0'; } catch (e) { return true; } }
-  function startEpoch() {
-    var now = Date.now();
-    try { return parseInt(localStorage.getItem('cc_bgm_start') || now, 10); } catch (e) { return now; }
-  }
-  function ensureAudio() {
-    if (!A) {
-      A = new (window.AudioContext || window.webkitAudioContext)();
-      master = A.createGain(); master.gain.value = 0.32; master.connect(A.destination);
-    }
-  }
-  return {
-    running: function () { return running; },
-    toggle: function () {
-      if (running) { this.stop(); return; }
-      ensureAudio(); A.resume();
-      try {
-        if (localStorage.getItem('cc_bgm') === '0' || !localStorage.getItem('cc_bgm_start'))
-          localStorage.setItem('cc_bgm_start', String(Date.now()));
-        localStorage.setItem('cc_bgm', '1');
-      } catch (e) {}
-      startAt((Date.now() - startEpoch()) / 1000);
-    },
-    stop: function () {
-      running = false; if (sched) { clearInterval(sched); sched = null; }
-      try { localStorage.setItem('cc_bgm', '0'); } catch (e) {}
-      if (A) A.suspend();
-    },
-    resumeIfWanted: function () {
-      if (!want() || running) return;
-      ensureAudio();
-      try { if (!localStorage.getItem('cc_bgm_start')) localStorage.setItem('cc_bgm_start', String(Date.now())); } catch (e) {}
-      A.resume().then(function () { startAt((Date.now() - startEpoch()) / 1000); }).catch(function () {});
-    }
-  };
-})();
-(function () {
-  var btn = document.getElementById('bgm-btn'); if (!btn) return;
-  function label() {
-    var on = true; try { on = localStorage.getItem('cc_bgm') !== '0'; } catch (e) {}
-    btn.textContent = on ? '♪ Music ON' : '♪ Music OFF';
-    btn.style.color = on ? 'var(--accent)' : 'var(--muted)';
-  }
-  label();
-  btn.addEventListener('click', function () { window.CCBGM.toggle(); label(); });
-  // Play from the start. If autoplay is blocked, begin on the first interaction (click / key / tap).
-  window.CCBGM.resumeIfWanted();
-  var evs = ['pointerdown', 'keydown', 'touchstart'];
-  function kick() {
-    window.CCBGM.resumeIfWanted();
-    evs.forEach(function (e) { document.removeEventListener(e, kick, true); });
-  }
-  evs.forEach(function (e) { document.addEventListener(e, kick, true); });
-})();
-"""
+
+_CLASSIC_CSS = []
+
+
+def _classic_css():
+    """The classic page's stylesheet text. The 3D page reuses it for the panels and dialogs that show classic markup."""
+    if not _CLASSIC_CSS:
+        page = _PAGE.format(body="", bgm="")
+        _CLASSIC_CSS.append(page[page.index("<style>") + 7:page.index("</style>")])
+    return _CLASSIC_CSS[0]
 
 
 def _page(body):
@@ -1983,6 +1840,28 @@ def render_page(session):
     return render_game_page(session)
 
 
+def render_panel(session, name):
+    """Small HTML pieces for the 3D page's panels and dialogs. None for an unknown name."""
+    if name == "start":
+        return render_start_screen(session)
+    if not session.started or session.state is None:
+        return '<p class="dim">Start a game first.</p>'
+    state = session.state
+    if name == "intro":
+        return render_situation_intro(state)
+    if name == "history":
+        spray = "" if session.difficulty == "expert" else render_spray_chart(state)
+        return render_pitch_history(state) + spray
+    if name == "defense":
+        return render_field_diagram(session)
+    if name == "bench":
+        return render_side_actions(state, session.difficulty)
+    if name == "report":
+        session.finish_if_over()
+        return render_postgame_report(state, session.log_path, session.game_seed, session.difficulty)
+    return None
+
+
 def _advance_pitch_gen(answer):
     """Advance the in-progress resolve_pitch_flow generator by one step.
     If the next QTE arrives, push it to pending_qte. When it finishes, store the result in SESSION."""
@@ -2003,6 +1882,7 @@ def _advance_pitch_gen(answer):
             outcome.setdefault("at_bat_end",
                                SESSION.state.pitch_log[-1].get("at_bat_end"))
         SESSION.last_outcome = outcome
+        SESSION.event_seq += 1
 
 
 # ---------------------------------------------------------------------------
@@ -2032,7 +1912,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _wants_json(self):
+        """The 3D page calls the same endpoints with fetch() and an X-Fetch header; it gets the new state back."""
+        return self.headers.get("X-Fetch") is not None
+
+    def _send_json(self, obj, status=200):
+        data = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _redirect(self, path="/"):
+        if self._wants_json():
+            self._send_json(build_state(SESSION, _QTE_SPEC))
+            return
+        if path == "/" and "/classic" in (self.headers.get("Referer") or ""):
+            path = "/classic"          # the classic page's own forms stay on the classic page
         self.send_response(303)
         self.send_header("Location", path)
         self.end_headers()
@@ -2065,16 +1963,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     pass
 
     def _handle_get(self):
-        if self.path not in ("/", ""):
+        path = self.path.split("?")[0]
+        if path in ("/", ""):
+            self._send_html(render_stadium_page(_classic_css()))
+        elif path == "/classic":
+            self._send_html(_page(render_page(SESSION)))
+        elif path == "/api/state":
+            self._send_json(build_state(SESSION, _QTE_SPEC))
+        elif path.startswith("/api/panel/"):
+            html_text = render_panel(SESSION, path[len("/api/panel/"):])
+            if html_text is None:
+                self._send_html("not found", status=404)
+            else:
+                self._send_html(html_text)
+        else:
             self._send_html("not found", status=404)
-            return
-        self._send_html(_page(render_page(SESSION)))
 
     def _handle_post(self):
         form = self._read_form()
 
         if self.path == "/start":
             SESSION.start_new_game(**_start_options(form))
+            if self._wants_json():
+                SESSION.tutorial_skipped = True     # the 3D page has no practice screen
             self._redirect()
             return
 
@@ -2101,6 +2012,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/newgame":
             SESSION.start_new_game(**_start_options(form))
+            if self._wants_json():
+                SESSION.tutorial_skipped = True
             self._redirect()
             return
 

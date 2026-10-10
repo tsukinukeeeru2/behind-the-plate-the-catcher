@@ -1349,14 +1349,31 @@ class WebAppTests(unittest.TestCase):
         webapp.SESSION = webapp.GameSession(seed=5)
 
     def _get(self, path=""):
+        """GET a page. The tests of the classic page ask for "/" and get /classic (the 3D page is at "/")."""
+        if path in ("", "/"):
+            path = "/classic"
         with urllib.request.urlopen(self.base + path) as r:
             return r.read().decode("utf-8")
 
-    def _post(self, path, data):
+    def _post(self, path, data, headers=None):
         body = urllib.parse.urlencode(data).encode()
-        req = urllib.request.Request(self.base + path, data=body, method="POST")
+        # a Referer on /classic keeps the redirect on the classic page, like the browser does for its own forms
+        hdrs = {"Referer": self.base + "/classic"}
+        hdrs.update(headers or {})
+        req = urllib.request.Request(self.base + path, data=body, method="POST", headers=hdrs)
         with urllib.request.urlopen(req) as r:
             return r.status
+
+    def _api_get(self, path):
+        with urllib.request.urlopen(self.base + path) as r:
+            return r.status, r.read().decode("utf-8")
+
+    def _fetch_post(self, path, data=None):
+        """What the 3D page does: a POST with the X-Fetch header, answered with the new state as JSON."""
+        body = urllib.parse.urlencode(data or {}).encode()
+        req = urllib.request.Request(self.base + path, data=body, method="POST", headers={"X-Fetch": "1"})
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read().decode("utf-8"))
 
     def _first_pitch_key(self, page):
         m = re.search(r'name="pitch_type" value="([^"]+)"', page)
@@ -1781,6 +1798,90 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Play Viewer", page)
         self.assertIn('data-autoplay="1"', page)
         self.assertIn('data-autoplay="0"', self._get("/"))     # a reload does not replay the animation
+
+
+    # ---- the 3D stadium page (served at "/") and its JSON API ----
+    def test_root_is_the_one_screen_3d_page_and_classic_is_still_there(self):
+        status, page = self._api_get("/")
+        self.assertEqual(status, 200)
+        for marker in ('id="view"', 'id="mask"', 'id="bottom"', "overflow:hidden", "__btpBgm"):
+            self.assertIn(marker, page)
+        self.assertIn("START GAME", self._get("/classic"))            # the old layout is kept as a fallback
+
+    def test_api_state_follows_the_game_phases(self):
+        _, body = self._api_get("/api/state")
+        self.assertEqual(json.loads(body)["phase"], "start")
+        s = self._fetch_post("/start", {"scenario": "random"})
+        self.assertEqual(s["phase"], "intro")
+        self.assertTrue(webapp.SESSION.tutorial_skipped)               # the 3D page has no practice screen
+        s = self._fetch_post("/playball")
+        self.assertEqual(s["phase"], "play")
+        self.assertEqual(len(s["intents"]), 6)
+        self.assertTrue(s["repertoire"] and all({"key", "name", "velocity", "move"} <= set(p) for p in s["repertoire"]))
+        self.assertIn(s["alignment"], ALIGNMENTS)
+        self.assertIsNone(s["last"])
+        self.assertEqual(len(s["situation"]["runners"]), 3)
+
+    def test_the_api_never_sends_the_hidden_decision_number(self):
+        self._fetch_post("/start", {"scenario": "random", "seed": "41"})
+        self._fetch_post("/playball")
+        key = list(repertoire_options(webapp.SESSION.state.pitcher))[0]
+        s = self._fetch_post("/pitch", {"pitch_type": key, "course": "mid_mid", "intent": "strike"})
+        for _ in range(6):                           # clear any rhythm game neutrally
+            if s["phase"] != "qte":
+                break
+            s = self._fetch_post("/qte", {"verdicts": "good,good,good", "dir": "mid"})
+        text = json.dumps(s)
+        self.assertNotIn("decision_quality", text)
+        self.assertNotIn("sequence_label", text)
+        self.assertEqual(s["last"]["eval"]["grade"] in ("good", "fair", "risky"), True)
+        self.assertTrue(s["last"]["eval"]["reason"])
+
+    def test_fetch_pitch_gives_json_with_the_result_and_the_replay(self):
+        self._fetch_post("/start", {"scenario": "random", "seed": "7"})
+        self._fetch_post("/playball")
+        key = list(repertoire_options(webapp.SESSION.state.pitcher))[0]
+        seen_batted = False
+        for i in range(120):
+            s = self._fetch_post("/pitch", {"pitch_type": key, "course": ["mid_mid", "in_lo", "out_hi"][i % 3], "intent": "strike"})
+            for _ in range(8):
+                if s["phase"] != "qte":
+                    break
+                self.assertIn("labels", s["qte"])
+                s = self._fetch_post("/qte", {"verdicts": "good,good,good", "dir": "mid"})
+            if s["phase"] == "over":
+                break
+            last = s["last"]
+            self.assertIn(last["result"], ("Ball", "Strike", "Whiff", "Foul", "Out", "Single", "Double", "Triple", "Home run", "Error"))
+            if last["batted"]:
+                seen_batted = True
+                self.assertTrue({"duration", "ball", "fielders", "runners", "events"} <= set(last["batted"]["script"]))
+        self.assertTrue(seen_batted)
+
+    def test_panels_for_the_3d_page(self):
+        self._fetch_post("/start", {"scenario": "random"})
+        self._fetch_post("/playball")
+        for name, needle in (("history", "Pitch History"), ("defense", "Defense"), ("bench", "Bench"), ("start", "START GAME"), ("intro", "PLAY BALL")):
+            status, html_text = self._api_get("/api/panel/" + name)
+            self.assertEqual(status, 200)
+            self.assertIn(needle, html_text)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._api_get("/api/panel/nope")
+        self.assertEqual(ctx.exception.code, 404)
+
+    def test_classic_forms_stay_on_the_classic_page(self):
+        req = urllib.request.Request(self.base + "/start", data=b"", method="POST", headers={"Referer": self.base + "/classic"})
+        with urllib.request.urlopen(req) as r:
+            self.assertTrue(r.geturl().endswith("/classic"))
+
+    def test_bad_values_through_the_fetch_endpoints_never_crash(self):
+        self._fetch_post("/start", {"scenario": "random"})
+        self._fetch_post("/playball")
+        for path, data in (("/pitch", {"pitch_type": "bogus", "course": "zz", "intent": "zz"}), ("/memo", {"wait": "zz", "weak": "zz"}),
+                           ("/alignment", {"alignment": "zz"}), ("/swap", {"position": "??"}), ("/change", {"index": "x"}),
+                           ("/qte", {"verdicts": "x"}), ("/start", {"seed": "abc", "scenario": "nope", "difficulty": "insane"})):
+            s = self._fetch_post(path, data)
+            self.assertIn("phase", s)
 
 
 # ---------- The 9-zone grid ----------
@@ -2283,6 +2384,36 @@ class PlayViewerTests(unittest.TestCase):
         self.assertIn('data-autoplay="0"', page)
         self.assertIn("A &lt;b&gt;caption&lt;/b&gt;", page)
         self.assertNotIn("</script><", page.split('id="pv-data"')[1].split("</script>")[0])
+
+
+# ---------- 3D page pieces: evaluation text and the music script ----------
+import api as api_module
+import stadium
+
+
+class StadiumPieceTests(unittest.TestCase):
+    def test_evaluate_call_grades_and_always_explains(self):
+        for dq, grade in ((0.4, "good"), (0.25, "good"), (0.0, "fair"), (-0.24, "fair"), (-0.25, "risky"), (-0.6, "risky")):
+            g, title, reason = api_module.evaluate_call({"_analysis": {"decision_quality": dq, "sequence_label": "Nothing notable"}})
+            self.assertEqual(g, grade)
+            self.assertTrue(title and reason)
+        g, _t, reason = api_module.evaluate_call({"framed": True, "_analysis": {"decision_quality": 0.3, "sequence_label": "A / B", "fooled_guess": True}})
+        self.assertEqual(reason, "A · He was sitting on something else")         # first note only, at most two reasons
+
+    def test_music_is_one_player_that_never_restarts_and_loops(self):
+        js = stadium._assets()[1]
+        self.assertEqual(js.count("function scheduleStep"), 1)                  # the song is in the page once
+        self.assertIn("if (window.__btpBgm) return window.__btpBgm;", js)        # a second player is never created
+        self.assertIn("btp_vol", js)
+        self.assertIn("btp_muted", js)                                           # volume and mute are remembered
+        self.assertIn("step = (step + 1) % STEPS", js)                           # after the last bar it goes back to the first
+        self.assertNotIn("suspend()", js)                                        # muting only moves a gain knob
+
+    def test_pages_do_not_reload_between_pitches(self):
+        js = stadium._assets()[1]
+        self.assertNotIn("location.reload", js)
+        self.assertNotIn("form.submit()", js)
+        self.assertIn("'X-Fetch'", js)
 
 
 if __name__ == "__main__":
