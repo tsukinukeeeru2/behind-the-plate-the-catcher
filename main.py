@@ -1,16 +1,16 @@
-"""実行の入口(CLI)。終盤の 1 イニングを捕手として守り切るゲーム。
+"""Entry point (CLI). A game where you, the catcher, hold a late-inning half inning together.
 
     python main.py
-    python main.py --lineup lineups/sample_team.json   # 打線を差し替え(#C)
+    python main.py --lineup lineups/sample_team.json   # swap the lineup (#C)
 
-進行役に徹する:
-    状況の生成・保持       → match_state.py
-    打線 / 投手            → lineup.py / pitcher.py
-    1 球の判定 + 周辺処理  → engine.py（judge.py を内部で呼ぶ Game Engine）
-    配球意図・分析         → strategy.py
-    画面の組み立て(CLI)   → ui.py / ballpark_view.py / reaction.py
+It only runs the show:
+    creating and holding the situation  -> match_state.py
+    lineup / pitcher                    -> lineup.py / pitcher.py
+    judging one pitch + surrounding     -> engine.py (the Game Engine that calls judge.py internally)
+    pitch intents and analysis          -> strategy.py
+    building the screen (CLI)           -> ui.py / ballpark_view.py / reaction.py
 
-webapp.py(Web版)も同じ engine.py を呼ぶ。判定ロジックの二重実装はしない。
+webapp.py (the Web version) calls the same engine.py. The judging logic is never implemented twice.
 """
 
 import argparse
@@ -18,9 +18,9 @@ import os
 import random
 import sys
 
-# Windows で `python main.py > log.txt` のように出力をリダイレクトすると、
-# 端末以外では cp932 になり、罫線や顔文字で UnicodeEncodeError で落ちる。
-# 表示できない文字は「?」に置き換えて、進行だけは止めないようにする。
+# On Windows, redirecting output with something like `python main.py > log.txt` falls back to
+# cp932 outside a terminal, and box-drawing characters and kaomoji raise UnicodeEncodeError.
+# Replace anything that cannot be shown with "?" so the game keeps going.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -50,16 +50,16 @@ from ui import (
 
 
 def choose(prompt, options):
-    """options(辞書 key->表示名)から 1 つ選ばせ、選ばれた key を返す。"""
+    """Have the player pick one from `options` (a dict of key -> display name) and return the chosen key."""
     keys = list(options.keys())
     print(prompt)
     for i, key in enumerate(keys, start=1):
         print(f"  {i}: {options[key]}")
     while True:
-        answer = input("番号を入力: ").strip()
+        answer = input("Enter a number: ").strip()
         if answer.isdigit() and 1 <= int(answer) <= len(keys):
             return keys[int(answer) - 1]
-        print("正しい番号を入力してください。")
+        print("Please enter a valid number.")
 
 
 _COURSE_GRID = ["in_hi", "mid_hi", "out_hi",
@@ -67,28 +67,28 @@ _COURSE_GRID = ["in_hi", "mid_hi", "out_hi",
                 "in_lo", "mid_lo", "out_lo"]
 
 
-def choose_course(prompt="狙うコース（3x3、番号で）:", allow_unknown=False):
+def choose_course(prompt="Target location (3x3, by number):", allow_unknown=False):
     print(prompt)
-    print("   1 内高   2 高め   3 外高")
-    print("   4 内角   5 真中   6 外角")
-    print("   7 内低   8 低め   9 外低")
+    print("   1 Hi-In   2 Hi    3 Hi-Out")
+    print("   4 In      5 Mid   6 Out")
+    print("   7 Lo-In   8 Lo    9 Lo-Out")
     if allow_unknown:
-        print("   0 わからない")
+        print("   0 Not sure")
     lo = 0 if allow_unknown else 1
     while True:
-        a = input("番号を入力: ").strip()
+        a = input("Enter a number: ").strip()
         if a.isdigit() and lo <= int(a) <= 9:
             return None if a == "0" else _COURSE_GRID[int(a) - 1]
-        print("正しい番号を入力してください。")
+        print("Please enter a valid number.")
 
 
 def choose_action(state):
     extras = ""
-    if not all(state.runners):          # 満塁でなければ敬遠できる(押し出しになる満塁だけ除外)
-        extras += "    [w] 敬遠"
+    if not all(state.runners):          # you can walk him unless the bases are loaded (only a bases-loaded walk forces in a run)
+        extras += "    [w] Intentional walk"
     if state.can_change_pitcher():
-        extras += "    [p] 継投"
-    print(f"[Enter] 投球へ    [d] 守備を変更    [m] 打者の読みをメモ{extras}    [q] 終了")
+        extras += "    [p] Pitching change"
+    print(f"[Enter] Pitch    [d] Defense    [m] Note a read{extras}    [q] Quit")
     answer = input("> ").strip().lower()
     return {"d": "defense", "m": "memo", "w": "walk", "p": "change", "q": "quit"}.get(answer, "pitch")
 
@@ -99,61 +99,61 @@ def defense_menu(defense):
         print()
         print(render_field(defense))
         print(render_fielder_table(defense))
-        print(" 1: 選手を入れ替える(Swap)   2: 守備シフトを変える   0: 戻る")
+        print(" 1: Swap players   2: Change the shift   0: Back")
         cmd = input("> ").strip()
         if cmd == "1":
-            a = choose("動かす選手のポジション:", position_options)
-            b = choose("入れ替え先のポジション:", position_options)
+            a = choose("Position of the player to move:", position_options)
+            b = choose("Position to swap with:", position_options)
             defense.swap(a, b)
-            print(f"→ {a} と {b} を入れ替えました。")
+            print(f"-> Swapped {a} and {b}.")
         elif cmd == "2":
-            key = choose("守備シフト:", ALIGNMENTS)
+            key = choose("Shift:", ALIGNMENTS)
             defense.set_alignment(key)
-            print(f"→ シフトを「{ALIGNMENTS[key]}」にしました。")
+            print(f"-> Shift set to '{ALIGNMENTS[key]}'.")
         elif cmd == "0":
             return
 
 
 def change_pitcher_menu(state):
-    """控え投手が複数いれば選ばせる(1 人なら自動で出す)。"""
+    """If there are several relievers, let the player choose (with only one, he comes in automatically)."""
     if len(state.bullpen) == 1:
         index = 0
     else:
-        options = {str(i): f"{p.name}（{'右' if p.throws == 'R' else '左'}投）"
+        options = {str(i): f"{p.name} ({'RHP' if p.throws == 'R' else 'LHP'})"
                    for i, p in enumerate(state.bullpen)}
-        index = int(choose("継投: マウンドに送る投手を選択:", options))
+        index = int(choose("Pitching change: pick the pitcher to send in:", options))
     new_pitcher = state.change_pitcher(index)
     if new_pitcher:
-        print(f">>> 継投。マウンドに {new_pitcher.name}（{'右' if new_pitcher.throws == 'R' else '左'}投）。"
-              "球数はリセット。持ち球・調子は投げてみるまで分からない。")
+        print(f">>> Pitching change. {new_pitcher.name} ({'RHP' if new_pitcher.throws == 'R' else 'LHP'}) "
+              "takes the mound. The pitch count resets. His pitches and form are unknown until he throws.")
 
 
 def memo_menu(state):
-    """この打者の『読み』を記録する(#B)。試合後に正解と照合される。"""
-    print(f"\n打者 #{state.lineup.spot_number()} についての読み")
-    wait = choose("待ち球はどっち?", {"fastball": "速球待ち", "offspeed": "変化球待ち",
-                                       "unknown": "わからない"})
-    weak = choose_course("弱そうなコースは?", allow_unknown=True)
+    """Record your "read" on this batter (#B). It is graded against the truth after the game."""
+    print(f"\nYour read on batter #{state.lineup.spot_number()}")
+    wait = choose("What is he looking for?", {"fastball": "Fastball", "offspeed": "Off-speed",
+                                              "unknown": "Not sure"})
+    weak = choose_course("Where does he look weak?", allow_unknown=True)
     state.record_read(wait=None if wait == "unknown" else wait, weak=weak)
-    print("→ メモしました（試合後に採点されます）。")
+    print("-> Noted (it will be graded after the game).")
 
 
 def play_one_pitch(state, rng):
     tactic_msg = begin_at_bat(state, rng)
     if tactic_msg:
-        print(ansi.bold(ansi.yellow(f">>> {tactic_msg}（ピッチアウトや高め速球で対抗できる）")))
+        print(ansi.bold(ansi.yellow(f">>> {tactic_msg} (counter with a pitchout or a high fastball)")))
     for msg in maybe_resolve_sign_steal(state, rng):
         print(msg)
 
-    # 直前の球を捕球していたら、投手へリズムよく返球する(連打なし・3拍)
+    # If you caught the previous pitch, return it to the pitcher on rhythm (no mashing, three beats)
     tempo = 0.0
     last = state.history.last()
-    if last is not None and last.get("result") in ("ボール", "ストライク", "空振り"):
+    if last is not None and last.get("result") in ("Ball", "Strike", "Whiff"):
         tempo = catcher_return_ball(rng)
 
-    pitch_type = choose("球種:", repertoire_options(state.pitcher))
+    pitch_type = choose("Pitch type:", repertoire_options(state.pitcher))
     course = choose_course()
-    intent = choose("配球意図:", PITCH_INTENTS)
+    intent = choose("Intent:", PITCH_INTENTS)
 
     outcome, messages = resolve_one_pitch(state, pitch_type, course, intent, rng, tempo=tempo)
 
@@ -168,18 +168,18 @@ _DIFFICULTIES = ("beginner", "normal", "expert")
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="終盤の守り切りゲーム")
-    p.add_argument("--lineup", help=".json / .csv の相手打線ファイル")
+    p = argparse.ArgumentParser(description="Behind the Plate -- a catcher's game")
+    p.add_argument("--lineup", help="opposing lineup file (.json / .csv)")
     p.add_argument("--difficulty", choices=_DIFFICULTIES,
                    default=os.environ.get("PITCHSIM_DIFFICULTY", "normal"),
-                   help="beginner=ヒント表示を増やす / expert=打球チャートを隠す（既定: normal）")
+                   help="beginner = more hints / expert = hide the spray chart (default: normal)")
     p.add_argument("--seed", type=int, default=None,
-                   help="乱数シード。指定すると場面生成・投球判定が再現可能になる")
+                   help="random seed. Makes scene generation and pitch judging reproducible")
     p.add_argument("--mlb-demo", action="store_true",
-                   help="実在選手のサンプル打線を使う(mlb_data_adapter 経由)")
+                   help="use a sample lineup of real players (via mlb_data_adapter)")
     p.add_argument("--mlb-live", action="store_true",
-                   help="--mlb-demo と併用。MLB Stats API から実際に取得を試みる"
-                       "(失敗したら自動でサンプルデータにフォールバック)")
+                   help="use with --mlb-demo. Try to fetch from the MLB Stats API "
+                        "(falls back to sample data automatically on failure)")
     return p.parse_args()
 
 
@@ -191,10 +191,10 @@ def main():
         from mlb_data_adapter import build_demo_lineup
         lineup, source = build_demo_lineup(prefer_live=args.mlb_live)
         batters = lineup.batters
-        print(f"MLBサンプル打線を読み込みました（{'MLB Stats API' if source == 'live' else 'サンプルデータ'}）")
+        print(f"Loaded the MLB sample lineup ({'MLB Stats API' if source == 'live' else 'sample data'})")
     elif args.lineup:
         batters = load_lineup_file(args.lineup).batters
-        print(f"打線ファイルを読み込みました: {args.lineup}")
+        print(f"Loaded the lineup file: {args.lineup}")
 
     state = generate_random_situation(rng=rng, lineup_batters=batters)
     print(render_intro(hints=(args.difficulty == "beginner")))
@@ -205,13 +205,13 @@ def main():
     while not state.is_over():
         print()
         print(render_dashboard(state, last_outcome))
-        if args.difficulty != "expert":            # 上級者は打球チャートなしで読む
+        if args.difficulty != "expert":            # experts read without the spray chart
             print(render_spray(state))
         print(render_field(state.defense, state.batter))
 
         action = choose_action(state)
         if action == "quit":
-            print("中断します。")
+            print("Quitting.")
             return
         if action == "defense":
             defense_menu(state.defense)
@@ -220,7 +220,7 @@ def main():
             memo_menu(state)
             continue
         if action == "walk":
-            print(">>> 申告敬遠。打者を歩かせた。")
+            print(">>> Intentional walk. Putting the batter on.")
             state.intentional_walk()
             last_outcome = None
             continue
@@ -236,9 +236,9 @@ def main():
     print(render_analysis(state))
     try:
         path = save_game_log(state)
-        print("\n" + f"ログを保存しました: {path}")
+        print("\n" + f"Log saved: {path}")
     except OSError as err:
-        print(f"（ログ保存に失敗: {err}）")
+        print(f"(Failed to save the log: {err})")
 
 
 if __name__ == "__main__":

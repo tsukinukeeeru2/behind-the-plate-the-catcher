@@ -1,13 +1,12 @@
-"""守備配置(どの選手をどこに置くか)と、守備シフトの選択。
+"""The defensive alignment (which fielder stands where) and the shift choice.
 
-Defense は
-  - 7 人の Fielder
-  - position -> Fielder の割り当て(自由に入れ替え可能)
-  - alignment(守備シフト)
-を持つ。
+Defense holds
+  - seven Fielders
+  - a position -> Fielder assignment (freely swappable)
+  - the alignment (defensive shift)
 
-expected_defensive_efficiency() は「参考値(目安)」であって最適解ではない。
-プレイヤー自身が、打者の左右・傾向・配球と合わせて判断する。
+expected_defensive_efficiency() is a *reference number*, not the best answer.
+The player decides for themselves, using the batter's handedness, tendencies, and the pitch calls.
 """
 
 from fielders import (
@@ -18,15 +17,15 @@ from fielders import (
     weakest_fielder,
 )
 
-# 守備シフトの一覧(キー: 内部名 / 値: 表示名)
+# The available shifts (key: internal name / value: display name)
 ALIGNMENTS = {
-    "standard": "標準守備",
-    "pull": "引っ張り警戒",
-    "oppo": "逆方向警戒",
-    "infield_in": "前進守備",
-    "no_doubles": "長打警戒",
-    "dp": "ゲッツー重視",
-    "bunt": "バント警戒",
+    "standard": "Standard",
+    "pull": "Shade pull",
+    "oppo": "Shade opposite",
+    "infield_in": "Infield in",
+    "no_doubles": "No doubles",
+    "dp": "Double-play depth",
+    "bunt": "Bunt defense",
 }
 
 _CORNERS = ("1B", "3B")
@@ -36,11 +35,11 @@ _INFIELD = ("1B", "2B", "3B", "SS")
 
 class Defense:
     def __init__(self, fielders=None, rng=None):
-        # rng を渡さないと守備能力が乱数シードに乗らない(--seed で再現できない)ので、
-        # generate_random_situation はゲームの rng を必ず渡すこと。
+        # Without an rng, fielder abilities are not tied to the random seed (so --seed cannot
+        # reproduce them). generate_random_situation must always pass the game's rng.
         self.fielders = fielders if fielders is not None else make_default_fielders(rng)
         self.alignment = "standard"
-        # 最初はとりあえず POSITIONS 順に置く。プレイヤーが後で入れ替える。
+        # Start by placing players in POSITIONS order. The player swaps them later.
         self.assignment = {pos: self.fielders[i] for i, pos in enumerate(POSITIONS)}
 
     def fielder_at(self, position):
@@ -53,7 +52,7 @@ class Defense:
         return None
 
     def swap(self, pos_a, pos_b):
-        """2 つのポジションの選手を入れ替える。"""
+        """Swap the fielders at two positions."""
         self.assignment[pos_a], self.assignment[pos_b] = (
             self.assignment[pos_b], self.assignment[pos_a])
 
@@ -69,7 +68,7 @@ class Defense:
         return weakest_fielder(self.fielders)
 
     def expected_defensive_efficiency(self):
-        """0-100 の参考値。『来やすい場所ほど重く』適性を平均する。"""
+        """A 0-100 reference number: the average fit, weighted toward positions that see more balls."""
         total_share = sum(POSITION_REQUIREMENTS[p]["ball_share"] for p in POSITIONS)
         score = sum(
             POSITION_REQUIREMENTS[p]["ball_share"] * position_fit(self.assignment[p], p)
@@ -78,9 +77,9 @@ class Defense:
         return score / total_share
 
     def alignment_out_adjust(self, position, batted_ball):
-        """選んだシフトが この打球と噛み合っているかで ±(アウト確率の増減)。
+        """Plus or minus (change in out probability) depending on how well the chosen shift fits this ball.
 
-        「シフトと配球がハマればアウト率が上がる／逆ならヒットが増える」を表す部分。
+        This is the part that says "if the shift and the pitch calls click, more outs; if not, more hits".
         """
         a = self.alignment
         direction = batted_ball.direction
@@ -90,48 +89,48 @@ class Defense:
         if a == "standard":
             return 0.0
 
-        if a == "pull":                       # 引っ張り警戒
+        if a == "pull":                       # shade toward the pull side
             if direction == "pull":
-                return 0.08                   # 張ったところに来た
+                return 0.08                   # the ball came where we were shaded
             if direction == "oppo":
-                return -0.07                  # 逆を突かれて穴が空く
+                return -0.07                  # beaten the other way, a hole opens up
             return 0.0
 
-        if a == "oppo":                       # 逆方向警戒(pull の鏡)
+        if a == "oppo":                       # shade the opposite way (mirror of pull)
             if direction == "oppo":
                 return 0.08
             if direction == "pull":
                 return -0.07
             return 0.0
 
-        if a == "infield_in":                 # 前進守備
+        if a == "infield_in":                 # infield in
             if infield and ball_type == "ground":
-                return 0.10                   # 前に出て早く処理できる
+                return 0.10                   # playing in, they get to it faster
             if ball_type == "line":
-                return -0.08                  # 頭を越されると一気に抜ける
+                return -0.08                  # a ball over their heads gets through for a hit
             return 0.0
 
-        if a == "no_doubles":                 # 長打警戒(外野を深く)
+        if a == "no_doubles":                 # outfield deep to cut off extra bases
             if not infield and ball_type in ("line", "fly"):
-                return 0.06                   # 深い打球を前で処理
+                return 0.06                   # deep balls handled in front
             if not infield and ball_type == "ground":
-                return -0.06                  # 外野の前が大きく空く
+                return -0.06                  # a big gap opens in front of the outfielders
             return 0.0
 
-        if a == "dp":                         # ゲッツー重視(二遊間を中央寄せ)
+        if a == "dp":                         # double-play depth (middle infielders toward the bag)
             if position in ("SS", "2B") and ball_type == "ground":
                 return 0.07
             if position in ("1B", "3B") and ball_type == "ground":
-                return -0.05                  # 三遊間・一二塁間が広がる
+                return -0.05                  # the gaps between 3B-SS and 1B-2B widen
             return 0.0
 
-        if a == "bunt":                       # バント警戒(一塁・三塁が前に出る)
+        if a == "bunt":                       # bunt defense (1B and 3B crash in)
             if position in _CORNERS and ball_type == "ground":
                 if batted_ball.hardness == "soft":
-                    return 0.14                # 転がした/バントを素早く処理
+                    return 0.14                # a bunt or soft roller is fielded quickly
                 if batted_ball.hardness == "hard":
-                    return -0.12               # 詰めすぎて強い打球に反応できない
-                return -0.03                   # 普通の打球にも守備範囲が狭くなる
+                    return -0.12               # too close in to react to a hard ball
+                return -0.03                   # a normal ball also finds less range
             return 0.0
 
         return 0.0

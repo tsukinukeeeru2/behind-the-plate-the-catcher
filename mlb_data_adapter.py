@@ -1,42 +1,41 @@
-"""実データ(MLB Stats API / Baseball Savant 風のデータ)を Game Engine の
-Batter に変換する Adapter。
+"""An Adapter that turns real data (MLB Stats API / Baseball Savant-style data) into
+the Game Engine's Batter.
 
-    MLB Stats API / Savant(生データ、どんな形でもよい)
+    MLB Stats API / Savant (raw data, any shape)
               ↓
-    mlb_data_adapter.py（このファイル）
+    mlb_data_adapter.py (this file)
               ↓
-    lineup._BATTER_FIELDS と同じキーの dict(records)
+    dicts (records) with the same keys as lineup._BATTER_FIELDS
               ↓
-    Lineup.from_records(records) → Batter オブジェクト → Game Engine
+    Lineup.from_records(records) -> Batter objects -> Game Engine
 
-Game Engine 側(judge.py 以下)は Batter オブジェクトの形しか知らない。
-外部データの形式(API のレスポンス形式)が変わっても、直すのはこの
-ファイルだけでよい ―― という「置き換え可能にする」ための境界線。
+The Game Engine side (judge.py and below) only knows the shape of a Batter object.
+Even if the external data format (the API response shape) changes, this file is the only
+one to fix -- that is the "keep it swappable" boundary.
 
-対応できる範囲(重要な割り切り):
-    avg / obp / slg / bats のような公開成績は生データからそのまま使える。
-    しかし discipline・aggression・weak_pitch・guess_bias・
-    two_strike_ability・pressure_tolerance のような「このゲーム独自の
-    隠しパラメータ」は、一般に公開されている統計だけでは決まらない。
-    そこで、公開統計から合理的に近い値を "推定" するか、
-    決まらない部分は選手名から決定的に(=同じ選手なら毎回同じ値に)
-    振る。乱数で山勘を作っているだけで、実際の傾向とは一致しない。
+What it can and cannot do (an important simplification):
+    Public stats such as avg / obp / slg / bats can be used from the raw data as is.
+    But the game's own hidden parameters -- discipline, aggression, weak_pitch, guess_bias,
+    two_strike_ability, pressure_tolerance -- cannot be pinned down from publicly available
+    stats alone. So it either "estimates" a reasonably close value from public stats, or,
+    for what cannot be determined, rolls it deterministically from the player's name
+    (= the same player always gets the same value). It is only a hunch rolled with random
+    numbers and does not match the player's real tendencies.
 
-hot_course / weak_course(得意/苦手コース)について:
-    生データ(raw)に "zone_profile"（9 分割コースごとの成績、数値が高いほど
-    得意）を含めれば、_hot_weak_from_zone_profile() が実データから
-    hot_course/weak_course を計算する ―― Baseball Savant がプレイヤーページで
-    公開している「ゾーン別成績」をこのゲームの 9 分割コース表記
-    （constants.COURSES のキー）に人手で置き換えて zone_profile に渡せば、
-    本物の得意/苦手コースになる。zone_profile を渡さなければ、従来どおり
-    選手名からの決定的な「山勘」にフォールバックする(既存の SAMPLE_LINEUP
-    (架空選手)と同じ扱い)。
-    この Adapter は Baseball Savant のゾーン別データを自動取得はしない
-    ―― Savant の zone 番号(1-14, 捕手視点)は打者の左右で「内角/外角」の
-    意味が変わるため、このゲーム側の「常に打者視点」という表記へ正しく
-    変換できているかは実データでの検証が必要で、そこまでは踏み込んでいない。
-    未検証の変換を「実データ取得」として実装するのは避け、今回は
-    「渡された zone_profile を正しく使う」受け口とテストだけを用意した。
+About hot_course / weak_course (strong / weak locations):
+    If the raw data includes a "zone_profile" (results for each of the 9 locations, higher =
+    stronger), _hot_weak_from_zone_profile() computes hot_course / weak_course from real data.
+    Take the per-zone results Baseball Savant publishes on a player page, convert them by hand
+    into this game's 9-zone notation (the keys of constants.COURSES), pass them as zone_profile,
+    and you get real strong / weak locations. Without a zone_profile it falls back to the
+    deterministic "hunch" from the player's name (the same treatment as the existing
+    SAMPLE_LINEUP of fictional players).
+    This adapter does NOT fetch Baseball Savant's zone data automatically
+    -- Savant's zone numbers (1-14, from the catcher's view) change the meaning of
+    "inside / outside" depending on the batter's handedness, so converting them correctly
+    into this game's "always from the batter's view" notation needs checking against real data,
+    and that is not attempted here. Rather than implement an unverified conversion and call it
+    "real data fetching", this only provides a hook that uses a given zone_profile correctly, plus tests.
 """
 
 import json
@@ -50,8 +49,8 @@ from pitch_data import all_pitch_keys
 
 _SAMPLE_FIXTURE = "mlb_data/sample_lineup_raw.json"
 
-# MLB Stats API(公開・無料・API キー不要): https://statsapi.mlb.com/
-# チームID の例: 119 = Los Angeles Dodgers, 147 = New York Yankees など。
+# MLB Stats API (public, free, no API key): https://statsapi.mlb.com/
+# Example team IDs: 119 = Los Angeles Dodgers, 147 = New York Yankees, and so on.
 _MLB_STATS_API_TIMEOUT = 6.0
 
 
@@ -60,7 +59,7 @@ def _clamp(x, lo, hi):
 
 
 def _pct(raw, key, default):
-    """0-100 のパーセンテージ表記でも 0-1 の割合表記でも受け取れるようにする。"""
+    """Accept either a 0-100 percentage or a 0-1 fraction."""
     v = raw.get(key)
     if v is None:
         return default
@@ -68,22 +67,22 @@ def _pct(raw, key, default):
 
 
 def _seeded_pick(name, key, choices):
-    """選手名 + key から決定的に1つ選ぶ(同じ選手なら毎回同じ値になる)。
+    """Deterministically pick one from the player name + key (the same player gets the same value every time).
 
-    苦手コース等、公開統計だけでは決まらない値のための「山勘」。
-    本物のホット/コールドゾーンではない(README に明記)。
+    A "hunch" for values that public stats alone cannot decide, like a weak location.
+    It is not a real hot / cold zone (stated in the README).
     """
     return random.Random(f"{name}:{key}").choice(choices)
 
 
 def _hot_weak_from_zone_profile(zone_profile):
-    """9 分割コースごとの成績(数値が高いほど打者が得意)から hot/weak を決める。
+    """Decide hot / weak from per-zone results for the 9 locations (higher = the batter is stronger there).
 
-    zone_profile は {course_key: 数値} の dict(COURSES の 9 キーの一部でよい)。
-    Baseball Savant のような実データから作れる想定 ―― キーはこのゲームの
-    9 分割コース表記(constants.COURSES)に合わせて渡すこと(打者の左右で
-    「内角/外角」の意味が変わる点はすでにこのゲーム側の表記に揃えてある)。
-    有効な値が 2 つ未満なら None を返し、呼び出し側は「山勘」にフォールバックする。
+    zone_profile is a {course_key: number} dict (it may cover only some of the 9 keys of COURSES).
+    It is meant to be built from real data like Baseball Savant -- pass keys that match this game's
+    9-zone notation (constants.COURSES) (the way "inside / outside" changes with the batter's
+    handedness is already aligned to this game's notation).
+    If fewer than 2 values are valid it returns None, and the caller falls back to the "hunch".
     """
     valid = {c: v for c, v in (zone_profile or {}).items() if c in COURSES and v is not None}
     if len(valid) < 2:
@@ -96,12 +95,11 @@ def _hot_weak_from_zone_profile(zone_profile):
 
 
 def normalize_batter_record(raw):
-    """MLB 風の生データ 1 人分(dict)を、Batter が受け取れる形に変換する。
+    """Convert one player's MLB-style raw data (a dict) into a shape Batter can accept.
 
-    raw に必須なのは name / bats / avg / obp / slg だけ。
-    whiff_pct・chase_pct・pull_pct・k_pct・bb_pct・gb_pct・speed_pct は
-    あれば使う(Savant のリーダーボードに近い列名)。無ければリーグ平均
-    相当のデフォルトにフォールバックする。
+    The raw data only has to have name / bats / avg / obp / slg.
+    whiff_pct, chase_pct, pull_pct, k_pct, bb_pct, gb_pct, speed_pct are used if present
+    (column names close to Savant's leaderboards). If missing, they fall back to league-average-like defaults.
     """
     name = raw["name"]
     bats = raw["bats"]
@@ -140,8 +138,8 @@ def normalize_batter_record(raw):
     else:
         hot_course = _seeded_pick(name, "hot", list(COURSES))
         weak_course = _seeded_pick(name, "weak", list(COURSES))
-        # 山勘の 2 回の抽選がたまたま同じコースを引くと「得意＝苦手」になって
-        # しまう。その場合だけ、残りのコースから決定的に引き直す。
+        # If the two hunch draws happen to pick the same location, it becomes "strength = weakness".
+        # Only in that case, redraw deterministically from the remaining locations.
         if weak_course == hot_course:
             weak_course = _seeded_pick(name, "weak_alt",
                                       [c for c in COURSES if c != hot_course])
@@ -153,7 +151,7 @@ def normalize_batter_record(raw):
         "discipline": round(discipline, 2), "chase_rate": round(_clamp(chase, 0.10, 0.50), 2),
         "whiff_rate": round(_clamp(whiff, 0.06, 0.45), 2), "aggression": round(aggression, 2),
         "pull": round(_clamp(pull, 0.20, 0.75), 2), "gb_tendency": round(_clamp(gb, 0.25, 0.65), 2),
-        # 球種別成績(vs_fastball 等)はこの簡易データには含まれないので中立値
+        # Per-pitch-family results (vs_fastball etc.) are not in this simple data, so neutral values
         "vs_fastball": 0.5, "vs_breaking": 0.5, "vs_offspeed": 0.5,
         "hot_course": hot_course,
         "weak_course": weak_course,
@@ -166,8 +164,8 @@ def normalize_batter_record(raw):
 
 
 def load_fixture_lineup(path=_SAMPLE_FIXTURE):
-    """同梱のサンプル生データ(mlb_data/sample_lineup_raw.json)を読み、
-    Lineup を作る。ネット接続なしでも常に動く。
+    """Read the bundled sample raw data (mlb_data/sample_lineup_raw.json) and build a
+    Lineup. It always works, even with no internet connection.
     """
     with open(path, encoding="utf-8") as fp:
         data = json.load(fp)
@@ -176,12 +174,12 @@ def load_fixture_lineup(path=_SAMPLE_FIXTURE):
 
 
 def fetch_live_roster_raw(team_id, season):
-    """MLB Stats API から打者成績を取得する(標準ライブラリの urllib のみ)。
+    """Fetch batter stats from the MLB Stats API (using only the standard library's urllib).
 
-    成功すれば normalize_batter_record() が読める生データのリストを返す。
-    ネットワークが使えない・API 形式が変わった等で失敗したら、原因を
-    包んだ例外(RuntimeError)を投げる ―― 呼び出し側(build_demo_lineup)
-    がこれを捕まえてサンプルデータにフォールバックする。
+    On success it returns a list of raw data that normalize_batter_record() can read.
+    If it fails (no network, the API format changed, etc.) it raises an exception
+    (RuntimeError) wrapping the cause -- the caller (build_demo_lineup) catches it
+    and falls back to the sample data.
     """
     url = (f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster"
           f"?rosterType=active&season={season}")
@@ -189,7 +187,7 @@ def fetch_live_roster_raw(team_id, season):
         with urllib.request.urlopen(url, timeout=_MLB_STATS_API_TIMEOUT) as resp:
             roster = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as err:
-        raise RuntimeError(f"MLB Stats API(roster)に接続できませんでした: {err}") from err
+        raise RuntimeError(f"Could not connect to the MLB Stats API (roster): {err}") from err
 
     raw_batters = []
     for entry in roster.get("roster", []):
@@ -208,35 +206,35 @@ def fetch_live_roster_raw(team_id, season):
             s = splits[0]["stat"]
             bats = person.get("batSide", {}).get("code", "R")
             if bats not in ("R", "L"):
-                bats = "R"   # このゲームはスイッチヒッター("S")非対応。簡略化してRとして扱う
+                bats = "R"   # this game does not support switch hitters ("S"). Simplified: treat as R
             raw_batters.append({
                 "name": person["fullName"], "bats": bats,
                 "avg": float(s["avg"]), "obp": float(s["obp"]), "slg": float(s["slg"]),
             })
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError,
                 KeyError, IndexError, ValueError):
-            continue   # この選手だけスキップ(API全体は失敗にしない)
+            continue   # skip only this player (do not fail the whole API call)
         if len(raw_batters) >= 9:
             break
 
     if len(raw_batters) < 9:
-        raise RuntimeError(f"打者データが{len(raw_batters)}人しか取れませんでした(9人必要)")
+        raise RuntimeError(f"Only {len(raw_batters)} batters could be fetched (9 are needed)")
     return raw_batters[:9]
 
 
 def build_demo_lineup(prefer_live=False, team_id=147, season=2024):
-    """MLB DATA DEMO 用の Lineup を1つ作る。
+    """Build one Lineup for the MLB DATA DEMO.
 
-    prefer_live=True なら MLB Stats API から実際に取りにいく。失敗したら
-    (ネットワーク不通・API 形式変更・9人揃わない、など理由は問わず)
-    同梱のサンプルデータへ自動でフォールバックする ―― Web/CLI 本体は
-    このデモが失敗しても絶対に落ちない。
+    With prefer_live=True it actually tries the MLB Stats API. If that fails
+    (network down, API format change, fewer than nine batters -- whatever the reason)
+    it automatically falls back to the bundled sample data -- the Web / CLI itself
+    never crashes even if this demo fails.
     """
     if prefer_live:
         try:
             raw = fetch_live_roster_raw(team_id, season)
             records = [normalize_batter_record(b) for b in raw]
             return Lineup.from_records(records), "live"
-        except Exception as err:   # 理由を問わずサンプルへフォールバック
-            print(f"（MLB Stats API を使えなかったのでサンプルデータを使います: {err}）")
+        except Exception as err:   # fall back to the sample whatever the reason
+            print(f"(Could not use the MLB Stats API, so using the sample data: {err})")
     return load_fixture_lineup(), "fixture"

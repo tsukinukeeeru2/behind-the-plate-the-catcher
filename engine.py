@@ -1,22 +1,22 @@
-"""Game Engine ―― CLI(main.py)と Web(webapp.py)が共有する「1 球を判定して
-状態を進める」ロジック。
+"""The Game Engine -- the logic that CLI (main.py) and Web (webapp.py) share to
+"judge one pitch and advance the state".
 
     Game Engine (engine.py)
         ↑            ↑
       main.py     webapp.py
       (CLI)         (Web)
 
-このファイルは何も print() しない・input() もしない。表示層(CLI か Web か)
-は resolve_one_pitch() が返す (outcome, メッセージのリスト) を、それぞれの
-やり方(print / HTML)で見せるだけ。ロジックの二重実装を避けるための境界線。
+This file never print()s and never input()s. The display layer (CLI or Web) just shows
+the (outcome, list of messages) that resolve_one_pitch() returns in its own way
+(print / HTML). It is the boundary that avoids implementing the logic twice.
 
-    Pitch Call(球種・コース・意図)
+    Pitch Call (pitch type, location, intent)
       ↓  judge.judge_pitch()
-    Actual Pitch → 打者反応 → (フェアなら)打球・守備・走塁
+    Actual Pitch -> batter reaction -> (if fair) batted ball, defense, baserunning
       ↓
-    振り逃げ / ブロッキング / 盗塁 / サイン盗み見 などの周辺イベント
+    Surrounding events: dropped third strike / blocking / steals / stolen signs
       ↓
-    apply_result()  ―― カウント・アウト・走者を確定させる
+    apply_result()  -- settles the count, outs, and runners
 """
 
 import datetime as _dt
@@ -29,25 +29,26 @@ from judge import judge_pitch
 from pitch_data import family_of, pitch_name, velocity_of
 from qte import catcher_block, catcher_change_signs, catcher_field_bunt, catcher_throw
 from reaction import describe_reaction
-from strategy import PITCH_INTENTS, grade_reads
+from strategy import PITCH_INTENTS, grade_reads, intent_label
 
-FAIR_HITS = ("単打", "二塁打", "三塁打", "本塁打")
+FAIR_HITS = ("Single", "Double", "Triple", "Home run")
 
 _NEUTRAL_ANALYSIS = {
     "guess": {"class": "fastball", "class_strength": 0.0}, "decision_quality": 0.0,
-    "sequence_label": "特筆なし", "sequence_notes": [],
+    "sequence_label": "Nothing notable", "sequence_notes": [],
     "fooled_guess": False, "alignment_helped": False,
 }
 
 
 def begin_at_bat(state, rng):
-    """打席の初球の前に 1 回呼ぶ。相手ベンチの作戦(#C)を決め、捕手に見える文言を返す。
+    """Call once before the first pitch of an at-bat. Decides the opposing bench's tactic (#C) and returns the line the catcher can see.
 
-    バントの構えは見えるが、エンドランは見えない(空文字を返す)。
+    A bunt stance is visible, but a hit-and-run is not (it returns an empty string).
     """
-    # 冪等: 打席ごとに一度だけ乱数を引く。Web 版はページを再描画するたびに
-    # begin_at_bat を呼ぶので、フラグが無いと GET のたびに decide_tactic が
-    # 乱数を消費し、--seed の再現性が崩れる(作戦の有無まで変わりうる)。
+    # Idempotent: draw random numbers only once per at-bat. The Web version calls
+    # begin_at_bat every time it re-renders the page, so without the flag every GET would
+    # make decide_tactic consume random numbers and break --seed reproducibility
+    # (even whether a tactic appears could change).
     if (state.history.records or state.opp_tactic is not None
             or getattr(state, "tactic_decided", False)):
         return ""
@@ -57,57 +58,56 @@ def begin_at_bat(state, rng):
 
 
 def apply_result(state, outcome, on_event=print):
-    """1 球の結果をカウント・状況に反映。三振・四球・走塁はここで確定。
+    """Apply one pitch's result to the count and the situation. Strikeouts, walks, and baserunning are settled here.
 
-    on_event : 出来事の文字列を受け取るコールバック(既定は print)。
-              CLI 以外の表示層(webapp.py 等)はメッセージのリストに積むだけの
-              関数を渡せば、このロジックをそのまま再利用できる。
+    on_event : a callback that receives each event string (default: print).
+              A display layer other than the CLI (webapp.py, etc.) can reuse this logic
+              as is by passing a function that just appends to a list of messages.
 
-    打席が終わったら、直前に log_pitch() が積んだ pitch_log の最後の 1 件に
-    at_bat_end("strikeout"/"walk"/"hit"/"error"/"out")を付け足す。Postgame
-    Report(#Batters Faced / Strikeouts / Walks / Hits)が使うだけの集計用タグで、
-    判定そのものには一切影響しない。
+    When an at-bat ends, it adds at_bat_end ("strikeout"/"walk"/"hit"/"error"/"out") to the
+    last entry of pitch_log that log_pitch() just pushed. It is only a tally tag for the Postgame
+    Report (#Batters Faced / Strikeouts / Walks / Hits) and has no effect on the judging itself.
     """
     result = outcome["result"]
     pa_end = None
-    if result in ("ストライク", "空振り"):
+    if result in ("Strike", "Whiff"):
         state.strikes += 1
         if state.strikes >= 3:
-            on_event(">>> 三振!")
+            on_event(">>> Strikeout!")
             state.add_out()
             pa_end = "strikeout"
-    elif result == "ボール":
+    elif result == "Ball":
         state.balls += 1
         if state.balls >= 4:
-            on_event(">>> 四球")
+            on_event(">>> Walk")
             state.advance_on_walk()
             pa_end = "walk"
-    elif result == "ファウル":
+    elif result == "Foul":
         if state.strikes < 2:
             state.strikes += 1
-    elif result in FAIR_HITS or result in ("アウト", "エラー"):
+    elif result in FAIR_HITS or result in ("Out", "Error"):
         play = outcome["play"]
         if result in FAIR_HITS:
-            extra = f"（{play['detail']}）" if play["detail"] else ""
-            on_event(f">>> {play['label']}を打たれた!{extra}")
-        elif result == "エラー":
-            extra = f"（{play['detail']}）" if play["detail"] else ""
-            on_event(f">>> 味方のエラー！ 出塁を許した{extra}")
+            extra = f" ({play['detail']})" if play["detail"] else ""
+            on_event(f">>> They hit a {play['label'].lower()}!{extra}")
+        elif result == "Error":
+            extra = f" ({play['detail']})" if play["detail"] else ""
+            on_event(f">>> An error by our fielder! He reaches base{extra}")
         else:
-            note = play["label"] if play["label"] != "アウト" else play["detail"]
-            on_event(">>> 打ち取った!" + (f"（{note}）" if note else ""))
+            note = play["label"] if play["label"] != "Out" else play["detail"]
+            on_event(">>> Got him out!" + (f" ({note})" if note else ""))
         if play["runs"]:
-            on_event(f">>> {play['runs']} 点を失った…")
+            on_event(f">>> We gave up {play['runs']} run{'s' if play['runs'] != 1 else ''}...")
         state.spray_add(outcome["batted_ball"], result)
         state.apply_play(play)
-        pa_end = "hit" if result in FAIR_HITS else ("error" if result == "エラー" else "out")
+        pa_end = "hit" if result in FAIR_HITS else ("error" if result == "Error" else "out")
 
     if pa_end and state.pitch_log:
         state.pitch_log[-1]["at_bat_end"] = pa_end
 
 
 def log_pitch(state, outcome):
-    """試合後の分析用に 1 球を記録する。"""
+    """Record one pitch for the post-game analysis."""
     an = outcome["_analysis"]
     state.pitch_log.append({
         "pitch_number": len(state.pitch_log) + 1,
@@ -116,13 +116,13 @@ def log_pitch(state, outcome):
         "actual_course": outcome["actual_course"],
         "intent": outcome["intent"],
         "call_label": f"{outcome['pitch_type']}/{outcome['actual_course']}"
-                      f"({PITCH_INTENTS[outcome['intent']].split('（')[0]})",
-        # ふり返り画面(CLI/Web共通)の表示専用。内部キーそのままだと
-        # "sinker/mid_mid" のように読みにくいので、球種名・コースの短縮表記に
-        # 差し替えたもの。call_label 自体は stats.py が正規表現で解析する
-        # 決まった書式なので変えない。
-        "call_label_ja": f"{pitch_name(outcome['pitch_type'])}/{COURSE_SHORT[outcome['actual_course']]}"
-                         f"({PITCH_INTENTS[outcome['intent']].split('（')[0]})",
+                      f"({intent_label(outcome['intent'])})",
+        # Only for the review screen (shared by CLI/Web). Raw internal keys read badly,
+        # like "sinker/mid_mid", so this swaps in the pitch name and the short
+        # location label. call_label itself is a fixed format that stats.py parses with a
+        # regular expression, so it is not changed.
+        "call_label_text": f"{pitch_name(outcome['pitch_type'])}/{COURSE_SHORT[outcome['actual_course']]}"
+                           f"({intent_label(outcome['intent'])})",
         "result": outcome["result"],
         "decision_quality": an["decision_quality"],
         "sequence_label": an["sequence_label"],
@@ -137,7 +137,7 @@ def log_pitch(state, outcome):
 
 
 def save_game_log(state):
-    """試合ログを logs/ に JSON 保存する(#E)。"""
+    """Save the game log to logs/ as JSON (#E)."""
     os.makedirs("logs", exist_ok=True)
     path = os.path.join("logs", _dt.datetime.now().strftime("game_%Y%m%d_%H%M%S.json"))
     run_txt, status = state.result_summary()
@@ -159,33 +159,33 @@ def save_game_log(state):
 
 
 # ---------------------------------------------------------------------------
-# QTE(リズムゲーム)の駆け橋
+# The bridge for QTEs (rhythm games)
 #
-# 1 球の判定は resolve_pitch_events() というジェネレータで行う。捕手のリズム
-# プレーが要るところで ("種別", payload) を yield し、呼び出し側が答え
-#   frame        → "perfect" / "good" / "miss" / None
-#   それ以外      → bonus(float、-0.25〜0.25)
-# を .send() で返す。最後に (outcome, messages) を return する。
+# Judging one pitch is done by a generator called resolve_pitch_events(). Wherever a
+# catcher rhythm play is needed it yields ("kind", payload), and the caller sends back the answer:
+#   frame        -> "perfect" / "good" / "miss" / None
+#   anything else -> bonus (float, -0.25 to 0.25)
+# via .send(). At the end it returns (outcome, messages).
 #
-#   CLI (main.py) / テスト : resolve_one_pitch() が qte.* を即時に呼んで答える
-#                            (端末なら実際のリズム入力、非対話なら 0.0 / None)
-#   Web (webapp.py)        : ジェネレータを HTTP リクエストをまたいで駆動し、
-#                            ブラウザのタイミングUIの結果を答えとして返す
-# 判定ロジックそのものは変えていない ―― QTE の呼び出し方だけを差し替えられる
-# ように yield にした。
+#   CLI (main.py) / tests : resolve_one_pitch() calls qte.* right away to answer
+#                           (a real rhythm input on a terminal, 0.0 / None when non-interactive)
+#   Web (webapp.py)       : drives the generator across HTTP requests and returns
+#                           the browser timing UI's result as the answer
+# The judging logic itself is unchanged -- only how QTEs are called was made swappable by
+# turning it into a yield.
 # ---------------------------------------------------------------------------
 
 
 def _cli_answer(kind, payload, rng, frame_timing):
-    """CLI / テスト用: yield された QTE に qte.* を即座に呼んで答える。"""
+    """For the CLI / tests: answer a yielded QTE by calling qte.* immediately."""
     if kind == "frame":
-        return frame_timing                      # 明示指定があればそれ、無ければ None=確率のみ
+        return frame_timing                      # the explicit value if given, otherwise None = probability only
     if kind == "change_signs":
         return catcher_change_signs(rng)
     if kind == "steal_throw":
         return catcher_throw(rng)
     if kind == "d3_throw":
-        return catcher_throw(rng, base="一塁", title="拾った！ 一塁へ送れ")
+        return catcher_throw(rng, base="first", title="Got it! Throw to first")
     if kind in ("wild_block", "d3_block"):
         return catcher_block(payload["dir"], wild=payload["wild"], rng=rng)
     if kind == "field_bunt":
@@ -194,7 +194,7 @@ def _cli_answer(kind, payload, rng, frame_timing):
 
 
 def _drive(gen, answer_fn):
-    """ジェネレータを最後まで回し、各 yield を answer_fn(kind, payload) で答える。"""
+    """Run a generator to the end, answering each yield with answer_fn(kind, payload)."""
     answer = None
     try:
         while True:
@@ -205,35 +205,35 @@ def _drive(gen, answer_fn):
 
 
 def _sign_steal_events(state, rng):
-    """二塁走者にサインを覗われるリスク(打席途中いつでも)。messages を return。"""
+    """The risk of the runner on second stealing the signs (any time during an at-bat). Returns messages."""
     messages = []
     if state.sign_steal_chance(rng):
-        messages.append(">>> 二塁走者がサインを覗っている気配…")
+        messages.append(">>> The runner on second seems to be peeking at the signs...")
         sign_bonus = yield ("change_signs", {})
         messages.append(f">>> {state.resolve_sign_steal(sign_bonus, rng)}")
     return messages
 
 
 def maybe_resolve_sign_steal(state, rng):
-    """サイン盗みだけを単体で処理して messages を返す(CLI 補助・テスト用)。"""
+    """Handle only the sign stealing on its own and return messages (a CLI helper, for tests)."""
     return _drive(_sign_steal_events(state, rng),
                   lambda k, p: _cli_answer(k, p, rng, None))
 
 
 def resolve_one_pitch(state, pitch_type, course, intent, rng, frame_timing=None, tempo=0.0):
-    """1 球を判定して状態を更新し、(outcome, メッセージのリスト) を返す。
+    """Judge one pitch, update the state, and return (outcome, list of messages).
 
-    振り逃げ・ブロッキング・盗塁・バント処理の QTE は、端末なら実際のリズム
-    入力、非対話なら確率モデルで自動処理する。frame_timing を渡すと受球
-    タイミング(フレーミング)をその値に固定できる。tempo は捕手の返球リズムの
-    出来(-0.25〜0.25)。良いほど投手が乗る。
+    The QTEs for a dropped third strike, blocking, steals, and bunt fielding are real rhythm
+    input on a terminal, and handled automatically by the probability model when non-interactive.
+    Passing frame_timing fixes the receive timing (framing) to that value. tempo is how well
+    the catcher's return-throw rhythm went (-0.25 to 0.25). The better it is, the more the pitcher gets going.
     """
     return _drive(resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=tempo),
                   lambda k, p: _cli_answer(k, p, rng, frame_timing))
 
 
 def resolve_pitch_flow(state, pitch_type, course, intent, rng, tempo=0.0):
-    """Web 用: サイン盗み → 1 球の判定 を一続きに駆動するジェネレータ。"""
+    """For the Web: a generator that drives "stolen signs -> judging one pitch" as one continuous flow."""
     pre = yield from _sign_steal_events(state, rng)
     outcome, msgs = yield from resolve_pitch_events(state, pitch_type, course, intent, rng,
                                                    tempo=tempo)
@@ -242,25 +242,25 @@ def resolve_pitch_flow(state, pitch_type, course, intent, rng, tempo=0.0):
 
 def _call_label(pitch_type, course, intent):
     return (f"{pitch_name(pitch_type)} / {COURSE_SHORT[course]}"
-            f" / {PITCH_INTENTS[intent].split('（')[0]}")
+            f" / {intent_label(intent)}")
 
 
 def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
-    """1 球の判定＋周辺イベント(ジェネレータ)。QTE 地点で yield する。"""
+    """Judge one pitch plus the surrounding events (a generator). It yields at each QTE point."""
     messages = []
 
-    # 相手が犠打(バント)なら、通常の打席判定ではなくバント専用の解決へ
+    # If the opponent is bunting, go to the bunt-specific resolution instead of the normal at-bat judging
     if state.opp_tactic == "bunt":
         return (yield from _resolve_bunt_events(state, pitch_type, course, intent, rng, messages))
 
-    # きわどい球(隅を狙ってストライクを取りにいく)は、投球の前に受球のタイミング。
-    # velocity を渡す = 速い球は早く(左で)・遅い球は遅く(右で)受ける、を Web 側で作る。
+    # A borderline pitch (aiming at a corner to get a strike) gets a receive timing before the pitch.
+    # Passing velocity lets the Web side make a fast pitch received early (left) and a slow one late (right).
     frame_timing = None
     if is_corner(course) and intent in ("strike", "freeze", "weak_contact"):
         frame_timing = yield ("frame", {"call": _call_label(pitch_type, course, intent),
                                         "velocity": velocity_of(pitch_type)})
 
-    # いい配球が続いていると、次の 1 球で投手が少し乗る(甘め・最大 +0.15)。
+    # When good calls stack up, the pitcher gets going a little on the next pitch (lenient, up to +0.15).
     tempo += state.good_call_bonus()
 
     outcome = judge_pitch(state, pitch_type, course, rng, intent=intent,
@@ -269,7 +269,7 @@ def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
 
     log_pitch(state, outcome)
 
-    # 今の 1 球が「いい配球」だったかを更新(数値は表に出さない。連続時だけ一言)。
+    # Update whether this pitch was a "good call" (the number is not shown; a line only when the streak builds).
     good_call = state.register_call_quality(outcome["_analysis"]["decision_quality"],
                                            outcome["result"])
     outcome["good_call"] = good_call
@@ -277,11 +277,11 @@ def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
     if good_call:
         s = state.good_call_streak
         if s == 2:
-            messages.append(">>> いい配球が続いてる。この調子（配球ボーナス）")
+            messages.append(">>> Good calls are stacking up. Keep it going (call bonus)")
         elif s == 4:
-            messages.append(">>> 完全にこっちのペース。投手が乗ってきた（配球ボーナス）")
+            messages.append(">>> Total control. The pitcher is in a groove (call bonus)")
         elif s >= 6 and s % 3 == 0:
-            messages.append(">>> 圧巻のリード。バッテリーで試合を支配してる（配球ボーナス）")
+            messages.append(">>> Dominant game-calling. The battery owns this game (call bonus)")
     state.history.add(pitch_type, course, outcome["result"], outcome["timing"],
                       outcome["swung"], actual_course=outcome["actual_course"],
                       intent=intent, velocity=velocity_of(pitch_type),
@@ -291,30 +291,30 @@ def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
     result = outcome["result"]
     ac = outcome["actual_course"]
 
-    # ワンバウンドの三振 + 振り逃げが成立しうる(一塁が空 or 2アウト) → 振り逃げ判定
-    if (result == "空振り" and state.strikes == 2 and outcome["missed"]
+    # A strikeout in the dirt + a dropped third strike is possible (first base open or two outs) -> check the dropped third
+    if (result == "Whiff" and state.strikes == 2 and outcome["missed"]
             and state.dropped_third_eligible()):
         low_dirt = zone_y(ac) == "lo" and not outcome["in_zone"]
         if low_dirt or rng.random() < 0.30:
-            why = "一塁が空いている" if not state.runners[0] else "2アウト"
-            messages.append(f">>> ワンバウンド三振！ 振り逃げのチャンス（{why}）")
+            why = "first base is open" if not state.runners[0] else "two outs"
+            messages.append(f">>> Strike three in the dirt! A chance for a dropped third strike ({why})")
             hard = is_corner(ac)
             block_bonus = yield ("d3_block", {"dir": zone_x(ac), "wild": not low_dirt})
             throw_bonus = yield ("d3_throw", {})
             _, msg = state.resolve_dropped_third(block_bonus, throw_bonus, rng, hard=hard)
             messages.append(f">>> {msg}")
-            # 振り逃げは生きても刺されても、打者の成績上は「三振」扱い(実際の野球のルール)
+            # Whether he gets on or is thrown out, it counts as a "strikeout" in the batter's line (the real baseball rule)
             if state.pitch_log:
                 state.pitch_log[-1]["at_bat_end"] = "strikeout"
             return outcome, messages
 
-    # ブロッキング(方向ボタン + タイミング)。フェアに打たれなかった球で:
-    #   ・低めの変化球(breaking / offspeed)は必ずワンバウンド気味 → 毎回ブロッキング
-    #   ・それ以外の失投も、走者がいれば時々(低め暴投は必ず)
+    # Blocking (a direction button + timing). On a pitch that was not hit fair:
+    #   - a low breaking ball (breaking / offspeed) is always a bit in the dirt -> block every time
+    #   - other misses also happen sometimes if there is a runner (a low wild pitch always)
     low_break = (fam in ("breaking", "offspeed") and zone_y(ac) == "lo"
-                 and result in ("ボール", "空振り"))
+                 and result in ("Ball", "Whiff"))
     low_dirt = zone_y(ac) == "lo" and not outcome["in_zone"]
-    wild_case = (any(state.runners) and outcome["missed"] and result in ("ボール", "空振り")
+    wild_case = (any(state.runners) and outcome["missed"] and result in ("Ball", "Whiff")
                  and (low_dirt or rng.random() < 0.30))
     if low_break or wild_case:
         hard = is_corner(ac)
@@ -323,23 +323,23 @@ def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
         if msg:
             messages.append(f">>> {msg}")
 
-    # エンドラン: 打者がフェアに打たなかった球でも、一塁走者はスタートしている
+    # Hit-and-run: even on a pitch the batter does not put in play, the runner on first is going
     if (state.opp_tactic == "hit_and_run" and state.runners[0]
-            and result in ("ボール", "ストライク", "空振り", "ファウル")):
+            and result in ("Ball", "Strike", "Whiff", "Foul")):
         pitched_out = intent == "pitchout"
         tb = (yield ("steal_throw", {})) if pitched_out else 0.0
         ev = state.hit_and_run_runner_go(pitched_out, contact=False, rng=rng, throw_bonus=tb)
         if ev:
-            prefix = ">>> エンドランを見破った！ " if pitched_out else ">>> "
+            prefix = ">>> You read the hit-and-run! " if pitched_out else ">>> "
             messages.append(prefix + ev)
 
-    # 打球が飛ばなかった球 → 走者が盗塁を試みることがある(送球リズム)
-    elif result in ("ボール", "ストライク", "空振り") and state.steal_chance(rng):
-        messages.append(">>> 走者がスタート！")
+    # On a pitch with no ball in play -> a runner may try to steal (the throw rhythm)
+    elif result in ("Ball", "Strike", "Whiff") and state.steal_chance(rng):
+        messages.append(">>> The runner is going!")
         throw_bonus = yield ("steal_throw", {})
         if intent == "pitchout":
-            throw_bonus += 0.35                      # ピッチアウトは走者を刺すための球
-            messages.append(">>> ピッチアウトが決まった！")
+            throw_bonus += 0.35                      # a pitchout is a pitch for throwing out the runner
+            messages.append(">>> The pitchout is right on target!")
         ev = state.resolve_steal(fam, rng, throw_bonus=throw_bonus)
         if ev:
             messages.append(f">>> {ev}")
@@ -352,7 +352,7 @@ def resolve_pitch_events(state, pitch_type, course, intent, rng, tempo=0.0):
 
 
 def _resolve_bunt_events(state, pitch_type, course, intent, rng, messages):
-    """相手の犠打を解決する(ジェネレータ。バント処理のリズムを yield する)。"""
+    """Resolve the opponent's sacrifice bunt (a generator. It yields the bunt-fielding rhythm)."""
     actual = state.pitcher.execute_pitch(pitch_type, course, intent, rng)
     ac = actual["actual_course"]
     fam = family_of(pitch_type)

@@ -1,13 +1,14 @@
-"""自動テスト。
+"""Automated tests.
 
     python tests.py
 
-標準ライブラリの unittest だけ。乱数は random.Random(seed) で固定。
-最後の StressTests で「ランダム条件 1000 ゲーム」を回し、
-クラッシュ・不正カウント・打順破綻・無限ループが無いことを確認する。
+Standard library unittest only. Randomness is pinned with random.Random(seed).
+The final StressTests run 1000 games from random situations and check that there are
+no crashes, invalid counts, broken batting orders, or infinite loops.
 """
 
 import io
+import json
 import random
 import re
 import socket
@@ -46,17 +47,19 @@ from pitcher import Pitcher, build_sample_pitcher
 from qte import catcher_block, catcher_change_signs, catcher_throw, qte_enabled
 from reaction import FACE_CATEGORIES, describe_reaction, render_reaction_block
 import mlb_data_adapter
+import playview
 import replay
 import stats
-from strategy import PITCH_INTENTS, build_analysis, build_postgame_report, evaluate_sequencing, grade_reads
+from strategy import (PITCH_INTENTS, build_analysis, build_postgame_report, catcher_rating, evaluate_sequencing,
+                      grade_reads, intent_label)
 from ui import render_analysis, render_dashboard, render_intro, render_play_result, render_spray
 import webapp
 
-VALID_RESULTS = {"ストライク", "ボール", "空振り", "ファウル", "アウト",
-                 "単打", "二塁打", "三塁打", "本塁打"}
+VALID_RESULTS = {"Strike", "Ball", "Whiff", "Foul", "Out",
+                 "Single", "Double", "Triple", "Home run"}
 
 
-# ---------- ヘルパー ----------
+# ---------- Helpers ----------
 def _batter(bats="R", coarse="contact", pull=0.5, gb=0.45, **kw):
     return Batter(name="T", bats=bats, coarse_type=coarse, pull=pull, gb_tendency=gb, **kw)
 
@@ -71,18 +74,18 @@ def _state(seed=0):
 
 def _silent_apply(state, outcome):
     result = outcome["result"]
-    if result in ("ストライク", "空振り"):
+    if result in ("Strike", "Whiff"):
         state.strikes += 1
         if state.strikes >= 3:
             state.add_out()
-    elif result == "ボール":
+    elif result == "Ball":
         state.balls += 1
         if state.balls >= 4:
             state.advance_on_walk()
-    elif result == "ファウル":
+    elif result == "Foul":
         if state.strikes < 2:
             state.strikes += 1
-    else:  # フェア打球(単打/二塁打/三塁打/本塁打/アウト)
+    else:  # a fair batted ball (single / double / triple / home run / out)
         state.apply_play(outcome["play"])
 
 
@@ -100,7 +103,7 @@ def _drive_pitch(state, rng, intents, courses):
     return outcome
 
 
-# ---------- 球種データ ----------
+# ---------- Pitch data ----------
 class PitchDataTests(unittest.TestCase):
     def test_entries_have_required_fields(self):
         required = {"name", "pitch_class", "velocity", "movement", "whiff_rate",
@@ -115,7 +118,7 @@ class PitchDataTests(unittest.TestCase):
 
     def test_new_pitch_by_data_only(self):
         PITCH_LIBRARY["test_pitch"] = {
-            "name": "テスト球", "pitch_class": "breaking", "velocity": 80, "movement": 5,
+            "name": "Test pitch", "pitch_class": "breaking", "velocity": 80, "movement": 5,
             "whiff_rate": 0.2, "groundball_rate": 0.5, "contact_quality": 0.4,
             "platoon": {"same": -0.05, "opposite": 0.05}}
         try:
@@ -126,7 +129,7 @@ class PitchDataTests(unittest.TestCase):
             del PITCH_LIBRARY["test_pitch"]
 
 
-# ---------- 野手・守備 ----------
+# ---------- Fielders and defense ----------
 class FielderTests(unittest.TestCase):
     def test_fit_amplified_at_hard_position(self):
         below = Fielder("x", 40, 40, 40, 40, 40)
@@ -179,10 +182,10 @@ class DefenseTests(unittest.TestCase):
         d.set_alignment("bunt")
         self.assertGreater(d.alignment_out_adjust("3B", soft), 0.0)
         self.assertLess(d.alignment_out_adjust("3B", hard), 0.0)
-        self.assertEqual(d.alignment_out_adjust("CF", soft), 0.0)   # 外野は影響なし
+        self.assertEqual(d.alignment_out_adjust("CF", soft), 0.0)   # the outfield is unaffected
 
 
-# ---------- 打球・守備判定 ----------
+# ---------- Batted balls and fielding ----------
 class BattedBallTests(unittest.TestCase):
     def _pull_share(self, batter, timing="on_time", course="mid_mid", n=4000):
         rng = random.Random(11)
@@ -198,7 +201,7 @@ class BattedBallTests(unittest.TestCase):
 class FieldingTests(unittest.TestCase):
     def _out_rate(self, bb, defense, batter, n=4000, seed=5):
         rng = random.Random(seed)
-        return sum(resolve_batted_ball(bb, defense, batter, rng)["result"] == "アウト"
+        return sum(resolve_batted_ball(bb, defense, batter, rng)["result"] == "Out"
                    for _ in range(n)) / n
 
     def test_hard_contact_lowers_out_rate(self):
@@ -223,7 +226,7 @@ class FieldingTests(unittest.TestCase):
             rng = random.Random(999)
             return sum(resolve_batted_ball(
                 generate_batted_ball(b, get_pitch("four_seam"), "mid_mid", "on_time", 0.0, rng),
-                d, b, rng)["result"] == "アウト" for _ in range(n)) / n
+                d, b, rng)["result"] == "Out" for _ in range(n)) / n
 
         self.assertGreater(out_rate("R", "RF"), out_rate("R", "LF") + 0.015)
         self.assertGreater(out_rate("L", "LF"), out_rate("L", "RF") + 0.015)
@@ -240,7 +243,7 @@ class FieldingTests(unittest.TestCase):
             d, b = _defense_all_equal(skill), _batter()
             bb = BattedBall("center", "ground", "medium", 0.5, "infield")
             rng = random.Random(3)
-            return sum(resolve_batted_ball(bb, d, b, rng)["result"] == "エラー"
+            return sum(resolve_batted_ball(bb, d, b, rng)["result"] == "Error"
                        for _ in range(n)) / n
         self.assertGreater(error_rate(25), error_rate(75) + 0.01)
 
@@ -250,16 +253,16 @@ class FieldingTests(unittest.TestCase):
         rng = random.Random(11)
         for _ in range(2000):
             fd = resolve_batted_ball(bb, d, b, rng)
-            if fd["result"] == "エラー":
+            if fd["result"] == "Error":
                 self.assertFalse(fd["batter_out"])
                 self.assertFalse(fd["air_out"])
                 self.assertTrue(fd["error"])
 
 
-# ---------- 長打・走塁 (改良A) ----------
+# ---------- Extra-base hits and baserunning (improvement A) ----------
 def _fd(result, position="SS", batter_out=None, air_out=False):
     if batter_out is None:
-        batter_out = (result == "アウト")
+        batter_out = (result == "Out")
     return {"result": result, "batter_out": batter_out, "air_out": air_out,
             "position": position, "fielder": "X", "out_probability": 0.5,
             "breakdown": {"alignment": 0.0}}
@@ -272,14 +275,14 @@ class BaserunningTests(unittest.TestCase):
         rng = random.Random(0)
         hard_deep = BattedBall("pull", "fly", "hard", 0.9, "deep")
         soft_grounder = BattedBall("pull", "ground", "soft", 0.2, "infield")
-        hr = sum(_hit_extent(hard_deep, slugger, rng) == "本塁打" for _ in range(3000))
-        never = sum(_hit_extent(soft_grounder, slugger, rng) == "本塁打" for _ in range(3000))
+        hr = sum(_hit_extent(hard_deep, slugger, rng) == "Home run" for _ in range(3000))
+        never = sum(_hit_extent(soft_grounder, slugger, rng) == "Home run" for _ in range(3000))
         self.assertGreater(hr, 200)
         self.assertEqual(never, 0)
 
     def test_double_clears_the_bases(self):
         play = resolve_baserunning(BattedBall("pull", "line", "hard", 0.8, "deep"),
-                                   _fd("二塁打"), [True, True, True], 0, _batter(),
+                                   _fd("Double"), [True, True, True], 0, _batter(),
                                    random.Random(0))
         self.assertEqual(play["runs"], 3)
         self.assertEqual(play["new_runners"], [False, True, False])
@@ -287,43 +290,43 @@ class BaserunningTests(unittest.TestCase):
 
     def test_error_advances_batter_and_runners_like_a_single(self):
         play = resolve_baserunning(BattedBall("center", "ground", "hard", 0.8, "infield"),
-                                   _fd("エラー", "SS"), [False, False, True], 0, _batter(),
+                                   _fd("Error", "SS"), [False, False, True], 0, _batter(),
                                    random.Random(0))
-        self.assertEqual(play["batter_result"], "エラー")
-        self.assertEqual(play["label"], "エラー")
+        self.assertEqual(play["batter_result"], "Error")
+        self.assertEqual(play["label"], "Error")
         self.assertEqual(play["outs_added"], 0)
-        self.assertTrue(play["new_runners"][0])          # 打者は一塁へ
-        self.assertEqual(play["runs"], 1)                # 三塁走者は生還
+        self.assertTrue(play["new_runners"][0])          # the batter reaches first
+        self.assertEqual(play["runs"], 1)                # the runner from third scores
 
     def test_double_play_removes_first_runner_and_adds_two_outs(self):
         bb = BattedBall("center", "ground", "medium", 0.5, "infield")
         got_dp = 0
         for s in range(400):
-            play = resolve_baserunning(bb, _fd("アウト", "SS"), [True, False, False], 0,
+            play = resolve_baserunning(bb, _fd("Out", "SS"), [True, False, False], 0,
                                        _batter(coarse="average"), random.Random(s))
             if play["outs_added"] == 2:
                 got_dp += 1
                 self.assertFalse(play["new_runners"][0])
-                self.assertEqual(play["label"], "併殺")
-        self.assertGreater(got_dp, 100)   # そこそこ起きる
+                self.assertEqual(play["label"], "Double play")
+        self.assertGreater(got_dp, 100)   # it happens a decent amount
 
     def test_sac_fly_scores_from_third(self):
         bb = BattedBall("center", "fly", "medium", 0.5, "deep")
         runs = 0
         for s in range(300):
-            play = resolve_baserunning(bb, _fd("アウト", "CF", air_out=True),
+            play = resolve_baserunning(bb, _fd("Out", "CF", air_out=True),
                                        [False, False, True], 0, _batter(), random.Random(s))
             runs += play["runs"]
             if play["runs"]:
-                self.assertEqual(play["label"], "犠飛")
+                self.assertEqual(play["label"], "Sac fly")
                 self.assertEqual(play["outs_added"], 1)
         self.assertGreater(runs, 150)
 
     def test_no_runs_when_play_makes_third_out(self):
-        # 2 アウトから併殺 → 3 アウト目成立、得点は数えない
+        # A double play with 2 outs -> the 3rd out stands, no run counts
         bb = BattedBall("center", "ground", "medium", 0.5, "infield")
         for s in range(200):
-            play = resolve_baserunning(bb, _fd("アウト", "SS"), [True, False, True], 2,
+            play = resolve_baserunning(bb, _fd("Out", "SS"), [True, False, True], 2,
                                        _batter(), random.Random(s))
             if play["outs_added"] >= 1:
                 self.assertEqual(play["runs"], 0)
@@ -332,13 +335,13 @@ class BaserunningTests(unittest.TestCase):
         def score_rate(ball_type):
             bb = BattedBall("center", ball_type, "medium", 0.5,
                             "shallow" if ball_type != "ground" else "infield")
-            return sum(resolve_baserunning(bb, _fd("単打", "CF"), [False, True, False], 1,
+            return sum(resolve_baserunning(bb, _fd("Single", "CF"), [False, True, False], 1,
                                            _batter(), random.Random(s))["runs"]
                        for s in range(500)) / 500
         self.assertGreater(score_rate("line"), score_rate("ground"))
 
 
-# ---------- 試合状況の生成 ----------
+# ---------- Generating the game situation ----------
 class SituationTests(unittest.TestCase):
     def test_random_situation_valid(self):
         rng = random.Random(0)
@@ -362,7 +365,7 @@ class SituationTests(unittest.TestCase):
         self.assertGreater(close, blowout * 2)
 
     def test_lineup_wraps_like_real_baseball(self):
-        lu = Lineup(build_sample_lineup(random.Random(0)), index=6)   # 7番から
+        lu = Lineup(build_sample_lineup(random.Random(0)), index=6)   # starting from the 7th hitter
         spots = []
         for _ in range(11):
             spots.append(lu.spot_number())
@@ -372,9 +375,9 @@ class SituationTests(unittest.TestCase):
     def test_nine_distinct_batters(self):
         lu = build_sample_lineup(random.Random(0))
         self.assertEqual(len(lu), 9)
-        # 打者タイプがちゃんとばらけている
+        # the batter types are really spread out
         self.assertGreaterEqual(len({b.coarse_type for b in lu}), 4)
-        # 出塁型と長打型で discipline がはっきり違う
+        # an on-base type and a power type have clearly different discipline
         self.assertGreater(lu[7].discipline, lu[4].discipline)
 
     def _defending(self, half, our, opp, start_our=None, start_opp=None):
@@ -387,22 +390,22 @@ class SituationTests(unittest.TestCase):
         return st
 
     def test_walkoff_ends_the_half_inning_immediately(self):
-        """相手が裏の攻撃で勝ち越したら、3 アウトを待たずに試合終了。"""
-        st = self._defending("bottom", our=3, opp=2)     # 1点リードで守っている
+        """If the opponent takes the lead in the bottom half, the game ends without waiting for the 3rd out."""
+        st = self._defending("bottom", our=3, opp=2)     # defending with a 1-run lead
         self.assertFalse(st.is_over())
-        st._score_runs(2)                                # 相手が2点 → 3-4 で勝ち越される
+        st._score_runs(2)                                # the opponent scores 2 -> 3-4, they take the lead
         self.assertTrue(st.is_walkoff())
         self.assertTrue(st.is_over())
         self.assertEqual(st.outs, 0)
 
     def test_no_walkoff_in_the_top_half(self):
-        """表の攻撃(相手が先攻)は勝ち越されても試合は続く。"""
+        """In the top half (the opponent bats first) the game goes on even if they take the lead."""
         st = self._defending("top", our=3, opp=2)
         st._score_runs(5)
         self.assertFalse(st.is_over())
 
     def test_no_walkoff_when_already_behind_at_the_start(self):
-        """開始時点で既にビハインドなら『逆転』ではないので短絡終了しない。"""
+        """If we are already behind at the start it is not a "comeback", so the game does not end early."""
         st = self._defending("bottom", our=2, opp=3)
         self.assertFalse(st.is_over())
 
@@ -412,8 +415,8 @@ class SituationTests(unittest.TestCase):
         self.assertTrue(st.is_over())
 
     def test_same_seed_reproduces_the_defense_too(self):
-        """--seed の再現性: 守備 7 人の能力・弱点も含めて完全に同じ場面になる
-        （make_default_defense に rng を渡し忘れると global random に乗って崩れる）。"""
+        """Reproducibility of --seed: the 7 fielders' abilities and weaknesses are also exactly the same scene
+        (forgetting to pass rng to make_default_defense would use the global random and break this)."""
         import random as _r
 
         def fielder_stats(seed):
@@ -421,7 +424,7 @@ class SituationTests(unittest.TestCase):
             return [(f.name, f.range, f.hands, f.arm, f.reaction, f.speed)
                     for f in st.defense.fielders]
 
-        _r.seed()                                  # global random をかき混ぜる
+        _r.seed()                                  # stir the global random
         a = fielder_stats(31337)
         _r.seed()
         b = fielder_stats(31337)
@@ -429,7 +432,7 @@ class SituationTests(unittest.TestCase):
         self.assertNotEqual(a, fielder_stats(31338))
 
 
-# ---------- 投手の実投球 (Pitch Execution) ----------
+# ---------- The pitcher's actual pitch (Pitch Execution) ----------
 class ExecutionTests(unittest.TestCase):
     def test_can_hit_and_miss_spot(self):
         p = build_sample_pitcher(random.Random(0))
@@ -458,7 +461,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertGreater(miss_rate(wild), miss_rate(sharp) + 0.03)
 
     def test_return_tempo_helps_execution(self):
-        """捕手の返球リズム(tempo)が良いほど失投が減り球威が上がる。0.0 は無影響。"""
+        """The better the catcher's return tempo, the fewer missed pitches and the more stuff. 0.0 has no effect."""
         p = Pitcher(control=55, command=55, stuff=55, velocity=55, repertoire=["four_seam"])
 
         def stats(tempo, n=6000):
@@ -472,14 +475,14 @@ class ExecutionTests(unittest.TestCase):
         bad_miss, bad_q = stats(-0.25)
         neu_miss, neu_q = stats(0.0)
         good_miss, good_q = stats(0.25)
-        self.assertGreater(bad_miss, good_miss)          # 悪いテンポは失投が増える
-        self.assertGreater(good_q, bad_q)               # 良いテンポは球威が上がる
+        self.assertGreater(bad_miss, good_miss)          # a bad tempo means more missed pitches
+        self.assertGreater(good_q, bad_q)               # a good tempo means more stuff
         self.assertAlmostEqual(neu_q, (bad_q + good_q) / 2, delta=0.02)
 
 
-# ---------- 顔文字つき反応 ----------
+# ---------- Reactions with faces ----------
 class ReactionTests(unittest.TestCase):
-    def _mk_outcome(self, timing="late", swung=True, in_zone=True, result="ファウル"):
+    def _mk_outcome(self, timing="late", swung=True, in_zone=True, result="Foul"):
         return {"timing": timing, "swung": swung, "in_zone": in_zone, "result": result}
 
     def test_returns_structured_dict(self):
@@ -487,7 +490,7 @@ class ReactionTests(unittest.TestCase):
         self.assertEqual(set(r), {"face", "ascii_face", "text", "category", "kind"})
         self.assertIn(r["category"], FACE_CATEGORIES)
         self.assertTrue(r["face"])
-        self.assertTrue(r["ascii_face"].isascii())      # ASCII フォールバックは純ASCII
+        self.assertTrue(r["ascii_face"].isascii())      # the ASCII fallback is pure ASCII
 
     def test_face_not_deterministic_for_state(self):
         rng = random.Random(0)
@@ -496,22 +499,22 @@ class ReactionTests(unittest.TestCase):
         for _ in range(400):
             r = describe_reaction("four_seam", "in_mid", oc, rng)
             faces.add(r["face"]); cats.add(r["category"]); kinds.add(r["kind"])
-        self.assertGreaterEqual(len(faces), 4)           # 同じ状態でも顔文字は複数
-        self.assertGreaterEqual(len(cats), 3)            # ミスリード/ぼかしで散る
+        self.assertGreaterEqual(len(faces), 4)           # several faces even for the same state
+        self.assertGreaterEqual(len(cats), 3)            # they scatter via misleading / blurring
         self.assertEqual(kinds, {"reveal", "mislead", "ambiguous"})
 
     def test_ascii_fallback_uses_ascii_face(self):
         r = describe_reaction("slider", "mid_lo", self._mk_outcome(), random.Random(1))
         ascii_block = render_reaction_block(r, ascii_only=True)
         kaomoji_block = render_reaction_block(r, ascii_only=False)
-        # ASCII 版は顔文字の行が純 ASCII / 顔文字版は kaomoji を含む
+        # the ASCII version's face line is pure ASCII / the face version contains a kaomoji
         face_line = ascii_block.splitlines()[1]
         self.assertTrue(face_line.isascii())
         self.assertIn(r["ascii_face"], ascii_block)
         self.assertIn(r["face"], kaomoji_block)
 
 
-# ---------- 打席をまたぐ配球バレ(打者の記憶) ----------
+# ---------- Pitch-sequence leaks across at-bats (the batter's memory) ----------
 class BatterMemoryTests(unittest.TestCase):
     def test_batter_memory_is_none_until_recorded(self):
         st = _state(5)
@@ -521,9 +524,9 @@ class BatterMemoryTests(unittest.TestCase):
         st = _state(5)
         batter = st.batter
         for _ in range(6):
-            st.history.add(pitch_type="four_seam", course="mid_mid", result="ストライク",
+            st.history.add(pitch_type="four_seam", course="mid_mid", result="Strike",
                            timing="on_time", swung=False, family="fastball", in_zone=True)
-        for _ in range(9):                    # 打者一巡させて同じ打者に戻す
+        for _ in range(9):                    # go through the whole order and come back to the same batter
             st.next_batter()
         self.assertIs(st.batter, batter)
         mem = st.batter_memory(batter)
@@ -546,7 +549,7 @@ class BatterMemoryTests(unittest.TestCase):
         self.assertLess(leans_offspeed, without)
 
 
-# ---------- 配球セットアップ / 判断の質 ----------
+# ---------- Sequencing setup / decision quality ----------
 class StrategyTests(unittest.TestCase):
     def _seq(self, records, call):
         state = _state(3)
@@ -561,48 +564,48 @@ class StrategyTests(unittest.TestCase):
 
     def test_sequencing_is_conditional_not_flat(self):
         call = {"pitch_type": "four_seam", "target_course": "mid_hi", "intent": "chase"}
-        low_before = [{"pitch_type": "four_seam", "course": "mid_lo", "result": "ストライク",
+        low_before = [{"pitch_type": "four_seam", "course": "mid_lo", "result": "Strike",
                        "timing": "on_time", "swung": False, "actual_course": "mid_lo",
                        "velocity": 95, "family": "fastball", "in_zone": True}]
         with_ladder = self._seq(low_before, call)
         without = self._seq([], call)
         self.assertNotEqual(with_ladder["notes"], without["notes"])
-        self.assertLessEqual(abs(with_ladder["whiff_adj"]), 0.15)   # 固定大ボーナスにしない
+        self.assertLessEqual(abs(with_ladder["whiff_adj"]), 0.15)   # not a fixed big bonus
 
     def test_repeating_same_pitch_hurts(self):
         call = {"pitch_type": "slider", "target_course": "out_mid", "intent": "chase"}
-        repeated = [{"pitch_type": "slider", "course": "out_mid", "result": "ボール",
+        repeated = [{"pitch_type": "slider", "course": "out_mid", "result": "Ball",
                      "timing": "on_time", "swung": False, "actual_course": "out_mid",
                      "velocity": 85, "family": "breaking", "in_zone": False}]
         seq = self._seq(repeated, call)
         self.assertLess(seq["dq_seq"], 0)
-        self.assertLess(seq["contact_adj"] * -1, 0.001 + 0)  # contact_adj は + 方向(打たれやすく)
+        self.assertLess(seq["contact_adj"] * -1, 0.001 + 0)  # contact_adj goes in the + direction (easier to hit)
 
     def test_analysis_separates_result_and_judgment(self):
         log = [
-            {"pitch_number": 1, "call_label": "a", "result": "単打",
+            {"pitch_number": 1, "call_label": "a", "result": "Single",
              "decision_quality": 0.5, "sequence_label": "x",
              "guess": {"class_strength": 0.6}, "fooled_guess": True,
              "alignment_helped": False, "missed": False,
              "outcome_flags": {"swung": True, "in_zone": True}},
-            {"pitch_number": 2, "call_label": "b", "result": "アウト",
+            {"pitch_number": 2, "call_label": "b", "result": "Out",
              "decision_quality": -0.5, "sequence_label": "y",
              "guess": {"class_strength": 0.6}, "fooled_guess": False,
              "alignment_helped": False, "missed": False,
              "outcome_flags": {"swung": True, "in_zone": True}},
         ]
         a = build_analysis(log)
-        self.assertEqual(len(a["unlucky"]), 1)   # 良い判断・悪い結果
-        self.assertEqual(len(a["lucky"]), 1)     # 悪い判断・良い結果
+        self.assertEqual(len(a["unlucky"]), 1)   # good decision, bad result
+        self.assertEqual(len(a["lucky"]), 1)     # bad decision, good result
 
 
-# ---------- judge 結合 / 内部指標の秘匿 ----------
+# ---------- judge integration / hiding internal metrics ----------
 class IntegrationTests(unittest.TestCase):
     def test_batted_ball_only_on_fair(self):
         state = _state(4)
         rng = random.Random(0)
         seen = set()
-        fair = {"アウト", "エラー", "単打", "二塁打", "三塁打", "本塁打"}
+        fair = {"Out", "Error", "Single", "Double", "Triple", "Home run"}
         for _ in range(3000):
             o = judge_pitch(state, "four_seam", "mid_mid", rng, intent="strike")
             seen.add(o["result"])
@@ -612,8 +615,8 @@ class IntegrationTests(unittest.TestCase):
                 self.assertIsNotNone(o["play"])
             else:
                 self.assertIsNone(o["batted_ball"])
-        self.assertIn("アウト", seen)
-        self.assertTrue(seen & {"単打", "二塁打", "三塁打", "本塁打"})
+        self.assertIn("Out", seen)
+        self.assertTrue(seen & {"Single", "Double", "Triple", "Home run"})
 
     def test_decision_quality_hidden_from_live_ui(self):
         state = _state(5)
@@ -628,24 +631,24 @@ class IntegrationTests(unittest.TestCase):
         dq = str(last["_analysis"]["decision_quality"])
         for text in (dash, play):
             self.assertNotIn("decision", text.lower())
-            self.assertNotIn("判断の質", text)
+            self.assertNotIn("Decision quality", text)
             self.assertNotIn(dq, text)
 
     def test_postgame_report_uses_localized_pitch_and_course_names(self):
-        """ふり返り画面(CLI/Web共通)に "sinker/mid_mid" のような内部キーの
-        生の文字列ではなく、日本語の球種名・コース短縮表記が出ること。
-        call_label(stats.py が解析する内部表記)自体は変えない。
+        """The review screen (shared by CLI / Web) must show localized pitch names and short course names,
+        not the raw internal keys like "sinker/mid_mid".
+        The call_label itself (the internal notation stats.py parses) must not change.
         """
         state = _state(11)
         rng = random.Random(11)
         while not state.is_over():
             resolve_one_pitch(state, "sinker", "mid_mid", "strike", rng)
         entry = state.pitch_log[0]
-        self.assertEqual(entry["call_label"], f"sinker/mid_mid({PITCH_INTENTS['strike'].split('（')[0]})")
-        self.assertIn(pitch_name("sinker"), entry["call_label_ja"])
-        self.assertIn(COURSE_SHORT["mid_mid"], entry["call_label_ja"])
-        self.assertNotIn("sinker", entry["call_label_ja"])
-        self.assertNotIn("mid_mid", entry["call_label_ja"])
+        self.assertEqual(entry["call_label"], f"sinker/mid_mid({intent_label('strike')})")
+        self.assertIn(pitch_name("sinker"), entry["call_label_text"])
+        self.assertIn(COURSE_SHORT["mid_mid"], entry["call_label_text"])
+        self.assertNotIn("sinker", entry["call_label_text"])
+        self.assertNotIn("mid_mid", entry["call_label_text"])
 
     def test_reaction_does_not_print_hidden_pitch_key(self):
         state = _state(6)
@@ -668,12 +671,12 @@ class IntegrationTests(unittest.TestCase):
             build_analysis(state.pitch_log)
         run_txt, status = state.result_summary()
         self.assertTrue(run_txt and status)
-        # 3 アウト、またはサヨナラで決着していること
+        # it ended with 3 outs, or with a walk-off
         self.assertTrue(state.outs == 3 or state.is_walkoff())
 
     def test_same_seed_gives_same_engine_result_cli_and_web_share(self):
-        """CLI(main.py)・Web(webapp.py)はどちらも engine.resolve_one_pitch() を
-        直接呼ぶだけなので、この関数自体が seed で再現できれば両方とも再現できる。
+        """The CLI (main.py) and the Web (webapp.py) both just call engine.resolve_one_pitch()
+        directly, so if this function itself is reproducible by seed, both are reproducible.
         """
         def play(seed):
             rng = random.Random(seed)
@@ -692,15 +695,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotEqual(play(4242), play(4243))
 
     def test_defense_swap_changes_who_fields_the_ball(self):
-        """Swap後は実際の判定(fielding)にも新しい配置がそのまま使われる。"""
+        """After a swap, the new arrangement is used as is in the actual judging (fielding) too."""
         state = _state(8)
         before = state.defense.fielder_at("SS")
         other = state.defense.fielder_at("1B")
         state.defense.swap("SS", "1B")
         self.assertIs(state.defense.fielder_at("SS"), other)
         self.assertIs(state.defense.fielder_at("1B"), before)
-        # 判定チェーン(fielding.resolve_batted_ball)はDefenseを直接参照するので、
-        # 同じオブジェクトを見ている以上、Swap後の配置がそのまま使われる
+        # The judging chain (fielding.resolve_batted_ball) refers to Defense directly,
+        # so as long as it looks at the same object, the post-swap arrangement is used as is
         bb = BattedBall("center", "ground", "medium", 0.5, "infield")
         fd = resolve_batted_ball(bb, state.defense, state.batter, random.Random(0))
         if fd["position"] in ("SS", "1B"):
@@ -724,16 +727,16 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("avg_quality", report["pitch_execution"])
         self.assertIn("final_ede", report["defense"])
         a = build_analysis(state.pitch_log)
-        # 「結果」だけの report と「判断」だけの analysis は別々の入れ物になっている
+        # the "result"-only report and the "decision"-only analysis are separate containers
         self.assertNotIn("decision_quality", report)
         self.assertIn("avg_decision_quality", a)
 
 
-# ---------- 改良B/C/D/E ----------
+# ---------- Improvements B/C/D/E ----------
 class BCDETests(unittest.TestCase):
     def test_lineup_from_records_ignores_unknown_keys(self):
         rec = dict(name="X", bats="R", coarse_type="power", power=0.8,
-                   _note="これは無視される", team="Fake")
+                   _note="This is ignored", team="Fake")
         lu = Lineup.from_records([rec] * 9)
         self.assertEqual(len(lu.batters), 9)
         self.assertEqual(lu.batters[0].name, "X")
@@ -747,9 +750,9 @@ class BCDETests(unittest.TestCase):
         self.assertGreaterEqual(len({b.coarse_type for b in lu.batters}), 4)
 
     def test_intro_shows_hints_only_when_requested(self):
-        self.assertNotIn("初心者向けヒント", render_intro())
-        self.assertNotIn("初心者向けヒント", render_intro(hints=False))
-        self.assertIn("初心者向けヒント", render_intro(hints=True))
+        self.assertNotIn("Beginner hints", render_intro())
+        self.assertNotIn("Beginner hints", render_intro(hints=False))
+        self.assertIn("Beginner hints", render_intro(hints=True))
 
     def test_custom_lineup_is_used(self):
         batters = build_sample_lineup(random.Random(0))
@@ -763,7 +766,7 @@ class BCDETests(unittest.TestCase):
             rng = random.Random(3)
             hits = 0
             for _ in range(4000):
-                p.pitches_thrown = fixed_count      # 毎回同じ「球数」に固定して比較
+                p.pitches_thrown = fixed_count      # pin the same "pitch count" each time to compare
                 hits += p.execute_pitch("four_seam", "mid_lo", "freeze", rng)["missed"]
             return hits / 4000
 
@@ -777,7 +780,7 @@ class BCDETests(unittest.TestCase):
         graded = grade_reads(st.reads, st.lineup.batters)
         self.assertEqual(graded["graded"], 2)
         truth_wait = "fastball" if b.guess_bias >= 0.5 else "offspeed"
-        expected_correct = (truth_wait == "fastball") + 1   # weak は必ず当たり
+        expected_correct = (truth_wait == "fastball") + 1   # weak is always right
         self.assertEqual(graded["correct"], expected_correct)
 
     def test_spray_accumulates_only_on_fair(self):
@@ -785,7 +788,7 @@ class BCDETests(unittest.TestCase):
         rng = random.Random(5)
         while not st.is_over():
             _drive_pitch(st, rng, list(PITCH_INTENTS), list(COURSES))
-        self.assertTrue(all(s["result"] in ("アウト", "単打", "二塁打", "三塁打", "本塁打")
+        self.assertTrue(all(s["result"] in ("Out", "Single", "Double", "Triple", "Home run")
                             for s in st.spray))
 
     def test_dashboard_and_analysis_render_without_error(self):
@@ -801,7 +804,7 @@ class BCDETests(unittest.TestCase):
             self.assertTrue(text)
 
 
-# ---------- MLB実データ Adapter ----------
+# ---------- MLB real-data Adapter ----------
 class MLBDataAdapterTests(unittest.TestCase):
     def test_normalize_maps_public_stats_directly(self):
         raw = {"name": "Test Player", "bats": "L", "avg": 0.300, "obp": 0.400, "slg": 0.550,
@@ -814,7 +817,7 @@ class MLBDataAdapterTests(unittest.TestCase):
         self.assertEqual(rec["obp"], 0.400)
         self.assertEqual(rec["slg"], 0.550)
         self.assertEqual(rec["speed"], 60)
-        # Batter が受け取れるキーがすべて揃っている
+        # every key a Batter accepts is present
         b = Batter(**rec)
         self.assertEqual(b.name, "Test Player")
 
@@ -822,23 +825,23 @@ class MLBDataAdapterTests(unittest.TestCase):
         raw = {"name": "Same Player", "bats": "R", "avg": 0.270, "obp": 0.330, "slg": 0.430}
         a = mlb_data_adapter.normalize_batter_record(raw)
         b = mlb_data_adapter.normalize_batter_record(raw)
-        self.assertEqual(a, b)   # 同じ選手なら hot_course 等の「山勘」も毎回同じ
+        self.assertEqual(a, b)   # the same player gets the same hunch (hot_course etc.) every time
 
     def test_normalize_uses_real_zone_profile_when_given(self):
-        """zone_profile(実データのゾーン別成績)を渡したら、山勘ではなく
-        そのデータから hot_course/weak_course を決める。
+        """If zone_profile (real per-zone results) is passed, hot_course/weak_course come from
+        that data, not from a hunch.
         """
         raw = {"name": "Zone Player", "bats": "R", "avg": 0.280, "obp": 0.350, "slg": 0.450,
               "zone_profile": {"out_lo": 0.120, "in_hi": 0.480, "mid_mid": 0.300}}
         rec = mlb_data_adapter.normalize_batter_record(raw)
-        self.assertEqual(rec["hot_course"], "in_hi")     # 一番数値が高い
-        self.assertEqual(rec["weak_course"], "out_lo")   # 一番数値が低い
+        self.assertEqual(rec["hot_course"], "in_hi")     # the highest value
+        self.assertEqual(rec["weak_course"], "out_lo")   # the lowest value
 
     def test_normalize_ignores_unknown_keys_and_needs_at_least_two_zones(self):
         raw = {"name": "Sparse Zone Player", "bats": "R", "avg": 0.260, "obp": 0.320, "slg": 0.400,
               "zone_profile": {"not_a_course": 0.9, "in_hi": 0.5}}
         rec = mlb_data_adapter.normalize_batter_record(raw)
-        # 有効なコースが1つしかないので、山勘にフォールバックする
+        # only one valid location, so it falls back to the hunch
         fallback = mlb_data_adapter.normalize_batter_record(
             {"name": "Sparse Zone Player", "bats": "R", "avg": 0.260, "obp": 0.320, "slg": 0.400})
         self.assertEqual(rec["hot_course"], fallback["hot_course"])
@@ -860,13 +863,13 @@ class MLBDataAdapterTests(unittest.TestCase):
         lu = mlb_data_adapter.load_fixture_lineup()
         self.assertEqual(len(lu.batters), 9)
         names = {b.name for b in lu.batters}
-        self.assertEqual(len(names), 9)             # 全員別人
+        self.assertEqual(len(names), 9)             # all different people
         self.assertTrue(all(b.bats in ("R", "L") for b in lu.batters))
         self.assertTrue(all(0.150 <= b.avg <= 0.400 for b in lu.batters))
 
     def test_seeded_hot_and_weak_course_are_never_the_same_cell(self):
-        """zone_profile が無いときの「山勘」で、得意コースと苦手コースが
-        同じセルになってしまわないこと(2 回の抽選が衝突するケースを潰す)。"""
+        """With the "hunch" used when there is no zone_profile, the hot location and the weak location
+        must not end up in the same cell (this removes the case where the 2 draws collide)."""
         for b in mlb_data_adapter.load_fixture_lineup().batters:
             self.assertNotEqual(b.hot_course, b.weak_course, b.name)
         for nm in ("Mookie Betts", "Aaron Judge", "Kyle Tucker", "AAA", "sample-x"):
@@ -877,7 +880,7 @@ class MLBDataAdapterTests(unittest.TestCase):
             self.assertIn(rec["weak_course"], COURSES)
 
     def test_fixture_lineup_plays_through_the_engine(self):
-        """アダプタが作った Batter が Game Engine を1試合分きちんと通ること。"""
+        """A Batter made by the adapter runs through the Game Engine for a whole game."""
         lu = mlb_data_adapter.load_fixture_lineup()
         rng = random.Random(21)
         state = generate_random_situation(rng, lineup_batters=lu.batters)
@@ -895,9 +898,9 @@ class MLBDataAdapterTests(unittest.TestCase):
         build_postgame_report(state)
 
     def test_live_fetch_failure_falls_back_to_fixture_without_crashing(self):
-        """API 取得が失敗したら、必ずサンプルデータへフォールバックしてゲームは落ちない。
+        """If the API fetch fails, it always falls back to the sample data and the game does not crash.
 
-        実ネットワークの有無に依存しないよう、fetch を強制的に失敗させて検証する。
+        To not depend on a real network, the fetch is forced to fail for the check.
         """
         with mock.patch.object(mlb_data_adapter, "fetch_live_roster_raw",
                                side_effect=RuntimeError("boom")):
@@ -907,7 +910,7 @@ class MLBDataAdapterTests(unittest.TestCase):
         self.assertEqual(len(lineup.batters), 9)
 
     def test_live_fetch_success_path_uses_live_source(self):
-        """fetch が成功すれば source は "live" になる(ネットワークに依存させない)。"""
+        """If the fetch succeeds, source is "live" (without depending on the network)."""
         fake_raw = [{"name": f"Live Player {i}", "bats": "R" if i % 2 else "L",
                      "avg": 0.270, "obp": 0.340, "slg": 0.440} for i in range(9)]
         with mock.patch.object(mlb_data_adapter, "fetch_live_roster_raw",
@@ -917,14 +920,14 @@ class MLBDataAdapterTests(unittest.TestCase):
         self.assertEqual(len(lineup.batters), 9)
 
     def test_fetch_live_roster_raw_raises_a_clear_error_when_unreachable(self):
-        """接続不能なら RuntimeError で理由を包んで投げる(実ネットワークに触らない)。"""
+        """If it cannot connect, it raises RuntimeError wrapping the reason (without touching a real network)."""
         with mock.patch("mlb_data_adapter.urllib.request.urlopen",
                         side_effect=urllib.error.URLError("unreachable")):
             with self.assertRaises(RuntimeError):
                 mlb_data_adapter.fetch_live_roster_raw(147, 2024)
 
 
-# ---------- 追加ゲーム性(敬遠 / 継投 / 盗塁) ----------
+# ---------- Extra gameplay (intentional walk / pitching change / steals) ----------
 class GameplayExtrasTests(unittest.TestCase):
     def test_intentional_walk_advances_batter_and_puts_runner_on(self):
         st = _state(1)
@@ -933,7 +936,7 @@ class GameplayExtrasTests(unittest.TestCase):
         st.intentional_walk()
         self.assertTrue(st.runners[0])
         self.assertNotEqual(st.lineup.spot_number(), spot_before)
-        self.assertIn("敬遠", st.events)
+        self.assertIn("Intentional walk", st.events)
 
     def test_change_pitcher_resets_pitch_count(self):
         st = _state(2)
@@ -942,7 +945,7 @@ class GameplayExtrasTests(unittest.TestCase):
         self.assertTrue(st.can_change_pitcher())
         self.assertIsNotNone(st.change_pitcher())
         self.assertIsNot(st.pitcher, old)
-        self.assertEqual(st.pitcher.pitches_thrown, 0)   # 新しい投手はフレッシュ
+        self.assertEqual(st.pitcher.pitches_thrown, 0)   # the new pitcher is fresh
         self.assertEqual(st.pitching_changes, 1)
 
     def test_can_change_pitcher_as_many_times_as_bullpen_allows(self):
@@ -951,9 +954,9 @@ class GameplayExtrasTests(unittest.TestCase):
                      build_sample_pitcher(random.Random(2), name="B")]
         self.assertTrue(st.can_change_pitcher())
         self.assertEqual(st.change_pitcher().name, "A")
-        self.assertTrue(st.can_change_pitcher())          # ブルペンにまだ1人いる
+        self.assertTrue(st.can_change_pitcher())          # there is still one more in the bullpen
         self.assertEqual(st.change_pitcher().name, "B")
-        self.assertFalse(st.can_change_pitcher())         # ブルペンが空
+        self.assertFalse(st.can_change_pitcher())         # the bullpen is empty
         self.assertIsNone(st.change_pitcher())
 
     def test_change_pitcher_by_index_picks_the_chosen_reliever(self):
@@ -967,28 +970,28 @@ class GameplayExtrasTests(unittest.TestCase):
 
     def test_good_call_streak_builds_and_resets(self):
         st = _state(4)
-        # 甘めのしきい値以上なら連続が伸びる
-        self.assertTrue(st.register_call_quality(0.20, "ストライク"))
-        self.assertTrue(st.register_call_quality(0.11, "空振り"))
+        # at or above the lenient threshold the streak grows
+        self.assertTrue(st.register_call_quality(0.20, "Strike"))
+        self.assertTrue(st.register_call_quality(0.11, "Whiff"))
         self.assertEqual(st.good_call_streak, 2)
-        # 痛打なら質が良くても途切れる
-        self.assertFalse(st.register_call_quality(0.50, "単打"))
+        # a hard hit breaks it even if the quality was good
+        self.assertFalse(st.register_call_quality(0.50, "Single"))
         self.assertEqual(st.good_call_streak, 0)
-        # しきい値未満でも途切れる
-        st.register_call_quality(0.20, "ストライク")
-        self.assertFalse(st.register_call_quality(0.02, "ボール"))
+        # below the threshold it breaks too
+        st.register_call_quality(0.20, "Strike")
+        self.assertFalse(st.register_call_quality(0.02, "Ball"))
         self.assertEqual(st.good_call_streak, 0)
 
     def test_good_call_bonus_is_zero_until_two_in_a_row_then_capped(self):
         st = _state(5)
         self.assertEqual(st.good_call_bonus(), 0.0)
-        st.register_call_quality(0.20, "ストライク")
-        self.assertEqual(st.good_call_bonus(), 0.0)          # 1 球目はまだ乗らない
-        st.register_call_quality(0.20, "空振り")
-        self.assertGreater(st.good_call_bonus(), 0.0)         # 2 球連続で少し乗る
+        st.register_call_quality(0.20, "Strike")
+        self.assertEqual(st.good_call_bonus(), 0.0)          # nothing yet on the 1st pitch
+        st.register_call_quality(0.20, "Whiff")
+        self.assertGreater(st.good_call_bonus(), 0.0)         # 2 in a row gives a small bonus
         for _ in range(10):
-            st.register_call_quality(0.20, "ストライク")
-        self.assertLessEqual(st.good_call_bonus(), 0.15)      # 甘めでも上限あり
+            st.register_call_quality(0.20, "Strike")
+        self.assertLessEqual(st.good_call_bonus(), 0.15)      # even if lenient there is a cap
 
     def test_engine_marks_good_call_on_outcome(self):
         st = _state(11)
@@ -1007,9 +1010,9 @@ class GameplayExtrasTests(unittest.TestCase):
     def test_steal_needs_runner_on_first_only(self):
         st = _state(3)
         rng = random.Random(0)
-        st.runners = [False, True, False]               # 二塁だけ → 盗塁なし
+        st.runners = [False, True, False]               # second only -> no steal
         self.assertIsNone(st.resolve_steal("fastball", rng))
-        st.runners = [True, True, False]                 # 二塁が埋まっている → なし
+        st.runners = [True, True, False]                 # second is occupied -> none
         self.assertIsNone(st.resolve_steal("fastball", rng))
 
     def test_steal_resolves_to_sb_or_cs(self):
@@ -1019,10 +1022,10 @@ class GameplayExtrasTests(unittest.TestCase):
             st.runners = [True, False, False]
             st.outs = 0
             r = st.resolve_steal("changeup", random.Random(s))
-            if r == "盗塁成功（走者二塁へ）":
+            if r == "Stolen base (runner to second)":
                 sb += 1
                 self.assertEqual(st.runners, [False, True, False])
-            elif r == "盗塁を刺した！":
+            elif r == "Caught stealing!":
                 cs += 1
                 self.assertFalse(st.runners[0])
                 self.assertEqual(st.outs, 1)
@@ -1036,7 +1039,7 @@ class GameplayExtrasTests(unittest.TestCase):
                 st = _state(s % 20)
                 st.runners, st.outs = [True, False, False], 0
                 r = st.resolve_steal("changeup", random.Random(s), throw_bonus=throw_bonus)
-                caught += (r == "盗塁を刺した！")
+                caught += (r == "Caught stealing!")
             return caught / 600
         self.assertGreater(cs_rate(0.25), cs_rate(-0.25) + 0.15)
 
@@ -1050,13 +1053,13 @@ class GameplayExtrasTests(unittest.TestCase):
                 msg = st.resolve_block(block_bonus, random.Random(s))
                 if msg:
                     passed += 1
-                    self.assertEqual(st.runners, [False, True, False])   # 1つずつ進む
-                    self.assertEqual(st.opp_score, before + 1)           # 三塁走者は生還
+                    self.assertEqual(st.runners, [False, True, False])   # one base at a time
+                    self.assertEqual(st.opp_score, before + 1)           # the runner from third scores
             return passed / 600
         self.assertGreater(pb_rate(-0.25), pb_rate(0.25) + 0.2)
 
     def test_qte_disabled_in_non_tty_returns_neutral(self):
-        self.assertFalse(qte_enabled())              # テストは端末ではない
+        self.assertFalse(qte_enabled())              # tests are not a terminal
         self.assertEqual(catcher_throw(random.Random(0)), 0.0)
         self.assertEqual(catcher_block("mid", rng=random.Random(0)), 0.0)
         self.assertEqual(catcher_change_signs(random.Random(0)), 0.0)
@@ -1065,11 +1068,11 @@ class GameplayExtrasTests(unittest.TestCase):
         import qte
         orig = qte._read
         try:
-            qte._read = lambda: "3"                  # 3 = 外
-            with redirect_stdout(io.StringIO()):     # direction_check の演出 print を飲む
+            qte._read = lambda: "3"                  # 3 = out
+            with redirect_stdout(io.StringIO()):     # swallow direction_check's staging print
                 self.assertEqual(qte.direction_check("out"), "perfect")
-                self.assertEqual(qte.direction_check("mid"), "good")    # 隣
-                self.assertEqual(qte.direction_check("in"), "miss")     # 逆
+                self.assertEqual(qte.direction_check("mid"), "good")    # adjacent
+                self.assertEqual(qte.direction_check("in"), "miss")     # opposite
         finally:
             qte._read = orig
 
@@ -1086,16 +1089,16 @@ class GameplayExtrasTests(unittest.TestCase):
 
     def test_steal_chance_gate(self):
         st = _state(1)
-        st.runners, st.outs = [True, True, False], 0    # 二塁が埋まっている
+        st.runners, st.outs = [True, True, False], 0    # second is occupied
         st.runner_speeds = [50, 50, None]
         self.assertFalse(any(st.steal_chance(random.Random(s)) for s in range(50)))
-        st.runners, st.outs = [True, False, False], 2   # 2 アウト
+        st.runners, st.outs = [True, False, False], 2   # 2 outs
         self.assertFalse(any(st.steal_chance(random.Random(s)) for s in range(50)))
         st.runners, st.outs = [True, False, False], 0
         st.runner_speeds = [55, None, None]
         self.assertTrue(any(st.steal_chance(random.Random(s)) for s in range(80)))
 
-    # ---- 走者の脚力(#走者の個性) ----
+    # ---- Runner speed (runner personalities) ----
     def _steal_rates(self, speed, n=3000):
         att = caught = 0
         for s in range(n):
@@ -1104,18 +1107,18 @@ class GameplayExtrasTests(unittest.TestCase):
             if st.steal_chance(random.Random(s + 700)):
                 att += 1
             r = st.resolve_steal("changeup", random.Random(s + 900))
-            caught += (r == "盗塁を刺した！")
+            caught += (r == "Caught stealing!")
         return att / n, caught / n
 
     def test_fast_runner_steals_more_and_is_harder_to_nab(self):
         slow_att, slow_cs = self._steal_rates(35)
         fast_att, fast_cs = self._steal_rates(80)
-        self.assertGreater(fast_att, slow_att + 0.05)     # 速い走者は仕掛けてくる
-        self.assertGreater(slow_cs, fast_cs + 0.05)       # 遅い走者はよく刺される
+        self.assertGreater(fast_att, slow_att + 0.05)     # fast runners try to steal
+        self.assertGreater(slow_cs, fast_cs + 0.05)       # slow runners get caught more
 
     def test_fast_runner_takes_extra_base_on_single(self):
         bb = BattedBall("center", "line", "medium", 0.5, "shallow")
-        fd = {"result": "単打", "position": "CF", "air_out": False, "batter_out": False}
+        fd = {"result": "Single", "position": "CF", "air_out": False, "batter_out": False}
 
         def to_third(speed, n=3000):
             hits = 0
@@ -1138,18 +1141,18 @@ class GameplayExtrasTests(unittest.TestCase):
                 self.assertEqual(len(st.runner_speeds), 3)
                 for i in range(3):
                     if st.runners[i]:
-                        self.assertIsNotNone(st.runner_speeds[i])   # 走者がいる塁は脚力あり
+                        self.assertIsNotNone(st.runner_speeds[i])   # a base with a runner has a speed
                     else:
-                        self.assertIsNone(st.runner_speeds[i])      # いない塁は None
+                        self.assertIsNone(st.runner_speeds[i])      # an empty base is None
                 pt = rng.choice(list(repertoire_options(st.pitcher)))
                 co = rng.choice(list(COURSES))
                 it = rng.choice(list(PITCH_INTENTS))
                 resolve_one_pitch(st, pt, co, it, rng)
 
-    # ---- サイン交換 ----
+    # ---- Changing signs ----
     def test_sign_steal_needs_runner_on_second(self):
         st = _state(1)
-        st.runners = [True, False, True]                # 二塁だけ空き → リスクなし
+        st.runners = [True, False, True]                # only second is open -> no risk
         self.assertFalse(any(st.sign_steal_chance(random.Random(s)) for s in range(50)))
         st.runners = [False, True, False]
         self.assertTrue(any(st.sign_steal_chance(random.Random(s)) for s in range(50)))
@@ -1160,7 +1163,7 @@ class GameplayExtrasTests(unittest.TestCase):
             for s in range(400):
                 st = _state(s % 20)
                 msg = st.resolve_sign_steal(sign_bonus, random.Random(s))
-                defended += (msg == "サインを変えて事なきを得た")
+                defended += (msg == "Changed the signs in time")
             return defended / 400
         self.assertGreater(defend_rate(0.25), defend_rate(-0.25) + 0.2)
 
@@ -1170,18 +1173,18 @@ class GameplayExtrasTests(unittest.TestCase):
         st.sign_leak = 0.65
         outcome = judge_pitch(st, "changeup", "mid_mid", random.Random(3), intent="strike")
         guess = outcome["_analysis"]["guess"]
-        self.assertEqual(guess["class"], "offspeed")     # changeup の実際のクラスに一致
+        self.assertEqual(guess["class"], "offspeed")     # matches the changeup's actual class
         self.assertGreaterEqual(guess["class_strength"], 0.65)
-        self.assertEqual(st.sign_leak, 0.0)              # 1球で消費される
+        self.assertEqual(st.sign_leak, 0.0)              # consumed after one pitch
 
-    # ---- 振り逃げ ----
+    # ---- Dropped third strike ----
     def test_dropped_third_eligibility(self):
         st = _state(1)
-        st.runners, st.outs = [True, False, False], 0    # 一塁埋まり・2アウト未満 → 不成立
+        st.runners, st.outs = [True, False, False], 0    # first occupied and under 2 outs -> does not apply
         self.assertFalse(st.dropped_third_eligible())
-        st.runners, st.outs = [False, False, False], 0   # 一塁が空 → 成立
+        st.runners, st.outs = [False, False, False], 0   # first is empty -> applies
         self.assertTrue(st.dropped_third_eligible())
-        st.runners, st.outs = [True, False, False], 2     # 2アウト → 成立
+        st.runners, st.outs = [True, False, False], 2     # 2 outs -> applies
         self.assertTrue(st.dropped_third_eligible())
 
     def test_dropped_third_passed_ball_advances_all_runners(self):
@@ -1190,12 +1193,12 @@ class GameplayExtrasTests(unittest.TestCase):
             st.runners, st.outs = [False, True, True], 0
             before_score = st.opp_score
             safe, msg = st.resolve_dropped_third(-0.9, 0.0, random.Random(s))
-            if "後逸" in msg:
+            if "Passed ball" in msg:
                 self.assertTrue(safe)
-                self.assertEqual(st.runners, [True, False, True])   # 2塁→3塁、3塁は生還
+                self.assertEqual(st.runners, [True, False, True])   # 2nd -> 3rd, 3rd scores
                 self.assertEqual(st.opp_score, before_score + 1)
                 return
-        self.fail("後逸が一度も発生しなかった")
+        self.fail("a passed ball never happened")
 
     def test_dropped_third_resolves_to_safe_or_out(self):
         safe_n = out_n = 0
@@ -1219,7 +1222,7 @@ class GameplayExtrasTests(unittest.TestCase):
                 st = _state(s % 20)
                 st.runners, st.outs = [False, False, False], 0
                 safe, msg = st.resolve_dropped_third(0.25, throw_bonus, random.Random(s))
-                if safe and "後逸" not in msg:
+                if safe and "Passed ball" not in msg:
                     safe_n += 1
             return safe_n / 500
         self.assertGreater(safe_rate(-0.25), safe_rate(0.25) + 0.1)
@@ -1227,20 +1230,20 @@ class GameplayExtrasTests(unittest.TestCase):
     def test_dropped_third_safe_by_throw_only_forces_runners(self):
         for s in range(300):
             st = _state(s % 20)
-            st.runners, st.outs = [False, True, False], 0    # 二塁のみ
+            st.runners, st.outs = [False, True, False], 0    # second only
             safe, msg = st.resolve_dropped_third(0.9, -0.9, random.Random(s))
-            if safe and "後逸" not in msg:
-                self.assertEqual(st.runners, [True, True, False])   # 二塁走者は進塁を強制されない
+            if safe and "Passed ball" not in msg:
+                self.assertEqual(st.runners, [True, True, False])   # the runner on second is not forced to advance
                 return
-        self.fail("送球で生きるケースが一度も発生しなかった")
+        self.fail("the case of reaching on the throw never happened")
 
 
-# ---------- 成績ダッシュボード(stats.py) ----------
+# ---------- Stats dashboard (stats.py) ----------
 class StatsTests(unittest.TestCase):
     def test_parse_call_label(self):
-        pitch, course, intent = stats._parse_call("sinker/in_hi(ストライク先行)")
-        self.assertEqual((pitch, course, intent), ("sinker", "in_hi", "ストライク先行"))
-        self.assertEqual(stats._parse_call("おかしな文字列"), (None, None, None))
+        pitch, course, intent = stats._parse_call("sinker/in_hi(Get ahead)")
+        self.assertEqual((pitch, course, intent), ("sinker", "in_hi", "Get ahead"))
+        self.assertEqual(stats._parse_call("weird string"), (None, None, None))
 
     def _game(self, entries, runs=0):
         return {
@@ -1254,34 +1257,34 @@ class StatsTests(unittest.TestCase):
 
     def test_bucket_tracks_bad_rate_and_avg_dq(self):
         b = stats._Bucket()
-        b.add("単打", 0.5)
-        b.add("アウト", -0.2)
+        b.add("Single", 0.5)
+        b.add("Out", -0.2)
         self.assertEqual(b.n, 2)
         self.assertAlmostEqual(b.bad_rate(), 0.5)
         self.assertAlmostEqual(b.avg_dq(), 0.15)
 
     def test_build_dashboard_aggregates_by_course_and_intent(self):
         games = [self._game([
-            ("単打", 0.4, "ストライク先行"),
-            ("アウト", -0.1, "チェイス"),
-            ("空振り", 0.2, "ストライク先行"),
+            ("Single", 0.4, "Get ahead"),
+            ("Out", -0.1, "Chase"),
+            ("Whiff", 0.2, "Get ahead"),
         ], runs=1)]
         buf = io.StringIO()
         with redirect_stdout(buf):
             stats.build_dashboard(games)
         out = buf.getvalue()
-        self.assertIn("外低", out)                # コース(短縮表記)が出る
-        self.assertIn("ストライク先行", out)
-        self.assertIn("チェイス", out)
-        self.assertIn("1 ゲーム", out)
-        self.assertIn("3 球", out)
+        self.assertIn("Lo-Out", out)                # the location (short name) is shown
+        self.assertIn("Get ahead", out)
+        self.assertIn("Chase", out)
+        self.assertIn("1 games", out)
+        self.assertIn("3 pitches", out)
 
 
-# ---------- リプレイビューア(replay.py) ----------
+# ---------- Replay viewer (replay.py) ----------
 class ReplayTests(unittest.TestCase):
-    def _entry(self, num, result, dq, sequence_label="特筆なし"):
+    def _entry(self, num, result, dq, sequence_label="Nothing notable"):
         return {
-            "pitch_number": num, "call_label": "four_seam/mid_mid(ストライク先行)",
+            "pitch_number": num, "call_label": "four_seam/mid_mid(Get ahead)",
             "result": result, "decision_quality": dq, "sequence_label": sequence_label,
             "guess": {"class": "fastball", "class_strength": 0.1,
                      "location": "any", "loc_strength": 0.1},
@@ -1290,38 +1293,38 @@ class ReplayTests(unittest.TestCase):
         }
 
     def test_collect_highlights_tags_good_and_risky_calls(self):
-        pitches = [self._entry(1, "空振り", 0.4), self._entry(2, "本塁打", -0.5)]
+        pitches = [self._entry(1, "Whiff", 0.4), self._entry(2, "Home run", -0.5)]
         analysis = build_analysis(pitches)
         highlights = replay._collect_highlights(analysis)
         self.assertIn(1, highlights)
         self.assertIn(2, highlights)
         labels_1 = [label for label, _ in highlights[1]]
-        self.assertIn("◎良い配球", labels_1)
+        self.assertIn("◎ Good call", labels_1)
 
     def test_render_replay_includes_summary_and_highlighted_pitches(self):
         log = {
-            "situation": {"inning": "9回裏", "start": [3, 3]},
+            "situation": {"inning": "Bottom 9", "start": [3, 3]},
             "final": {"our": 3, "opp": 4, "runs_this_inning": 1,
-                     "result": "1失点", "status": "逆転された"},
-            "pitches": [self._entry(1, "空振り", 0.4), self._entry(2, "本塁打", -0.5),
-                       self._entry(3, "ボール", 0.0)],
+                     "result": "1 run allowed", "status": "Lost the lead"},
+            "pitches": [self._entry(1, "Whiff", 0.4), self._entry(2, "Home run", -0.5),
+                       self._entry(3, "Ball", 0.0)],
             "reads": {},
         }
         out = replay.render_replay(log)
-        self.assertIn("9回裏", out)
-        self.assertIn("1失点", out)
-        self.assertIn(" 1球目", out)
-        self.assertIn(" 2球目", out)
-        self.assertNotIn(" 3球目", out)             # 目立たない球は出さない
+        self.assertIn("Bottom 9", out)
+        self.assertIn("1 run allowed", out)
+        self.assertIn("Pitch  1", out)
+        self.assertIn("Pitch  2", out)
+        self.assertNotIn("Pitch  3", out)             # unremarkable pitches are not shown
 
     def test_render_replay_handles_no_highlights(self):
         log = {"situation": {}, "final": {},
-              "pitches": [self._entry(1, "ボール", 0.0)]}
+              "pitches": [self._entry(1, "Ball", 0.0)]}
         out = replay.render_replay(log)
-        self.assertIn("目立った場面はありませんでした", out)
+        self.assertIn("Nothing stood out", out)
 
 
-# ---------- 軽量Web UI(webapp.py) ----------
+# ---------- Lightweight Web UI (webapp.py) ----------
 class WebAppTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1341,8 +1344,8 @@ class WebAppTests(unittest.TestCase):
         cls.httpd.server_close()
 
     def setUp(self):
-        # seed=5 は「走者なし・自軍 6-5 リード・0 アウト」の場面(match_state で確認)。
-        # 走者がいないので盗塁/ブロッキング/サイン盗みの QTE は割り込まず、テストが安定する。
+        # seed=5 is a scene with "no runners, we lead 6-5, 0 outs" (checked in match_state).
+        # With no runners, the steal / blocking / sign-steal QTEs do not interrupt, so the test is stable.
         webapp.SESSION = webapp.GameSession(seed=5)
 
     def _get(self, path=""):
@@ -1361,12 +1364,12 @@ class WebAppTests(unittest.TestCase):
 
     def _start_game(self):
         self._post("/start", {})
-        self._post("/skiptutorial", {})     # 操作練習は各テストの対象外なので飛ばす
+        self._post("/skiptutorial", {})     # practice is out of scope for each test, so skip it
         self._post("/playball", {})
         return self._get("/")
 
     def _drain_qtes(self, answer="good"):
-        """QTE 画面が続く限り /qte に答えて通常画面へ戻す。"""
+        """While a QTE screen continues, answer /qte and return to the normal screen."""
         for _ in range(12):
             if webapp.SESSION.pending_qte is None:
                 return
@@ -1374,10 +1377,10 @@ class WebAppTests(unittest.TestCase):
             if webapp.SESSION.pending_qte[0] in ("wild_block", "d3_block"):
                 data["dir"] = "mid"
             self._post("/qte", data)
-        self.fail("QTE が終わらない")
+        self.fail("the QTE never ended")
 
     def _pitch(self, key, course="mid_mid", intent="strike"):
-        """1 球投げて、途中の QTE をすべて中立で消化する。"""
+        """Throw one pitch and clear every QTE along the way neutrally."""
         self._post("/pitch", {"pitch_type": key, "course": course, "intent": intent})
         self._drain_qtes()
 
@@ -1389,7 +1392,7 @@ class WebAppTests(unittest.TestCase):
     def test_start_shows_tutorial_then_situation_intro_then_game(self):
         self._post("/start", {})
         tut = self._get("/")
-        self.assertIn("操作の練習", tut)              # まず操作練習
+        self.assertIn("Practice", tut)              # practice comes first
         self.assertNotIn("PLAY BALL", tut)
 
         self._post("/skiptutorial", {})
@@ -1406,13 +1409,13 @@ class WebAppTests(unittest.TestCase):
     def test_tutorial_locks_start_until_all_six_cleared(self):
         self._post("/start", {})
         for k, _name, _desc in webapp._TUTORIAL_ITEMS:
-            self.assertIn("操作の練習", self._get("/"))     # まだ練習中
+            self.assertIn("Practice", self._get("/"))     # still practicing
             data = {"item": k, "verdicts": "perfect,perfect,perfect"}
             if k in webapp._TUT_DIR:
                 data["dir"] = "mid"
             self._post("/tutorial", data)
         self.assertTrue(all(webapp.SESSION.tutorial.values()))
-        self.assertIn("PLAY BALL", self._get("/"))          # 全クリアで本編へ
+        self.assertIn("PLAY BALL", self._get("/"))          # all cleared -> the main game
 
     def test_tutorial_miss_does_not_clear_the_item(self):
         self._post("/start", {})
@@ -1427,19 +1430,19 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("PLAY BALL", self._get("/"))
 
     def test_borderline_pitch_inserts_a_receive_rhythm_game(self):
-        """隅を狙ってストライクを取りにいく球は、投球の前に受球リズムゲームを挟む。
-        /qte を送ると結果が出て、投球が1つ記録される。"""
+        """A pitch aimed at a corner to get a strike puts a receive rhythm game before the pitch.
+        Sending /qte produces a result, and one pitch is recorded."""
         page = self._start_game()
         key = self._first_pitch_key(page)
-        self.assertFalse(any(webapp.SESSION.state.runners))   # seed=5 は走者なし
+        self.assertFalse(any(webapp.SESSION.state.runners))   # seed=5 has no runners
         before = len(webapp.SESSION.state.pitch_log)
         self._post("/pitch", {"pitch_type": key, "course": "out_lo", "intent": "freeze"})
         self.assertEqual(webapp.SESSION.pending_qte[0], "frame")
         mid = self._get("/")
-        self.assertIn("受球", mid)
+        self.assertIn("Receive", mid)
         self.assertIn('action="/qte"', mid)
-        self.assertNotIn("CALL PITCH", mid)                   # コール画面はまだ出ない
-        self.assertEqual(len(webapp.SESSION.state.pitch_log), before)   # まだ投げていない
+        self.assertNotIn("CALL PITCH", mid)                   # the call screen does not appear yet
+        self.assertEqual(len(webapp.SESSION.state.pitch_log), before)   # not thrown yet
 
         self._post("/qte", {"verdicts": "perfect"})
         self._drain_qtes()
@@ -1461,7 +1464,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("CALL PITCH", self._get("/"))
 
     def test_frame_qte_band_moves_with_pitch_speed(self):
-        """受球の帯: 速い球は左（早く）・遅い球は右（遅く）。"""
+        """The receive band: a fast pitch is on the left (early), a slow one on the right (late)."""
         import re as _re
 
         def band(velo):
@@ -1469,8 +1472,8 @@ class WebAppTests(unittest.TestCase):
                 pending_qte = ("frame", {"call": "x", "velocity": velo})
                 last_outcome = None
             return float(_re.search(r'data-targets="([\d.]+)"', webapp.render_qte(S())).group(1))
-        self.assertLess(band(95), 0.4)      # フォーシーム級 → 左
-        self.assertGreater(band(78), 0.6)   # カーブ級 → 右
+        self.assertLess(band(95), 0.4)      # four-seam class -> left
+        self.assertGreater(band(78), 0.6)   # curveball class -> right
         self.assertAlmostEqual(band(88), 0.5, delta=0.05)
 
     def test_steal_throw_qte_has_a_mash_step(self):
@@ -1492,29 +1495,29 @@ class WebAppTests(unittest.TestCase):
 
     def test_prev_result_strip_is_green_for_outs_red_for_hits(self):
         self.assertEqual(webapp._prev_result_strip(None), "")
-        good = webapp._prev_result_strip({"result": "アウト"})
-        bad = webapp._prev_result_strip({"result": "単打"})
-        self.assertIn("よし", good)
+        good = webapp._prev_result_strip({"result": "Out"})
+        bad = webapp._prev_result_strip({"result": "Single"})
+        self.assertIn("Good", good)
         self.assertIn("var(--good)", good)
-        self.assertIn("まずい", bad)
+        self.assertIn("Bad", bad)
         self.assertIn("var(--bad)", bad)
 
     def test_catcher_line_praises_on_strikeout_and_taunts_on_bad_result(self):
-        """『感心 / がっかり』は直前の球の結果と打席の締めから決まる。"""
+        """The "impressed / disappointed" line is decided from the previous pitch's result and how the at-bat ended."""
         s = webapp.GameSession(seed=5)
-        s.last_outcome = {"result": "空振り", "at_bat_end": "strikeout", "play": None}
-        self.assertIn("感心", webapp._catcher_line(s))
-        s.last_outcome = {"result": "ボール", "at_bat_end": "walk", "play": None}
-        self.assertIn("がっかり", webapp._catcher_line(s))
-        s.last_outcome = {"result": "本塁打", "at_bat_end": "hit",
-                          "play": {"runs": 1, "label": "本塁打"}}
-        self.assertIn("がっかり", webapp._catcher_line(s))
-        s.last_outcome = {"result": "ストライク", "at_bat_end": None, "play": None}
+        s.last_outcome = {"result": "Whiff", "at_bat_end": "strikeout", "play": None}
+        self.assertIn("Impressive", webapp._catcher_line(s))
+        s.last_outcome = {"result": "Ball", "at_bat_end": "walk", "play": None}
+        self.assertIn("Ugh", webapp._catcher_line(s))
+        s.last_outcome = {"result": "Home run", "at_bat_end": "hit",
+                          "play": {"runs": 1, "label": "Home run"}}
+        self.assertIn("Ugh", webapp._catcher_line(s))
+        s.last_outcome = {"result": "Strike", "at_bat_end": None, "play": None}
         self.assertEqual(webapp._catcher_line(s), "")
 
     def test_at_bat_end_is_propagated_onto_last_outcome(self):
-        """打席の締めタグ(三振/四球/安打/アウト)が last_outcome にも乗る
-        ―― _catcher_line がそれを見るため。"""
+        """The at-bat ending tag (strikeout / walk / hit / out) is also carried onto last_outcome
+        -- because _catcher_line looks at it."""
         page = self._start_game()
         key = self._first_pitch_key(page)
         checked = False
@@ -1530,21 +1533,21 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(checked)
 
     def test_return_tempo_widget_appears_only_after_a_caught_pitch(self):
-        """配球コール画面の『返球のテンポ』は、直前の球を捕球したときだけ出る。"""
+        """The "return tempo" on the pitch call screen appears only when the previous pitch was caught."""
         page = self._start_game()
-        self.assertNotIn('id="tempo"', page)             # 初球には無い
+        self.assertNotIn('id="tempo"', page)             # not on the first pitch
         key = self._first_pitch_key(page)
-        self._pitch(key, "mid_mid", "strike")            # 見送り/空振りになりやすい球
+        self._pitch(key, "mid_mid", "strike")            # a pitch likely to be taken or swung through
         after = self._get("/")
-        # 打者がフェアに打っていなければ(=捕球していれば)テンポが出る
+        # if the batter did not hit it fair (= you caught it), the tempo appears
         if "CATCHER REPORT" not in after and "RESULT" in after:
             last = webapp.SESSION.state.history.last()
-            if last and last.get("result") in ("ボール", "ストライク", "空振り"):
+            if last and last.get("result") in ("Ball", "Strike", "Whiff"):
                 self.assertIn('id="tempo"', after)
                 self.assertIn('name="tempo"', after)
 
     def test_pitch_call_accepts_a_tempo_field(self):
-        """CALL PITCH に返球リズムの結果(tempo)が乗っても 500 にならず解決する。"""
+        """Even if CALL PITCH carries the return-rhythm result (tempo), it resolves without a 500."""
         page = self._start_game()
         key = self._first_pitch_key(page)
         before = len(webapp.SESSION.state.pitch_log)
@@ -1555,12 +1558,12 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("RESULT", self._get("/"))
 
     def test_qte_neutral_answer_matches_no_qte_behaviour(self):
-        """JS 無効相当(verdicts 空 → bonus 0)で受球しても、フレーミング以外の
-        1 球の結果は frame_timing=None と同じ分布になるはず(ここでは通ることだけ確認)。"""
+        """Even receiving with JS off (empty verdicts -> bonus 0), apart from framing the
+        result of one pitch should have the same distribution as frame_timing=None (here we only check that it goes through)."""
         page = self._start_game()
         key = self._first_pitch_key(page)
         self._post("/pitch", {"pitch_type": key, "course": "in_hi", "intent": "strike"})
-        self._post("/qte", {})                # verdicts 無し = 中立
+        self._post("/qte", {})                # no verdicts = neutral
         self._drain_qtes()
         self.assertIn("RESULT", self._get("/"))
 
@@ -1572,11 +1575,11 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(status, 200)
         page2 = self._get("/")
         self.assertIn("Pitch Call", page2)
-        self.assertIn("RESULT", page2)         # 直前の1球の結果パネルが出る
+        self.assertIn("RESULT", page2)         # the result panel of the previous pitch appears
 
     def test_pitch_rejects_malformed_course_or_intent_without_error(self):
-        """フォーム以外(手打ちの POST 等)で不正な course / intent が来ても
-        500 にせず、静かに弾く(投球は記録されない)。"""
+        """Even if an invalid course / intent arrives from outside the form (a hand-typed POST etc.),
+        it does not 500 and is quietly rejected (no pitch is recorded)."""
         self._start_game()
         before = len(webapp.SESSION.state.pitch_log)
         key = self._first_pitch_key(self._get("/"))
@@ -1598,24 +1601,24 @@ class WebAppTests(unittest.TestCase):
             if "CATCHER REPORT" in page:
                 break
             pitch_key = self._first_pitch_key(page)
-            self._pitch(pitch_key, "mid_mid", "strike")   # 途中の QTE も中立で消化
+            self._pitch(pitch_key, "mid_mid", "strike")   # clear the QTEs along the way neutrally
             page = self._get("/")
         else:
-            self.fail("300球投げてもイニングが終わらなかった")
-        self.assertIn("もう一度プレイ", page)
+            self.fail("the inning did not end even after 300 pitches")
+        self.assertIn("Play again", page)
         self.assertIn("Runs Allowed", page)
         self.assertIn("Batters Faced", page)
         self.assertIn("GOOD CALL", page)
         self.assertIn("BAD CALL", page)
 
         self._post("/newgame", {})
-        self.assertIn("操作の練習", self._get("/"))    # 新規ゲームはまず操作練習
+        self.assertIn("Practice", self._get("/"))    # a new game starts with practice
         self._post("/skiptutorial", {})
         fresh = self._get("/")
-        self.assertIn("PLAY BALL", fresh)      # そのあと状況カード
+        self.assertIn("PLAY BALL", fresh)      # then the situation card
 
     def test_pitch_arc_svg_renders_for_every_pitch_and_curve_drops_more(self):
-        """球種の「雑な軌道」SVG が全球種で作れて、カーブはフォーシームより落ちる。"""
+        """The rough-trajectory SVG for pitch types can be made for every type, and a curveball drops more than a four-seam."""
         import re as _re
         from pitch_data import all_pitch_keys
         def end_y(key):
@@ -1624,15 +1627,15 @@ class WebAppTests(unittest.TestCase):
             return float(_re.search(r'<circle cx="[\d.]+" cy="([\d.]+)"', svg).group(1))
         for k in all_pitch_keys():
             end_y(k)
-        self.assertGreater(end_y("curveball"), end_y("four_seam") + 5)   # カーブの方が下で終わる
+        self.assertGreater(end_y("curveball"), end_y("four_seam") + 5)   # the curveball ends lower
 
     def test_course_grid_mirrors_by_batter_handedness(self):
         r_grid = webapp._course_grid("R")
         l_grid = webapp._course_grid("L")
-        # 右打者は内→外が左→右、左打者はその鏡像(放送のストライクゾーン表示と同じ考え方)
+        # for a right-handed batter in -> out goes left -> right, a lefty is the mirror (the same idea as the broadcast strike-zone display)
         self.assertEqual(r_grid[0], ["in_hi", "mid_hi", "out_hi"])
         self.assertEqual(l_grid[0], ["out_hi", "mid_hi", "in_hi"])
-        # どちらも同じ9コースを1回ずつ含む(表示順が違うだけ)
+        # both contain each of the same 9 locations once (only the display order differs)
         flat_r = {c for row in r_grid for c in row}
         flat_l = {c for row in l_grid for c in row}
         self.assertEqual(flat_r, flat_l)
@@ -1650,7 +1653,7 @@ class WebAppTests(unittest.TestCase):
         self._post("/swap", {"position": "SS"})
         mid = self._get("/")
         self.assertIsNotNone(webapp.SESSION.pending_swap)
-        self.assertIn("選択中", mid)
+        self.assertIn("selected", mid)
         self._post("/swap", {"position": "1B"})
         self.assertIsNone(webapp.SESSION.pending_swap)
         after = webapp.SESSION.state.defense.assignment
@@ -1666,13 +1669,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_change_pitcher_picks_the_selected_bullpen_index(self):
         self._start_game()
-        webapp.SESSION.state.bullpen = [build_sample_pitcher(random.Random(1), name="控えA"),
-                                       build_sample_pitcher(random.Random(2), name="控えB")]
+        webapp.SESSION.state.bullpen = [build_sample_pitcher(random.Random(1), name="Reliever A"),
+                                       build_sample_pitcher(random.Random(2), name="Reliever B")]
         status = self._post("/change", {"index": "1"})
         self.assertEqual(status, 200)
-        self.assertEqual(webapp.SESSION.state.pitcher.name, "控えB")
+        self.assertEqual(webapp.SESSION.state.pitcher.name, "Reliever B")
         self.assertEqual(len(webapp.SESSION.state.bullpen), 1)
-        self.assertTrue(webapp.SESSION.state.can_change_pitcher())   # まだ1人残っている
+        self.assertTrue(webapp.SESSION.state.can_change_pitcher())   # one more is still left
 
     def test_memo_records_a_read(self):
         self._start_game()
@@ -1691,14 +1694,96 @@ class WebAppTests(unittest.TestCase):
             page = self._get("/")
             pitch_key = self._first_pitch_key(page)
             self._post("/pitch", {"pitch_type": pitch_key, "course": "mid_mid", "intent": "strike"})
-            self._drain_qtes()        # 走者がいれば盗塁 QTE 等が挟まる。中立で消化
+            self._drain_qtes()        # with runners, a steal QTE etc. gets in. Clear it neutrally
             page = self._get("/")
             return re.search(r"RESULT\s*(?:</[^>]+>)?\s*([^<]+)<", page).group(1)
 
         self.assertEqual(play_seeded(555), play_seeded(555))
 
 
-# ---------- 9 分割ゾーン ----------
+    def test_start_screen_lists_drills_difficulty_and_code(self):
+        page = self._get("/")
+        for key, name, _ in webapp._DRILLS:
+            self.assertIn(name, page)
+            self.assertIn(f'value="{key}"', page)
+        self.assertIn('name="difficulty"', page)
+        self.assertIn('name="seed"', page)
+
+    def test_drill_button_starts_that_scenario_with_the_typed_code(self):
+        self._post("/start", {"scenario": "steal", "seed": "321", "difficulty": "expert"})
+        self.assertEqual(webapp.SESSION.scenario, "steal")
+        self.assertEqual(webapp.SESSION.game_seed, 321)
+        self.assertEqual(webapp.SESSION.difficulty, "expert")
+        self.assertEqual(webapp.SESSION.state.runners, [True, False, False])
+
+    def test_postgame_page_shows_rating_code_and_replay_button(self):
+        page = self._start_game()
+        key = self._first_pitch_key(page)
+        for _ in range(300):
+            page = self._get("/")
+            if "Play again" in page:
+                break
+            self._pitch(key, "mid_mid", "strike")
+        self.assertIn("CATCHER RATING", page)
+        self.assertIn("Replay this situation", page)
+        self.assertIn(f"#{webapp.SESSION.game_seed}", page)
+        self._post("/menu", {})
+        self.assertIn("START GAME", self._get("/"))
+
+
+    def test_unexpected_error_shows_a_recovery_page_not_a_dead_connection(self):
+        with mock.patch.object(webapp, "render_page", side_effect=RuntimeError("boom")):
+            with redirect_stdout(io.StringIO()), mock.patch("traceback.print_exc"):
+                try:
+                    self._get("/")
+                    self.fail("expected an HTTP 500")
+                except urllib.error.HTTPError as err:
+                    self.assertEqual(err.code, 500)
+                    self.assertIn("Back to the menu", err.read().decode("utf-8"))
+        self.assertIn("START GAME", self._get("/"))     # and the server keeps working
+
+    def test_bind_server_falls_back_to_the_next_free_port(self):
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        taken = busy.getsockname()[1]
+        try:
+            httpd, port = webapp._bind_server("127.0.0.1", taken)
+            httpd.server_close()
+            self.assertNotEqual(port, taken)
+        finally:
+            busy.close()
+
+
+    def test_hand_typed_memo_values_are_ignored_and_the_report_still_renders(self):
+        self._start_game()
+        self._post("/memo", {"wait": "zzz", "weak": "nowhere"})
+        note = webapp.SESSION.state.current_read()
+        self.assertEqual((note["wait"], note["weak"]), (None, None))
+        self._post("/memo", {"wait": "fastball", "weak": "in_hi"})
+        note = webapp.SESSION.state.current_read()
+        self.assertEqual((note["wait"], note["weak"]), ("fastball", "in_hi"))
+
+
+    def test_a_fair_ball_shows_the_play_viewer_once_then_a_static_end_state(self):
+        key = self._first_pitch_key(self._start_game())
+        for _ in range(60):
+            self._pitch(key, "mid_mid", "weak_contact")
+            if webapp.SESSION.last_outcome.get("batted_ball"):
+                break
+        else:
+            self.fail("never put in play")
+        webapp.SESSION.play_shown = None      # the redirect after the pitch already rendered once
+        page = self._get("/")
+        if "CATCHER RATING" in page:      # the ball ended the inning: the viewer sits above the report
+            self.assertIn("Play Viewer", page)
+            return
+        self.assertIn("Play Viewer", page)
+        self.assertIn('data-autoplay="1"', page)
+        self.assertIn('data-autoplay="0"', self._get("/"))     # a reload does not replay the animation
+
+
+# ---------- The 9-zone grid ----------
 class ZoneTests(unittest.TestCase):
     def test_nine_courses_and_helpers(self):
         from constants import COURSES, is_corner, zone_overlap, zone_x, zone_y
@@ -1708,7 +1793,7 @@ class ZoneTests(unittest.TestCase):
         self.assertTrue(is_corner("in_hi"))
         self.assertFalse(is_corner("mid_hi"))
         self.assertEqual(zone_overlap("out_lo", "out_lo"), 1.0)
-        self.assertEqual(zone_overlap("out_lo", "out_hi"), 0.5)   # 同じ列
+        self.assertEqual(zone_overlap("out_lo", "out_hi"), 0.5)   # the same column
         self.assertEqual(zone_overlap("out_lo", "in_hi"), 0.0)
 
     def test_corner_target_misses_more_than_center(self):
@@ -1722,11 +1807,11 @@ class ZoneTests(unittest.TestCase):
         self.assertGreater(miss_rate("out_lo"), miss_rate("mid_mid") + 0.05)
 
     def test_batter_default_hot_weak_courses_are_valid_zone_keys(self):
-        """hot_course / weak_course を省略して Batter を作っても、既定値が
-        9 分割ゾーンの正しいキーで、judge_pitch が例外なく通ること。"""
+        """Even if a Batter is made without hot_course / weak_course, the defaults are
+        correct keys of the 9-zone grid, and judge_pitch goes through without an exception."""
         from batter import Batter
         from constants import COURSES
-        b = Batter(name="デフォルト打者")
+        b = Batter(name="Default Batter")
         self.assertIn(b.hot_course, COURSES)
         self.assertIn(b.weak_course, COURSES)
         st = generate_random_situation(random.Random(0))
@@ -1736,17 +1821,17 @@ class ZoneTests(unittest.TestCase):
             judge_pitch(st, "four_seam", "out_lo", rng, intent="freeze")
 
     def test_weak_zone_overlap_bites_partially(self):
-        # 「外角低めが苦手」な打者は「外角」でもいくらか差し込まれる
+        # a batter who is "weak low and away" is also somewhat jammed "away"
         from constants import zone_overlap
         self.assertEqual(zone_overlap("out_mid", "out_lo"), 0.5)
 
 
-# ---------- フレーミング(捕手の craft) ----------
+# ---------- Framing (the catcher's craft) ----------
 class FramingTests(unittest.TestCase):
     def _edge_take_calls(self, course, intent, n=4000, seed=0):
-        """見送りになった球のうち、ストライク判定された割合(= フレーミング成功含む)。"""
+        """Of the pitches that were taken, the share called strikes (including successful framing)."""
         st = generate_random_situation(random.Random(seed))
-        # 見送りやすい打者に固定
+        # pinned to a batter who tends to take
         st.batter.aggression, st.batter.chase_rate = 0.1, 0.05
         rng = random.Random(seed + 1)
         strikes = takes = 0
@@ -1755,14 +1840,14 @@ class FramingTests(unittest.TestCase):
             o = judge_pitch(st, "four_seam", course, rng, intent=intent)
             if not o["swung"]:
                 takes += 1
-                strikes += (o["result"] == "ストライク")
+                strikes += (o["result"] == "Strike")
         return strikes / takes if takes else 0.0
 
     def test_edge_takes_are_framed_into_strikes_sometimes(self):
-        # 隅(外角低め)を要求して見送られた球は、真ん中を大きく外した球より
-        # 「ストライク」と判定される割合が高い(フレーミングが効く)
+        # a pitch aimed at the corner (low and away) that was taken is called a "strike" more often than
+        # a pitch that missed the middle by a lot (framing works)
         edge = self._edge_take_calls("out_lo", "freeze")
-        waste = self._edge_take_calls("mid_mid", "chase")   # chase = 元から大きく外す意図
+        waste = self._edge_take_calls("mid_mid", "chase")   # chase = the intent to miss big from the start
         self.assertGreater(edge, waste)
 
     def test_framed_strikes_counter_increments(self):
@@ -1781,7 +1866,7 @@ class FramingTests(unittest.TestCase):
         for _ in range(2000):
             st.balls = st.strikes = 0
             o = judge_pitch(st, "four_seam", "out_lo", rng, intent="pitchout")
-            self.assertEqual(o["result"], "ボール")     # ピッチアウトは絶対にストライクにならない
+            self.assertEqual(o["result"], "Ball")     # a pitchout is never a strike
         self.assertEqual(st.framed_strikes, 0)
 
     def _take_strike_rate(self, frame_timing, n=5000, seed=7):
@@ -1795,12 +1880,12 @@ class FramingTests(unittest.TestCase):
                             frame_timing=frame_timing)
             if not o["swung"]:
                 takes += 1
-                strikes += (o["result"] == "ストライク")
+                strikes += (o["result"] == "Strike")
         return strikes / takes if takes else 0.0
 
     def test_receive_timing_shifts_framing_rate(self):
-        """受球リズムゲームの出来: perfect は miss よりフレーミングが決まる。
-        frame_timing=None は従来どおり(perfect と miss の間)。"""
+        """How well the receive rhythm game went: perfect frames better than miss.
+        frame_timing=None is as before (between perfect and miss)."""
         miss = self._take_strike_rate("miss")
         neutral = self._take_strike_rate(None)
         perfect = self._take_strike_rate("perfect")
@@ -1809,7 +1894,7 @@ class FramingTests(unittest.TestCase):
         self.assertGreaterEqual(neutral, miss)
 
 
-# ---------- 相手の小技(犠打 / エンドラン / ピッチアウト) ----------
+# ---------- Opponent small ball (sacrifice / hit-and-run / pitchout) ----------
 class SmallBallTests(unittest.TestCase):
     def _bunt_state(self, seed=0):
         import opponent
@@ -1832,8 +1917,8 @@ class SmallBallTests(unittest.TestCase):
             st.our_score = st.opp_score = 3
             st.batter.coarse_type, st.batter.power = "weak", 0.3
             fired += opponent.decide_tactic(st, random.Random(s + 5000)) == "bunt"
-        self.assertGreater(fired, 200)               # そこそこ仕掛けてくる
-        self.assertLess(fired, 1400)                 # でも常にではない(相手を強くしすぎない)
+        self.assertGreater(fired, 200)               # they try it a decent amount
+        self.assertLess(fired, 1400)                 # but not always (don't make the opponent too strong)
 
     def test_opponent_never_bunts_with_two_outs(self):
         import opponent
@@ -1850,21 +1935,21 @@ class SmallBallTests(unittest.TestCase):
             outcome, msgs = resolve_one_pitch(st, "four_seam", "mid_lo", "strike", random.Random(s + 1))
             results.add(outcome["result"])
             self.assertTrue(msgs)
-        self.assertTrue(results <= {"犠打成功", "バント失敗（小フライ）", "バント（封殺）",
-                                    "バント安打", "ファウル", "三振"})
-        self.assertIn("犠打成功", results)
+        self.assertTrue(results <= {"Sacrifice bunt", "Bunt popped up", "Bunt (force out)",
+                                    "Bunt single", "Foul", "Strikeout"})
+        self.assertIn("Sacrifice bunt", results)
 
     def test_successful_sacrifice_advances_runner_and_makes_an_out(self):
-        # ファウルや小フライを避けて「転がった」ケースだけ見る
+        # only look at the cases that "rolled" (avoiding fouls and pop-ups)
         seen = False
         for s in range(300):
             st = self._bunt_state(s)
             before_out = st.outs
             outcome, _ = resolve_one_pitch(st, "four_seam", "mid_lo", "strike", random.Random(s + 7))
-            if outcome["result"] == "犠打成功":
+            if outcome["result"] == "Sacrifice bunt":
                 seen = True
                 self.assertEqual(st.outs, before_out + 1)
-                self.assertTrue(st.runners[1])       # 走者が二塁へ
+                self.assertTrue(st.runners[1])       # the runner reaches second
                 self.assertFalse(st.runners[0])
         self.assertTrue(seen)
 
@@ -1873,8 +1958,8 @@ class SmallBallTests(unittest.TestCase):
         for s in range(200):
             st = self._bunt_state(s)
             outcome, _ = resolve_one_pitch(st, "four_seam", "out_hi", "pitchout", random.Random(s + 2))
-            busted += outcome["result"] in ("ボール", "四球")
-        self.assertGreater(busted, 150)              # ほぼ必ずバントを外させられる
+            busted += outcome["result"] in ("Ball", "Walk")
+        self.assertGreater(busted, 150)              # you almost always get the bunt missed
 
     def test_pitchout_makes_steal_much_easier_to_catch(self):
         def cs_rate(intent, n=1500):
@@ -1887,12 +1972,12 @@ class SmallBallTests(unittest.TestCase):
                 resolve_one_pitch(st, "four_seam", "out_mid", intent, random.Random(s + 40))
                 caught += (st.outs == before + 1 and not st.runners[0] and st.runners[1] is False)
             return caught / n
-        # ピッチアウトのほうが盗塁を刺せている場面が多い(統計的に)
+        # pitchouts catch more steals (statistically)
         self.assertGreaterEqual(cs_rate("pitchout"), cs_rate("strike"))
 
     def test_hit_and_run_runner_advances_without_double_play(self):
         import opponent
-        # 内野ゴロでも走者は進み、併殺にならない
+        # even on an infield grounder the runner advances, with no double play
         adv = dp = 0
         for s in range(400):
             st = generate_random_situation(random.Random(s))
@@ -1902,20 +1987,20 @@ class SmallBallTests(unittest.TestCase):
             play = outcome.get("play")
             if play and play["outs_added"] >= 2:
                 dp += 1
-            if outcome["result"] == "アウト" and (st.runners[1] or st.runners[2]):
+            if outcome["result"] == "Out" and (st.runners[1] or st.runners[2]):
                 adv += 1
-        self.assertEqual(dp, 0)                      # エンドラン中は併殺なし
+        self.assertEqual(dp, 0)                      # no double play during a hit-and-run
         self.assertGreater(adv, 20)
 
     def test_catcher_field_bunt_is_neutral_when_qte_disabled(self):
-        """CLI 以外(Web・テスト)では常に 0.0 = バント処理の挙動は従来どおり。"""
+        """Outside the CLI (Web, tests) it is always 0.0 = bunt handling behaves as before."""
         from qte import catcher_field_bunt, qte_enabled
         self.assertFalse(qte_enabled())
         self.assertEqual(catcher_field_bunt(random.Random(0)), 0.0)
 
     def test_field_bonus_helps_nab_the_lead_runner_and_prevent_bunt_hits(self):
-        """バント処理リズムゲームの出来(field_bonus)は結果を確定させず確率をずらす:
-        出来が良いほど先の走者を封殺しやすく、内野安打(バント安打)を防ぐ。"""
+        """How well the bunt-fielding rhythm game went (field_bonus) does not fix the result, it shifts probabilities:
+        the better it went, the easier it is to force out the lead runner, and it prevents infield hits (bunt hits)."""
         def tally(fb, n=2500):
             nab = hit = 0
             for s in range(n):
@@ -1926,8 +2011,8 @@ class SmallBallTests(unittest.TestCase):
                 st.batter.coarse_type, st.batter.power = "weak", 0.30
                 _, final, _ = st.resolve_bunt(False, False, False,
                                               random.Random(s + 1), field_bonus=fb)
-                nab += final in ("バント（封殺）", "バント（本封殺）")
-                hit += final == "バント安打"
+                nab += final in ("Bunt (force out)", "Bunt (out at home)")
+                hit += final == "Bunt single"
             return nab / n, hit / n
         nab_lo, hit_lo = tally(-0.20)
         nab_hi, hit_hi = tally(0.20)
@@ -1935,10 +2020,10 @@ class SmallBallTests(unittest.TestCase):
         self.assertLessEqual(hit_hi, hit_lo)
 
     def test_begin_at_bat_is_idempotent_within_an_at_bat(self):
-        """begin_at_bat を打席中に何度呼んでも、作戦も乱数の消費量も変わらない。
+        """However many times begin_at_bat is called during an at-bat, neither the tactic nor the random consumption changes.
 
-        Web 版はページを再描画するたびに begin_at_bat を呼ぶので、これが
-        崩れると --seed を付けていてもリロードのたびに試合が変わってしまう。
+        The Web version calls begin_at_bat every time the page is redrawn, so if this
+        breaks, the game changes on every reload even with --seed.
         """
         from engine import begin_at_bat
 
@@ -1959,10 +2044,10 @@ class SmallBallTests(unittest.TestCase):
         base = outcome_after(1)
         for n in (2, 3, 8):
             self.assertEqual(outcome_after(n), base,
-                             f"{n} 回描画すると結果が変わった（begin_at_bat が冪等でない）")
+                             f"the result changed after {n} redraws (begin_at_bat is not idempotent)")
 
 
-# ---------- 1000 ゲーム ストレス ----------
+# ---------- 1000-game stress ----------
 class StressTests(unittest.TestCase):
     def test_1000_games_no_crash_or_invalid_state(self):
         rng = random.Random(2024)
@@ -1982,34 +2067,34 @@ class StressTests(unittest.TestCase):
             guard = 0
             while not state.is_over():
                 guard += 1
-                self.assertLess(guard, 400, f"game {g}: 半イニングが終わらない")
+                self.assertLess(guard, 400, f"game {g}: the half inning never ended")
                 outcome = _drive_pitch(state, rng, intents, courses)
                 total_pitches += 1
-                xbh += outcome["result"] in ("二塁打", "三塁打", "本塁打")
+                xbh += outcome["result"] in ("Double", "Triple", "Home run")
                 self.assertEqual(len(state.runners), 3)
                 if state.is_over():
                     break
-                self.assertLessEqual(state.strikes, 2, f"game {g}: 不正なストライク数")
-                self.assertLessEqual(state.balls, 3, f"game {g}: 不正なボール数")
+                self.assertLessEqual(state.strikes, 2, f"game {g}: invalid strike count")
+                self.assertLessEqual(state.balls, 3, f"game {g}: invalid ball count")
                 self.assertLess(state.outs, 3)
-                self.assertTrue(0 <= state.lineup.index <= 8, f"game {g}: 打順破綻")
+                self.assertTrue(0 <= state.lineup.index <= 8, f"game {g}: batting order broke")
 
-            self.assertTrue(state.outs == 3 or state.is_walkoff(), f"game {g}: 未決着で終了")
+            self.assertTrue(state.outs == 3 or state.is_walkoff(), f"game {g}: ended undecided")
             total_runs += state.runs_this_inning
             run_txt, status = state.result_summary()
             self.assertIsInstance(status, str)
-            build_analysis(state.pitch_log)   # 例外なく回ること
+            build_analysis(state.pitch_log)   # runs without an exception
 
         self.assertGreater(total_pitches, games * 3)
-        # 改良A: 長打も失点も出るようになっているはず(現実的な範囲)
+        # improvement A: extra-base hits and runs should occur (within a realistic range)
         self.assertGreater(xbh, 100)
         self.assertGreater(total_runs, 200)
-        self.assertLess(total_runs / games, 4.0)   # 1半イニングの平均失点が暴走しない
+        self.assertLess(total_runs / games, 4.0)   # average runs per half inning does not run away
 
     def test_1000_games_through_full_engine_no_crash(self):
-        """engine.resolve_one_pitch() ―― CLI/Web が実際に呼ぶ入口 ―― を通しで
-        1000 ゲーム回す。振り逃げ・サイン盗み見・ブロッキング・盗塁など、
-        judge_pitch() だけでは通らない周辺イベントも含めて検証する。
+        """Run engine.resolve_one_pitch() -- the entry point the CLI / Web actually call -- through
+        1000 games. This also verifies the surrounding events that judge_pitch() alone does not cover:
+        dropped third strikes, sign stealing, blocking, steals.
         """
         rng = random.Random(99)
         intents = list(PITCH_INTENTS)
@@ -2022,7 +2107,7 @@ class StressTests(unittest.TestCase):
             guard = 0
             while not state.is_over():
                 guard += 1
-                self.assertLess(guard, 400, f"game {g}: 半イニングが終わらない")
+                self.assertLess(guard, 400, f"game {g}: the half inning never ended")
                 for _ in maybe_resolve_sign_steal(state, rng):
                     pass
                 pt = rng.choice(list(repertoire_options(state.pitcher)))
@@ -2037,15 +2122,167 @@ class StressTests(unittest.TestCase):
             self.assertEqual(report["pitches"], len(state.pitch_log))
             self.assertEqual(report["runs_allowed"], state.runs_this_inning)
             self.assertGreaterEqual(report["batters_faced"], 1)
-            # 三振/四球/被安打/エラーの合計は、対戦打者数を超えない
+            # the total of strikeouts / walks / hits allowed / errors does not exceed the batters faced
             self.assertLessEqual(
                 report["strikeouts"] + report["walks"] + report["hits"] + report["errors"],
                 report["batters_faced"])
-            build_analysis(state.pitch_log)   # 例外なく回ること
+            build_analysis(state.pitch_log)   # runs without an exception
 
-        # 振り逃げ・サイン盗み見・盗塁・後逸など、周辺イベントが実際に一通り起きたか
-        for ev in ("振り逃げ", "サイン交換", "盗塁成功", "盗塁刺", "後逸"):
-            self.assertIn(ev, events_seen, f"1000ゲームで一度も『{ev}』が発生しなかった")
+        # did the surrounding events (dropped third strike, sign stealing, steals, passed balls) all actually occur
+        for ev in ("Dropped third strike", "Change signs", "Stolen base", "Caught stealing", "Passed ball"):
+            self.assertIn(ev, events_seen, f"'{ev}' never occurred in 1000 games")
+
+
+# ---------- Catcher Rating / Challenge Code / drills (built during the hackathon) ----------
+def _play_random_game(seed):
+    rng = random.Random(seed)
+    st = generate_random_situation(rng)
+    while not st.is_over():
+        pt = rng.choice(list(repertoire_options(st.pitcher)))
+        resolve_one_pitch(st, pt, rng.choice(list(COURSES)), rng.choice(list(PITCH_INTENTS)), rng)
+    return st
+
+
+class CatcherRatingTests(unittest.TestCase):
+    def test_rating_is_well_formed_for_many_games(self):
+        grades = set()
+        for seed in range(60):
+            st = _play_random_game(seed)
+            r = catcher_rating(st)
+            self.assertTrue(0 <= r["score"] <= 100)
+            self.assertIn(r["grade"], "SABCD")
+            self.assertTrue(r["title"])
+            for name, desc in r["badges"]:
+                self.assertTrue(name and desc)
+            grades.add(r["grade"])
+        self.assertGreaterEqual(len(grades), 2)     # the rating actually separates games
+
+    def test_shutdown_badge_only_when_no_runs(self):
+        for seed in range(40):
+            st = _play_random_game(seed)
+            names = [n for n, _ in catcher_rating(st)["badges"]]
+            self.assertEqual("Shutdown" in names, st.runs_this_inning == 0)
+
+    def test_more_runs_never_raise_the_score(self):
+        st = _play_random_game(3)
+        report = build_postgame_report(st)
+        scores = []
+        for runs in (0, 1, 2, 5):
+            fake = dict(report, runs_allowed=runs)
+            scores.append(catcher_rating(st, fake)["score"])
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+
+class StartOptionsTests(unittest.TestCase):
+    def test_same_challenge_code_gives_the_same_opening_scene(self):
+        a, b = webapp.GameSession(), webapp.GameSession()
+        a.start_new_game(challenge_seed=4242)
+        b.start_new_game(challenge_seed=4242)
+        self.assertEqual(a.game_seed, 4242)
+        self.assertEqual(a.state.batter.name, b.state.batter.name)
+        self.assertEqual((a.state.our_score, a.state.opp_score, a.state.runners, a.state.outs),
+                         (b.state.our_score, b.state.opp_score, b.state.runners, b.state.outs))
+
+    def test_every_game_gets_a_code_when_no_seed_is_given(self):
+        s = webapp.GameSession()
+        s.start_new_game()
+        self.assertTrue(1000 <= s.game_seed <= 9999)
+
+    def test_start_options_ignore_bad_values(self):
+        self.assertEqual(webapp._start_options({"seed": "abc", "scenario": "nope", "difficulty": "insane"}), {})
+        self.assertEqual(webapp._start_options({"seed": " 77 ", "scenario": "steal", "difficulty": "expert"}),
+                         {"challenge_seed": 77, "scenario": "steal", "difficulty": "expert"})
+        self.assertEqual(webapp._start_options({"scenario": "random"}), {"scenario": None})
+
+    def test_every_drill_sets_up_a_valid_game(self):
+        for key, _name, _desc in webapp._DRILLS:
+            s = webapp.GameSession()
+            s.start_new_game(challenge_seed=1, scenario=key)
+            self.assertEqual(s.scenario, key)
+            self.assertFalse(s.state.is_over())
+
+
+# ---------- Play Viewer (playview.py, built during the hackathon) ----------
+def _fair_ball_plays(games, seed):
+    """Yield (outcome, state_before_runners) for every fair ball in some random games."""
+    rng = random.Random(seed)
+    for _ in range(games):
+        st = generate_random_situation(rng)
+        while not st.is_over():
+            pt = rng.choice(list(repertoire_options(st.pitcher)))
+            outcome, _msgs = resolve_one_pitch(st, pt, rng.choice(list(COURSES)),
+                                               rng.choice(list(PITCH_INTENTS)), rng)
+            if outcome.get("batted_ball") and outcome.get("fielding") and outcome.get("play"):
+                yield outcome
+
+
+class PlayViewerTests(unittest.TestCase):
+    def _check_segments(self, segs):
+        prev_end = 0.0
+        for s in segs:
+            self.assertGreater(s[1], s[0])
+            self.assertGreaterEqual(s[0], prev_end - 1e-6)
+            prev_end = s[1]
+            for v in s:
+                self.assertTrue(v == v and abs(v) < 1000)
+
+    def test_script_is_valid_for_every_kind_of_play(self):
+        seen = set()
+        for i, o in enumerate(_fair_ball_plays(150, 8)):
+            sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=i)
+            seen.add(o["result"])
+            self._check_segments(sc["ball"]["segs"])
+            for f in sc["fielders"].values():
+                self._check_segments(f["segs"])
+            for r in sc["runners"]:
+                self._check_segments(r["segs"])
+            self.assertTrue(0 < sc["duration"] < 12)
+            self.assertEqual(set(sc["fielders"]), set(playview.POSITIONS))
+            json.dumps(sc)       # must be JSON-friendly
+        self.assertTrue({"Out", "Single", "Double", "Home run"} <= seen)
+
+    def test_same_play_always_looks_the_same_and_uses_no_game_randomness(self):
+        o = next(iter(_fair_ball_plays(20, 3)))
+        a = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=7)
+        before = random.getstate()
+        b = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=7)
+        self.assertEqual(random.getstate(), before)
+        self.assertEqual(a, b)
+
+    def test_the_fielder_who_makes_the_play_goes_to_the_ball(self):
+        for i, o in enumerate(_fair_ball_plays(60, 4)):
+            if not o["fielding"]["air_out"]:
+                continue
+            sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=i)
+            flight = sc["ball"]["segs"][0]
+            catch = [s for s in sc["fielders"][o["fielding"]["position"]]["segs"] if s[1] <= flight[1] + 0.01][-1]
+            self.assertAlmostEqual(catch[4], flight[4], delta=1.0)     # he is where the ball came down
+            self.assertAlmostEqual(catch[5], flight[5], delta=1.0)
+
+    def test_runner_fates_match_the_play(self):
+        for i, o in enumerate(_fair_ball_plays(120, 6)):
+            sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=i)
+            fates = [r["fate"] for r in sc["runners"]]
+            if o["result"] != "Home run":
+                self.assertEqual(fates.count("scored") + (0 if o["play"]["outs_added"] else 0),
+                                 min(o["play"]["runs"], fates.count("scored")))
+            if o["result"] == "Home run":
+                self.assertTrue(all(f == "scored" for f in fates))
+            if o["fielding"]["batter_out"]:
+                batter = next(r for r in sc["runners"] if r["id"] == "b")
+                self.assertEqual(batter["fate"], "out")
+            else:
+                batter = next(r for r in sc["runners"] if r["id"] == "b")
+                self.assertNotEqual(batter["fate"], "out")
+
+    def test_viewer_html_embeds_the_script_safely(self):
+        o = next(iter(_fair_ball_plays(20, 3)))
+        sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=1)
+        page = playview.render_play_viewer(sc, "A <b>caption</b>", autoplay=False)
+        self.assertIn('id="pv-data"', page)
+        self.assertIn('data-autoplay="0"', page)
+        self.assertIn("A &lt;b&gt;caption&lt;/b&gt;", page)
+        self.assertNotIn("</script><", page.split('id="pv-data"')[1].split("</script>")[0])
 
 
 if __name__ == "__main__":

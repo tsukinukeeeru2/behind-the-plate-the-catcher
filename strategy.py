@@ -1,29 +1,34 @@
-"""配球の「意図」「セットアップ(前球が次を活かす)」「捕手の判断の質」。
+"""Pitch "intent", "setups" (the previous pitch sets up the next), and "quality of the catcher's decision".
 
-ここが返すのは、judge.py の確率に足す **小さな補正**と、
-試合後の分析用の **メモ(notes)** と、内部だけで使う **decision_quality**。
+What this file returns is a **small adjustment** added to the probabilities in judge.py,
+**notes** for the post-game analysis, and an internal-only **decision_quality**.
 
-大方針:
-  - 「この配球なら +20%」のような固定ボーナスは作らない。
-  - 打者の狙い / 前球 / 配球履歴 / カウント / 左右 / タイミング / 実際のコース が
-    噛み合ったときだけ効果が出る。効果量は各ルール ±0.02〜0.06、合計もclampする。
-  - decision_quality は結果を決めない。あくまで「判断の質」の内部指標。
+Guiding principles:
+  - No flat bonuses like "this call gives +20%".
+  - An effect only appears when the batter's guess / previous pitch / pitch history / count /
+    handedness / timing / actual location all line up. Each rule is worth +-0.02 to 0.06, and the total is clamped.
+  - decision_quality never decides the result. It is just an internal measure of "quality of the decision".
 """
 
 from constants import zone_overlap, zone_x, zone_y
 from pitch_data import family_of, velocity_of
 
-# 捕手が毎球選ぶ「配球意図」
+# The "intent" the catcher picks on every pitch
 PITCH_INTENTS = {
-    "strike": "ストライク先行（カウントを取る）",
-    "chase": "チェイス（ボール球を振らせる）",
-    "weak_contact": "打たせて取る（弱い当たり狙い）",
-    "waste": "見せ球（次を活かす）",
-    "freeze": "見逃しを狙う（きわどいゾーン）",
-    "pitchout": "ピッチアウト（大きく外して走者を狙う）",
+    "strike": "Get ahead (throw a strike)",
+    "chase": "Chase (get him to swing at a ball)",
+    "weak_contact": "Induce weak contact",
+    "waste": "Waste pitch (set up the next one)",
+    "freeze": "Freeze him (steal a called strike)",
+    "pitchout": "Pitchout (miss big to go after the runner)",
 }
 
 _ADJ_KEYS = ("timing_shift", "swing_adj", "whiff_adj", "contact_adj", "walk_adj")
+
+
+def intent_label(intent):
+    """The short name of an intent: the text before the parenthesis, e.g. "Get ahead"."""
+    return PITCH_INTENTS[intent].split(" (")[0]
 
 
 def _clamp(x, lo, hi):
@@ -31,7 +36,7 @@ def _clamp(x, lo, hi):
 
 
 # ---------------------------------------------------------------------------
-# 1. 配球意図の効果(カウントと相性で ±)
+# 1. Effects of the intent (plus or minus by count and matchup)
 # ---------------------------------------------------------------------------
 def intent_effects(intent, balls, strikes, batter, family):
     adj = dict.fromkeys(_ADJ_KEYS, 0.0)
@@ -42,11 +47,11 @@ def intent_effects(intent, balls, strikes, batter, family):
         adj["whiff_adj"] -= 0.04
         dq += 0.10 if (balls >= strikes) else -0.05
         if strikes == 2:
-            adj["contact_adj"] += 0.04         # 追い込んで置きにいくと痛打も
+            adj["contact_adj"] += 0.04         # getting it over with two strikes can get hit hard
             dq -= 0.05
 
     elif intent == "chase":
-        adj["swing_adj"] -= 0.05               # ゾーン外なので基本は見送られる
+        adj["swing_adj"] -= 0.05               # it is outside the zone, so he usually lets it go
         if strikes == 2:
             adj["whiff_adj"] += 0.06
             adj["swing_adj"] += 0.08 * batter.aggression
@@ -60,14 +65,14 @@ def intent_effects(intent, balls, strikes, batter, family):
         adj["whiff_adj"] -= 0.02
         dq += 0.06
         if family != "fastball":
-            dq -= 0.03                         # 変化球で「打たせて取る」は噛み合いにくい
+            dq -= 0.03                         # "induce weak contact" does not mesh well with a breaking ball
 
     elif intent == "waste":
         adj["swing_adj"] -= 0.10
         if strikes == 2 and balls <= 1:
-            dq += 0.10                         # 追い込んでからの見せ球は理にかなう
+            dq += 0.10                         # a waste pitch after getting ahead makes sense
         else:
-            dq -= 0.15                         # 苦しいカウントでの見せ球は無駄球
+            dq -= 0.15                         # a waste pitch in a tough count is a wasted pitch
 
     elif intent == "freeze":
         adj["swing_adj"] -= 0.06
@@ -75,18 +80,18 @@ def intent_effects(intent, balls, strikes, batter, family):
             dq += 0.08
 
     elif intent == "pitchout":
-        # ほぼ確実にボール。走者を狙う球なので打者への影響はほぼ無し。
+        # Almost surely a ball. It is a pitch aimed at the runner, so the batter barely matters.
         adj["swing_adj"] -= 0.40
         adj["walk_adj"] += 0.30
-        # 判断の質: 走者が動いてくる場面なら価値がある/そうでなければ 1 球損なだけ
+        # Quality of the decision: worth it if the runner is going / otherwise it costs you one pitch
         dq += -0.20 if balls >= 2 else -0.05
 
     return adj, dq
 
 
 # ---------------------------------------------------------------------------
-# 2. セットアップ(前球が次の球を活かす。#6 #7)
-#    各ルールは「条件が揃ったときだけ」小さな補正 + メモを返す。
+# 2. Setups (the previous pitch sets up the next. #6 #7)
+#    Each rule returns a small adjustment + a note only "when its conditions line up".
 # ---------------------------------------------------------------------------
 def _seq_rules(history, call, actual, batter, guess, state):
     pt = call["pitch_type"]
@@ -100,13 +105,13 @@ def _seq_rules(history, call, actual, batter, guess, state):
 
     out = []   # (adjust_dict, note, dq_delta)
 
-    # --- 初球 ---
+    # --- First pitch ---
     if last is None:
         if guess["class"] == "fastball" and fam != "fastball":
             out.append(({"whiff_adj": 0.04, "contact_adj": -0.04},
-                        "初球の変化球で直球待ちを外した", 0.10))
+                        "First-pitch off-speed threw off a fastball-sitter", 0.10))
         if is_meatball and guess["class"] == "fastball":
-            out.append(({"contact_adj": 0.06}, "初球を狙われる真ん中に置いた", -0.12))
+            out.append(({"contact_adj": 0.06}, "Left a first pitch in the middle for him to hit", -0.12))
         return out
 
     lam_c = last["actual_course"]
@@ -114,72 +119,72 @@ def _seq_rules(history, call, actual, batter, guess, state):
     lam_v = last.get("velocity")
     lam_f = last.get("family")
 
-    # --- ハシゴ(低め→高め / 高め→低め) ---
+    # --- The ladder (low -> high / high -> low) ---
     if lam_y == "lo" and ay == "hi" and fam == "fastball":
         out.append(({"whiff_adj": 0.05, "timing_shift": -0.05},
-                    "低め→高めの釣り球", 0.08))
+                    "Low-to-high chase fastball (ladder)", 0.08))
     if lam_y == "hi" and ay == "lo" and fam in ("breaking", "offspeed"):
         out.append(({"whiff_adj": 0.04, "contact_adj": -0.05},
-                    "高め見せてからの低め変化球", 0.08))
+                    "Low breaking ball after showing high", 0.08))
 
-    # --- 球速差(前球との緩急) ---
+    # --- Speed gap (change of pace from the previous pitch) ---
     if lam_v is not None:
         gap = abs(velo - lam_v)
         if gap >= 8:
             out.append(({"whiff_adj": 0.03, "timing_shift": -0.03},
-                        "前球との大きな球速差", 0.05))
+                        "Big speed gap from the previous pitch", 0.05))
             if lam_f is not None and lam_f != fam:
-                out.append(({"whiff_adj": 0.02}, "球種と球速の両方を変えた", 0.03))
+                out.append(({"whiff_adj": 0.02}, "Changed both pitch type and speed", 0.03))
         elif gap <= 3 and lam_f == fam:
             out.append(({"contact_adj": 0.04},
-                        "似た球速・同系統が続き読みやすい", -0.08))
+                        "Similar speed and family in a row, easy to read", -0.08))
 
-    # --- 内外の揺さぶり ---
+    # --- Working in and out ---
     if {lam_x, ax} == {"in", "out"}:
         out.append(({"swing_adj": -0.03, "whiff_adj": 0.02},
-                    "内外を大きく揺さぶった", 0.05))
+                    "Worked him in and out", 0.05))
 
-    # --- ストレート → チェンジアップ ---
+    # --- Fastball -> changeup ---
     if lam_f == "fastball" and fam == "offspeed":
         out.append(({"whiff_adj": 0.05, "timing_shift": -0.04},
-                    "ストレートからのチェンジアップ", 0.07))
+                    "Changeup off a fastball", 0.07))
 
-    # --- ゾーンの変化球 → ボールゾーンの変化球 ---
+    # --- A breaking ball in the zone -> a breaking ball out of the zone ---
     if lam_f == "breaking" and last.get("in_zone") and fam == "breaking" and ay != "mid":
         out.append(({"whiff_adj": 0.05, "swing_adj": 0.03},
-                    "ゾーン内の変化球からボールゾーンの変化球", 0.07))
+                    "Breaking ball out of the zone after one in the zone", 0.07))
 
-    # --- 差し込まれている打者へインコース速球 ---
+    # --- An inside fastball to a jammed batter ---
     if records[-1].get("timing") == "late" and ax == "in" and fam == "fastball":
         out.append(({"whiff_adj": 0.04, "contact_adj": -0.05},
-                    "差し込まれている打者へのインコース速球", 0.08))
+                    "Inside fastball to a jammed hitter", 0.08))
 
-    # --- 泳いでいる打者へ変化球 / 外の球 ---
+    # --- Off-speed / an outside pitch to a batter out front ---
     if records[-1].get("timing") == "early" and (fam != "fastball" or ax == "out"):
         out.append(({"whiff_adj": 0.04},
-                    "泳いでいる打者への変化球・外の球", 0.06))
+                    "Off-speed / outside pitch to a hitter out front", 0.06))
 
-    # --- 右投手 vs 左打者 ---
+    # --- Pitcher vs the opposite-handed batter ---
     if state.pitcher.throws != batter.bats and (fam == "offspeed" or ax == "out"):
         out.append(({"contact_adj": -0.03},
-                    "対左への逃げる球（プラトーン）", 0.04))
+                    "Pitch running away from the opposite-side batter (platoon)", 0.04))
 
-    # --- 同じ (球種, コース) を打席内で繰り返し ---
+    # --- The same (pitch type, location) repeated within an at-bat ---
     same_combo = sum(1 for r in records
                      if r["pitch_type"] == pt and r["actual_course"] == actual_course)
     if same_combo >= 1:
         out.append(({"whiff_adj": -0.06, "contact_adj": 0.06},
-                    "同じ球・同じコースの見せすぎ", -0.15))
+                    "Showed the same pitch in the same spot too often", -0.15))
 
-    # --- 同系統が 3 連続以上 ---
+    # --- Three or more in a row from the same family ---
     if history.same_type_streak() >= 3:
         out.append(({"contact_adj": 0.05},
-                    "同系統の球が続き修正されやすい", -0.10))
+                    "Same family repeated, easy for him to adjust", -0.10))
 
-    # --- 追い込んでから真ん中 ---
+    # --- A middle pitch after getting to two strikes ---
     if strikes_is_two(state) and is_meatball:
         out.append(({"contact_adj": 0.08},
-                    "追い込んでから甘い球", -0.20))
+                    "Left it over the middle after getting two strikes", -0.20))
 
     return out
 
@@ -189,7 +194,7 @@ def strikes_is_two(state):
 
 
 def evaluate_sequencing(history, call, actual, batter, guess, state):
-    """セットアップ効果をまとめて返す。"""
+    """Return the combined setup effect."""
     total = dict.fromkeys(_ADJ_KEYS, 0.0)
     dq_seq = 0.0
     notes = []
@@ -202,7 +207,7 @@ def evaluate_sequencing(history, call, actual, batter, guess, state):
         notes.append(note)
         label_bits.append(note)
 
-    # 効果量が過剰にならないよう clamp(固定ボーナスにしない)
+    # Clamp so the effect cannot get out of hand (no flat bonuses)
     for key in ("swing_adj", "whiff_adj", "contact_adj", "walk_adj"):
         total[key] = _clamp(total[key], -0.15, 0.15)
     total["timing_shift"] = _clamp(total["timing_shift"], -0.10, 0.10)
@@ -210,12 +215,12 @@ def evaluate_sequencing(history, call, actual, batter, guess, state):
 
     total["notes"] = notes
     total["dq_seq"] = dq_seq
-    total["sequence_label"] = " / ".join(label_bits) if label_bits else "特筆なし"
+    total["sequence_label"] = " / ".join(label_bits) if label_bits else "Nothing notable"
     return total
 
 
 # ---------------------------------------------------------------------------
-# 3. Catcher Decision Quality(内部指標。プレイ中は絶対に表示しない。#9)
+# 3. Catcher Decision Quality (an internal measure. NEVER shown during play. #9)
 # ---------------------------------------------------------------------------
 def _intent_count_fit(intent, balls, strikes):
     if intent == "chase":
@@ -229,7 +234,7 @@ def _intent_count_fit(intent, balls, strikes):
     if intent == "waste":
         return 0.10 if (strikes == 2 and balls <= 1) else -0.15
     if intent == "pitchout":
-        return -0.10 if balls >= 2 else -0.02   # 走者が動けば engine 側で別途プラス評価
+        return -0.10 if balls >= 2 else -0.02   # if the runner goes, engine.py rewards it separately
     return 0.0
 
 
@@ -246,61 +251,61 @@ def _defense_synergy(defense, batter):
 
 def catcher_decision_quality(call, actual, batter, guess, guess_class2, timing,
                              history, state, seq):
-    """良し悪しの内部スコア(-1〜+1)。結果は決めない。"""
+    """An internal score (-1 to +1) for how good the decision was. It does not decide the result."""
     actual_course = actual["actual_course"]
 
     dq = 0.0
-    # 狙い(速球/変化球)を外せたか
+    # Did you fool his guess (fastball / off-speed)?
     fooled = (guess["class"] != guess_class2)
     dq += (0.30 if fooled else -0.30) * guess["class_strength"]
-    # コース(打者の隠しゾーン。これは"判断の質"を後から評価するための真実)
+    # Location (the batter's hidden zones. This is the truth used to judge the "quality of the decision" afterward)
     dq += 0.20 * zone_overlap(actual_course, batter.weak_course)
     dq -= 0.25 * zone_overlap(actual_course, batter.hot_course)
     if actual_course == "mid_mid":
         dq -= 0.12
-    # タイミングを崩せたか
+    # Did you throw off his timing?
     if timing != "on_time":
         dq += 0.15
-    # 見せすぎ
+    # Overshowing a pitch
     if history.same_type_streak() >= 3:
         dq -= 0.15
-    # 意図とカウントの相性
+    # How the intent fits the count
     dq += _intent_count_fit(call["intent"], state.balls, state.strikes)
-    # セットアップの process
+    # The process of the setup
     dq += _clamp(0.6 * seq["dq_seq"], -0.15, 0.15)
-    # 守備配置との相性
+    # How well it fits the defensive alignment
     dq += _defense_synergy(state.defense, batter)
 
     return _clamp(dq, -1.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
-# 4. 試合後の分析(#10)。結果と判断を分けて集計する。
+# 4. Post-game analysis (#10). Tallies result and decision separately.
 # ---------------------------------------------------------------------------
-_HIT_RESULTS = ("単打", "二塁打", "三塁打", "本塁打")
-_EXTRA_BASE = ("二塁打", "三塁打", "本塁打")
+_HIT_RESULTS = ("Single", "Double", "Triple", "Home run")
+_EXTRA_BASE = ("Double", "Triple", "Home run")
 
 
 def _result_is_bad(result):
-    return result in _HIT_RESULTS or result in ("四球", "エラー")
+    return result in _HIT_RESULTS or result in ("Walk", "Error")
 
 
 def _result_is_good(result, outcome):
-    if result in ("空振り", "アウト"):
+    if result in ("Whiff", "Out"):
         return True
-    if result == "ストライク" and not outcome["swung"] and outcome["in_zone"]:
-        return True   # 見逃しストライクを奪えた
+    if result == "Strike" and not outcome["swung"] and outcome["in_zone"]:
+        return True   # got a called strike
     return False
 
 
-_WAIT_JP = {"fastball": "速球待ち", "offspeed": "変化球待ち"}
+_WAIT_TEXT = {"fastball": "Fastball", "offspeed": "Off-speed"}
 
 
 def grade_reads(reads, batters):
-    """捕手メモ(#B)を、隠しの真実と照合して採点する。
+    """Grade the catcher's notes (#B) against the hidden truth.
 
     reads   : {id(batter): {"spot", "wait", "weak"}}
-    batters : 打線 9 人(Batter)
+    batters : the nine batters in the lineup (Batter)
     """
     by_id = {id(b): b for b in batters}
     rows, graded, correct = [], 0, 0
@@ -314,20 +319,20 @@ def grade_reads(reads, batters):
             hit = note["wait"] == truth
             graded += 1
             correct += hit
-            mark = "◎当たり" if hit else "×はずれ"
-            parts.append(f"待ち: {_WAIT_JP[note['wait']]} → {mark}（実際は{_WAIT_JP[truth]}）")
+            mark = "◎ Right" if hit else "× Wrong"
+            parts.append(f"Looking for: {_WAIT_TEXT[note['wait']]} -> {mark} (actually {_WAIT_TEXT[truth]})")
         if note.get("weak"):
             overlap = zone_overlap(note["weak"], batter.weak_course)
             graded += 1
             correct += (overlap >= 1.0)
-            mark = "◎当たり" if overlap >= 1.0 else ("△おしい（同じ列か段）" if overlap >= 0.5 else "×はずれ")
-            parts.append(f"弱点コース: {note['weak']} → {mark}（実際は{batter.weak_course}）")
+            mark = "◎ Right" if overlap >= 1.0 else ("△ Close (same row or column)" if overlap >= 0.5 else "× Wrong")
+            parts.append(f"Weak zone: {note['weak']} -> {mark} (actually {batter.weak_course})")
         rows.append("  " + " / ".join(parts))
     return {"rows": rows, "graded": graded, "correct": correct}
 
 
 def build_analysis(pitch_log):
-    """pitch_log(1 球 = dict のリスト)を集計して、分かりやすい塊にする。"""
+    """Tally pitch_log (a list of dicts, one per pitch) into easy-to-read groups."""
     total = len(pitch_log)
     good_calls, risky_calls = [], []
     fooled_moments, read_moments = [], []
@@ -339,7 +344,7 @@ def build_analysis(pitch_log):
         dq = entry["decision_quality"]
         dq_values.append(dq)
         num = entry["pitch_number"]
-        label = entry.get("call_label_ja", entry["call_label"])   # 表示用。なければ内部表記のまま
+        label = entry.get("call_label_text", entry["call_label"])   # for display; falls back to the internal form
         result = entry["result"]
 
         if dq >= 0.25:
@@ -367,13 +372,13 @@ def build_analysis(pitch_log):
 
     avg_dq = sum(dq_values) / total if total else 0.0
     if avg_dq >= 0.15:
-        dq_label = "良い（狙いを外し、崩せていた）"
+        dq_label = "Good (kept batters off balance)"
     elif avg_dq >= 0.0:
-        dq_label = "やや良い"
+        dq_label = "Slightly good"
     elif avg_dq >= -0.15:
-        dq_label = "やや甘い"
+        dq_label = "Slightly loose"
     else:
-        dq_label = "甘い（読まれ・置きにいく球が多かった）"
+        dq_label = "Loose (too many predictable, get-it-over pitches)"
 
     return {
         "total_pitches": total,
@@ -383,25 +388,25 @@ def build_analysis(pitch_log):
         "read_moments": read_moments,
         "defense_moments": defense_moments,
         "misfire_moments": misfire_moments,
-        "unlucky": unlucky,      # 判断は良かったが結果が悪かった
-        "lucky": lucky,          # 判断は悪かったが結果に救われた
-        "extra_base": extra_base,   # 浴びた長打
+        "unlucky": unlucky,      # good decision, bad result
+        "lucky": lucky,          # bad decision, saved by the result
+        "extra_base": extra_base,   # extra-base hits allowed
         "avg_decision_quality": round(avg_dq, 3),
         "decision_quality_label": dq_label,
     }
 
 
 def build_postgame_report(state):
-    """3 アウト後の Catcher Report 用の集計(#Postgame Report)。
+    """The tally for the Catcher Report after three outs (#Postgame Report).
 
-    build_analysis() が持つ「判断の質」の分析に、結果だけでひと目で分かる
-    数字(失点/対戦打者数/球数/三振/四球/被安打)と、判断の質(decision_quality)
-    とは別軸の Pitch Execution(投手の実行力)・Defense(守備)の要約を足す。
-    判定ロジックには一切触れない、集計だけの純粋関数。
+    On top of the "quality of decisions" analysis from build_analysis(), it adds
+    at-a-glance result numbers (runs / batters faced / pitches / strikeouts / walks / hits) and
+    summaries of Pitch Execution (how the pitcher executed) and Defense, which are separate axes from
+    the quality of decisions (decision_quality). A pure tally function that never touches the judging logic.
     """
     log = state.pitch_log
     strikeouts = sum(1 for p in log if p.get("at_bat_end") == "strikeout")
-    walks = sum(1 for p in log if p.get("at_bat_end") == "walk") + state.events.count("敬遠")
+    walks = sum(1 for p in log if p.get("at_bat_end") == "walk") + state.events.count("Intentional walk")
     hits = sum(1 for p in log if p.get("at_bat_end") == "hit")
     errors = sum(1 for p in log if p.get("at_bat_end") == "error")
 
@@ -428,3 +433,51 @@ def build_postgame_report(state):
             "final_ede": round(state.defense.expected_defensive_efficiency(), 1),
         },
     }
+
+
+_RATING_TITLES = (
+    (85, "S", "Field General"),
+    (70, "A", "Veteran Backstop"),
+    (55, "B", "Reliable Receiver"),
+    (40, "C", "Rookie Backstop"),
+    (0, "D", "Back to the Bullpen"),
+)
+
+
+def catcher_rating(state, report=None, analysis=None):
+    """Turn a finished half inning into a Catcher Rating (S to D), a title, and a few badges.
+
+    Points out of 100: runs allowed (40) + decision quality (30) + strikeouts (12)
+    + framing (8) + holding the lead (10). A pure tally that never touches the judging logic.
+    """
+    report = report or build_postgame_report(state)
+    analysis = analysis or build_analysis(state.pitch_log)
+
+    runs = report["runs_allowed"]
+    runs_pts = {0: 40, 1: 22, 2: 8}.get(runs, 0)
+    dq = analysis["avg_decision_quality"]
+    dq_unit = max(-1.0, min(1.0, dq / 0.25))
+    dq_pts = 30 * dq_unit if dq_unit >= 0 else 15 * dq_unit
+    k_pts = 4 * min(report["strikeouts"], 3)
+    frame_pts = 2 * min(report["framed_strikes"], 4)
+    start_lead = state.start_our - state.start_opp
+    end_lead = state.our_score - state.opp_score
+    lead_pts = 10 if end_lead >= min(start_lead, 0) else 0
+
+    score = max(0, min(100, round(runs_pts + dq_pts + k_pts + frame_pts + lead_pts)))
+    grade, title = next((g, t) for floor, g, t in _RATING_TITLES if score >= floor)
+
+    badges = []
+    if runs == 0:
+        badges.append(("Shutdown", "Not a single run allowed"))
+    if report["strikeouts"] >= 2:
+        badges.append(("Strikeout Artist", f"{report['strikeouts']} strikeouts"))
+    if report["framed_strikes"] >= 2:
+        badges.append(("Pickpocket", f"{report['framed_strikes']} strikes stolen by framing"))
+    if len(analysis["fooled_moments"]) >= 3:
+        badges.append(("Mind Games", f"Fooled the batter's guess {len(analysis['fooled_moments'])} times"))
+    if state.events.count("Caught stealing") >= 1:
+        badges.append(("Cannon Arm", "Threw out a base stealer"))
+    if len(analysis["unlucky"]) >= 2:
+        badges.append(("Hard Luck", "Good calls that did not get the result they deserved"))
+    return {"score": score, "grade": grade, "title": title, "badges": badges}

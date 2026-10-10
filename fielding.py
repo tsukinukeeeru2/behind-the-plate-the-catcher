@@ -1,34 +1,34 @@
-"""フェア打球を「どの野手が」「さばけるか(アウト/ヒット)」に変換するモジュール。
+"""Turns a ball hit fair into "which fielder" and "can he handle it (out / hit)".
 
-アウト確率 =  base_out_probability             打球の種類・飛距離で決まる素の値
-            + defender_skill_adjustment       その野手の総合力(50 が平均)
-            + position_fit_adjustment         配置が合っているか × ポジション難度
-            + defensive_alignment_adjustment  シフトが打球と噛み合ったか
-            + batted_ball_adjustment          強い打球ほどアウトになりにくい
+out probability =  base_out_probability             the raw value set by ball type and distance
+                 + defender_skill_adjustment        the fielder's overall rating (50 is average)
+                 + position_fit_adjustment          is he placed well? x position difficulty
+                 + defensive_alignment_adjustment   does the shift match the ball?
+                 + batted_ball_adjustment           the harder it is hit, the less likely an out
 
-どの行がアウト率をどれだけ動かしたかは、返り値の breakdown で確認できる。
+The returned `breakdown` shows how much each line moved the out rate.
 """
 
 import random
 
 from fielders import position_fit
 
-# 打球の種類 × 飛距離 ごとの「素の」アウト確率。
+# The "raw" out probability by ball type x distance.
 BASE_OUT_PROB = {
     ("ground", "infield"): 0.76,
-    ("ground", "shallow"): 0.35,   # 内野の間を抜けかけたゴロ
-    ("line", "infield"): 0.42,     # 鋭いライナー(正面なら捕れる)
+    ("ground", "shallow"): 0.35,   # a grounder that almost got through the infield
+    ("line", "infield"): 0.42,     # a sharp liner (catchable if right at someone)
     ("line", "shallow"): 0.30,
     ("line", "deep"): 0.40,
-    ("fly", "infield"): 0.92,      # 内野フライ
+    ("fly", "infield"): 0.92,      # infield fly
     ("fly", "shallow"): 0.78,
     ("fly", "deep"): 0.74,
 }
 
-# 打球の強さによる補正
+# Adjustment by how hard the ball is hit
 HARDNESS_ADJUST = {"soft": +0.10, "medium": -0.02, "hard": -0.13}
 
-# エラー(処理できたはずの打球を落球・悪送球で出塁させてしまう)基準確率
+# Base probability of an error (letting a catchable ball reach via a drop or a bad throw)
 ERROR_BASE = 0.045
 
 
@@ -37,15 +37,15 @@ def _clamp(x, lo, hi):
 
 
 def _hit_extent(bb, batter, rng):
-    """安打になったとき、単打 / 二塁打 / 三塁打 / 本塁打 のどれかを決める。
+    """When it is a hit, decide whether it is a single / double / triple / home run.
 
-    打球の強さ・種類・飛距離・方向 と、打者の power / speed で確率を動かす。
+    Probabilities move with the ball's hardness, type, distance, direction, and the batter's power / speed.
     """
     power = getattr(batter, "power", 0.5)
     speed = getattr(batter, "speed", 50)
     t, d, h = bb.ball_type, bb.distance, bb.hardness
 
-    # 本塁打: 強い打球が深く飛んだフライ/ライナーのみ
+    # Home run: only a hard-hit fly ball / line drive that carried deep
     if h == "hard" and d == "deep" and t in ("fly", "line"):
         hr_p = 0.10 + 0.30 * power
         if bb.direction == "pull":
@@ -53,19 +53,19 @@ def _hit_extent(bb, batter, rng):
         elif bb.direction == "oppo":
             hr_p -= 0.05
         if t == "line":
-            hr_p *= 0.5                      # ライナーは本塁打になりにくい
+            hr_p *= 0.5                      # a line drive rarely leaves the park
         if rng.random() < max(0.0, hr_p):
-            return "本塁打"
+            return "Home run"
 
-    # 三塁打: 深いギャップへの打球 + 俊足
+    # Triple: a ball into a deep gap + a fast runner
     if d == "deep" and t in ("line", "fly"):
         tri_p = 0.05 + (speed - 50) / 100 * 0.25
         if bb.direction == "center":
             tri_p += 0.04
         if rng.random() < max(0.0, tri_p):
-            return "三塁打"
+            return "Triple"
 
-    # 二塁打: 深い打球 / 浅いライナー / 三塁線・一塁線を破る強いゴロ
+    # Double: a deep ball / a shallow liner / a hard grounder down the line
     if d == "deep":
         dbl_p = 0.55
     elif t == "line" and d == "shallow":
@@ -75,16 +75,16 @@ def _hit_extent(bb, batter, rng):
     else:
         dbl_p = 0.0
     if rng.random() < dbl_p:
-        return "二塁打"
+        return "Double"
 
-    return "単打"
+    return "Single"
 
 
 def _field_side(direction, bats):
-    """打者相対の方向(pull/center/oppo)を、実際の左右(left/center/right)に直す。
+    """Convert the batter-relative direction (pull/center/oppo) into the real side (left/center/right).
 
-    右打者の引っ張り = レフト方向 / 左打者の引っ張り = ライト方向。
-    ここが「右打者か左打者かで、弱い野手を隠す場所が変わる」の中心。
+    A right-handed batter's pull = toward left field / a left-handed batter's pull = toward right field.
+    This is the core of "where you hide a weak fielder depends on whether the batter hits righty or lefty".
     """
     if direction == "center":
         return "center"
@@ -95,9 +95,9 @@ def _field_side(direction, bats):
 
 
 def _error_chance(overall, fit, hardness):
-    """アウトになるはずだった打球を、エラーで出塁させてしまう確率。
+    """The chance a ball that should have been an out becomes an error.
 
-    総合力・ポジション適性が高いほど下がり、強い打球ほど上がる。
+    It drops as overall rating and position fit rise, and rises with harder-hit balls.
     """
     chance = ERROR_BASE
     chance -= (overall - 50) / 100 * 0.10
@@ -110,7 +110,7 @@ def _error_chance(overall, fit, hardness):
 
 
 def responsible_position(batted_ball, bats, rng=None):
-    """その打球をまず処理する野手のポジションを返す。"""
+    """The position of the fielder who gets to the ball first."""
     rng = rng or random
     side = _field_side(batted_ball.direction, bats)
 
@@ -121,16 +121,16 @@ def responsible_position(batted_ball, bats, rng=None):
     if reaches_outfield:
         return {"left": "LF", "center": "CF", "right": "RF"}[side]
 
-    # 内野ゴロ / 内野ライナー / ポップフライ
+    # Infield grounder / infield liner / pop-up
     if side == "center":
-        return rng.choice(["SS", "2B"])          # 二遊間
+        return rng.choice(["SS", "2B"])          # up the middle
     if side == "left":
         return "3B" if rng.random() < 0.4 else "SS"
     return "1B" if rng.random() < 0.4 else "2B"   # right
 
 
 def resolve_batted_ball(batted_ball, defense, batter, rng=None):
-    """打球 + 守備配置 + 打者 から、アウト/ヒットを判定する。"""
+    """From the ball + the defensive alignment + the batter, decide out or hit."""
     rng = rng or random
 
     position = responsible_position(batted_ball, batter.bats, rng)
@@ -141,16 +141,16 @@ def resolve_batted_ball(batted_ball, defense, batter, rng=None):
     overall = fielder.overall()
     fit = position_fit(fielder, position)
 
-    # 総合力そのもの(平均 50 からのズレ)
+    # The overall rating itself (the gap from the average of 50)
     defender_skill_adjustment = _clamp((overall - 50) / 100, -0.15, 0.15) * 0.7
-    # 「配置が合っているか」= fit と overall の差。難しいポジションほど差が開く。
+    # "Is he placed well" = the gap between fit and overall. The harder the position, the wider the gap.
     position_fit_adjustment = _clamp((fit - overall) / 100, -0.25, 0.25) * 1.0
-    # シフトが打球と噛み合っているか
+    # Does the shift match the ball?
     defensive_alignment_adjustment = defense.alignment_out_adjust(position, batted_ball)
-    # 打球が強いほどアウトにしにくい
+    # The harder the ball is hit, the harder it is to turn into an out
     batted_ball_adjustment = HARDNESS_ADJUST[batted_ball.hardness]
 
-    # 足の速い打者は内野ゴロを内野安打にすることがある
+    # A fast batter can beat out an infield grounder for a hit
     speed_adjustment = 0.0
     if batted_ball.ball_type == "ground" and position in ("1B", "2B", "3B", "SS"):
         speed_adjustment = -(getattr(batter, "speed", 50) - 50) / 100 * 0.14
@@ -168,14 +168,14 @@ def resolve_batted_ball(batted_ball, defense, batter, rng=None):
     is_error = is_out and rng.random() < error_p
     if is_error:
         is_out = False
-        batter_result = "エラー"
+        batter_result = "Error"
     elif is_out:
-        batter_result = "アウト"
+        batter_result = "Out"
     else:
         batter_result = _hit_extent(batted_ball, batter, rng)
 
     return {
-        "result": batter_result,               # "アウト" / "エラー" / "単打" / "二塁打" / "三塁打" / "本塁打"
+        "result": batter_result,               # "Out" / "Error" / "Single" / "Double" / "Triple" / "Home run"
         "batter_out": is_out,
         "error": is_error,
         "air_out": is_out and batted_ball.ball_type in ("fly", "line"),

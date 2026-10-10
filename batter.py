@@ -1,15 +1,16 @@
-"""打者を表す Batter クラスと、その「狙い球」推測ロジック。
+"""The Batter class and the logic that guesses what pitch he is sitting on.
 
-情報の分け方:
-  公開(スコアボードに出してよい): name / bats(左右) / OPS・AVG・OBP・SLG / 打者タイプ
-  隠し(プレイヤーには見せない):
+How information is split:
+  Public (fine to show on the scoreboard): name / bats / OPS, AVG, OBP, SLG / batter type
+  Hidden (never shown to the player):
       power / contact / discipline / chase_rate / whiff_rate / aggression
-      pull・center・oppo tendency / gb_tendency
-      vs_fastball / vs_breaking / vs_offspeed(球種別の強さ)
-      hot_course(得意) / weak_course(苦手) / weak_pitch
-      guess_bias(狙い球のクセ) / two_strike_ability / pressure_tolerance / speed
+      pull, center, oppo tendency / gb_tendency
+      vs_fastball / vs_breaking / vs_offspeed (strength by pitch family)
+      hot_course (strength) / weak_course (weakness) / weak_pitch
+      guess_bias (what he tends to look for) / two_strike_ability / pressure_tolerance / speed
 
-judge.py は隠し情報で確率を動かすが、reaction.py と ui.py は公開情報しか触らない。
+judge.py uses the hidden values to move probabilities, but reaction.py and ui.py only
+ever touch public information.
 """
 
 import random
@@ -17,11 +18,11 @@ from dataclasses import dataclass, field
 
 from pitch_data import all_pitch_keys, guess_class_of
 
-HANDEDNESS = {"R": "右打", "L": "左打"}
+HANDEDNESS = {"R": "Bats R", "L": "Bats L"}
 
-# 打者タイプ(公開ラベル)。archetype とは別の、ざっくり表示用。
-COARSE_TYPES = {"power": "強打者", "contact": "巧打者", "patient": "出塁型",
-                "free_swinger": "フリースインガー", "average": "平均的", "weak": "弱打者"}
+# Batter types (public labels). Separate from the lineup archetypes; just for rough display.
+COARSE_TYPES = {"power": "Slugger", "contact": "Contact hitter", "patient": "On-base type",
+                "free_swinger": "Free swinger", "average": "Average", "weak": "Light hitter"}
 
 
 def _clamp(x, lo, hi):
@@ -30,24 +31,25 @@ def _clamp(x, lo, hi):
 
 @dataclass
 class Batter:
-    """打者 1 人。データを保持するのが主目的なので @dataclass。
+    """One batter. A @dataclass because its main job is holding data.
 
-    フィールド名はコンストラクタ引数(lineup.py・CSV/JSON・テストが使う名前)と
-    完全に一致させている。`ops` だけは obp+slg から自動計算するので
-    `field(init=False)` にして __post_init__ で埋める。
+    Field names match the constructor arguments used by lineup.py, CSV/JSON files, and
+    the tests exactly. Only `ops` is computed automatically from obp + slg, so it is a
+    `field(init=False)` filled in __post_init__.
 
-    公開(スコアボードに出してよい): name / bats(左右) / OPS・AVG・OBP・SLG / 打者タイプ
-    隠し(プレイヤーには見せない):
+    Public (fine to show on the scoreboard): name / bats / OPS, AVG, OBP, SLG / batter type
+    Hidden (never shown to the player):
         power / contact / discipline / chase_rate / whiff_rate / aggression
-        pull・gb_tendency(打球方向の傾向)
-        vs_fastball / vs_breaking / vs_offspeed(球種別の強さ)
-        hot_course(得意) / weak_course(苦手) / weak_pitch
-        guess_bias(狙い球のクセ) / two_strike_ability / pressure_tolerance / speed
+        pull, gb_tendency (batted-ball direction tendencies)
+        vs_fastball / vs_breaking / vs_offspeed (strength by pitch family)
+        hot_course (strength) / weak_course (weakness) / weak_pitch
+        guess_bias (what he tends to look for) / two_strike_ability / pressure_tolerance / speed
 
-    judge.py は隠し情報で確率を動かすが、reaction.py と ui.py は公開情報しか触らない。
+    judge.py uses the hidden values to move probabilities, but reaction.py and ui.py only
+    ever touch public information.
     """
 
-    name: str = "打者"
+    name: str = "Batter"
     bats: str = "R"
     coarse_type: str = "average"
     avg: float = 0.255
@@ -59,13 +61,13 @@ class Batter:
     chase_rate: float = 0.30
     whiff_rate: float = 0.24
     aggression: float = 0.5
-    pull: float = 0.40             # 引っ張り傾向。打球方向は batted_ball.py が決める
+    pull: float = 0.40             # pull tendency. batted_ball.py decides the batted-ball direction
     gb_tendency: float = 0.45
     vs_fastball: float = 0.5
     vs_breaking: float = 0.5
     vs_offspeed: float = 0.5
-    hot_course: str = "mid_mid"     # 9 分割コースのキー(constants.COURSES)。
-    weak_course: str = "mid_lo"     # データ側で必ず上書きされる想定だが、既定も有効な値にしておく
+    hot_course: str = "mid_mid"     # a 9-zone course key (constants.COURSES).
+    weak_course: str = "mid_lo"     # data files are expected to override these, but the defaults are valid too
     weak_pitch: str = "slider"
     guess_bias: float = 0.55
     two_strike_ability: float = 0.5
@@ -76,7 +78,7 @@ class Batter:
     def __post_init__(self):
         self.ops = round(self.obp + self.slg, 3)
 
-    # ---------- 公開情報の見せ方 ----------
+    # ---------- How public information is shown ----------
     def public_hand_name(self):
         return HANDEDNESS[self.bats]
 
@@ -87,46 +89,47 @@ class Batter:
         return f"{self.bats} / OPS {self.ops:.3f}"
 
     def scouting_note(self):
-        """打者タイプから読める程度のヒント。実際の隠し値とは一致しない。"""
+        """A hint you can read off the batter type. It does not match the real hidden values."""
         return {
-            "power": "引っ張りの長打が怖い",
-            "contact": "広角に当ててくる",
-            "patient": "球を見てくる・簡単に振らない",
-            "free_swinger": "早いカウントから振ってくる",
-            "average": "目立った傾向は薄い",
-            "weak": "強い打球は少ない",
-        }.get(self.coarse_type, "傾向不明")
+            "power": "Dangerous pull-side power",
+            "contact": "Sprays it to all fields",
+            "patient": "Works the count, hard to chase",
+            "free_swinger": "Swings early in the count",
+            "average": "No standout tendency",
+            "weak": "Rarely hits it hard",
+        }.get(self.coarse_type, "Tendency unknown")
 
     def family_strength(self, family):
         return {"fastball": self.vs_fastball,
                 "breaking": self.vs_breaking,
                 "offspeed": self.vs_offspeed}[family]
 
-    # ---------- 狙い球の推測(#8) ----------
+    # ---------- Guessing what he is sitting on (#8) ----------
     def predict_guess(self, history, state, pitcher):
-        """この打者が今「何を待っているか」。プレイヤーには見せない。
+        """What this batter is looking for right now. Never shown to the player.
 
-        返り値:
+        Returns:
             {"class": "fastball"|"offspeed", "class_strength": 0..1,
              "location": "inside"|"outside"|"middle"|"any", "loc_strength": 0..1}
 
-        材料: カウント / 打者の性格(guess_bias, discipline) / 配球履歴 /
-              同じ球の連続 / 投手の球種割合 / 前の球 / 打席をまたぐ記憶(打者一巡)。
+        Inputs: the count / the batter's personality (guess_bias, discipline) / pitch history /
+                repeated pitches / the pitcher's pitch mix / the previous pitch /
+                memory across at-bats (when the order turns over).
         """
-        lean_fastball = self.guess_bias   # 1.0 に近いほど速球待ち
+        lean_fastball = self.guess_bias   # closer to 1.0 = more fastball-looking
 
-        # 1. 配球履歴で見せられた球に山を張る
+        # 1. He plays the odds on what he has been shown in the pitch history
         recent = history.recent_class_counts(4)
         seen = recent["fastball"] + recent["offspeed"]
         if seen > 0:
             lean_fastball = 0.5 * lean_fastball + 0.5 * (recent["fastball"] / seen)
         else:
-            # 履歴なし → 投手の持ち球の速球比率をうっすら反映
+            # No history -> faintly reflect the fastball share of the pitcher's repertoire
             reps = pitcher.repertoire
             fb = sum(1 for k in reps if guess_class_of(k) == "fastball")
             lean_fastball = 0.6 * lean_fastball + 0.4 * (fb / max(1, len(reps)))
 
-        # 1.5 打席をまたぐ記憶(打者一巡): 前の打席で見せられた傾向を薄く覚えている
+        # 1.5 Memory across at-bats (order turns over): he vaguely remembers the pitches shown last time
         memory = getattr(state, "batter_memory", None)
         mem = memory(self) if memory else None
         if mem:
@@ -134,13 +137,13 @@ class Batter:
             if mem_total > 0:
                 lean_fastball = 0.75 * lean_fastball + 0.25 * (mem["fastball"] / mem_total)
 
-        # 2. カウント
+        # 2. The count
         if state.balls > state.strikes:
-            lean_fastball += 0.15          # 打者有利カウントは速球狙い
+            lean_fastball += 0.15          # a hitter's count: look fastball
         if state.strikes == 2:
-            lean_fastball = 0.5 + (lean_fastball - 0.5) * 0.4   # 絞りきれない
+            lean_fastball = 0.5 + (lean_fastball - 0.5) * 0.4   # cannot narrow it down
 
-        # 3. 同じ球種を続けられている → その球に強く張る
+        # 3. Same pitch type repeated -> he locks in hard on that pitch
         streak_class = None
         last = history.last()
         if history.same_type_streak() >= 2 and last is not None:
@@ -150,7 +153,7 @@ class Batter:
             else:
                 lean_fastball = max(0.0, lean_fastball - 0.20)
 
-        # 4. 前の球が速球ストライクなら、次は変化球を意識しやすい
+        # 4. After a fastball strike, he is more likely to think about a breaking ball next
         if last is not None and last["pitch_class"] == "fastball" and last["swung"] is False \
                 and last.get("in_zone"):
             lean_fastball -= 0.08
@@ -163,10 +166,10 @@ class Batter:
             guess_class = "offspeed"
             class_strength = (0.5 - lean_fastball) * 2
 
-        # 規律の低い打者ほど「決め打ち」しやすい → strength を持ち上げる
+        # The lower his discipline, the more he "sits on one pitch" -> raise the strength
         class_strength = _clamp(class_strength * (1.2 - 0.4 * self.discipline), 0.0, 1.0)
 
-        # 5. コースの狙い(打者有利カウントでは得意ゾーンに山を張る)
+        # 5. Location guess (in a hitter's count he plays the odds on his hot zone)
         if state.strikes == 2:
             location, loc_strength = "any", 0.0
         elif state.balls > state.strikes:
@@ -178,7 +181,7 @@ class Batter:
                 "location": location, "loc_strength": loc_strength}
 
 
-# --------- 素早い簡易生成(テストやクイック確認用) ---------
+# --------- Quick generator (for tests and quick checks) ---------
 def create_random_batter(rng=None):
     rng = rng or random
     coarse = rng.choice(["power", "contact", "average"])
@@ -186,7 +189,7 @@ def create_random_batter(rng=None):
     obp = round(rng.uniform(0.290, 0.370), 3)
     slg = round(rng.uniform(0.360, 0.520), 3)
     return Batter(
-        name="打者", bats=bats, coarse_type=coarse,
+        name="Batter", bats=bats, coarse_type=coarse,
         avg=round(rng.uniform(0.230, 0.300), 3), obp=obp, slg=slg,
         power=rng.uniform(0.3, 0.8), contact=rng.uniform(0.3, 0.8),
         discipline=rng.uniform(0.3, 0.7), chase_rate=rng.uniform(0.20, 0.40),

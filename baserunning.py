@@ -1,34 +1,34 @@
-"""フェア打球のあとの走塁を解決する。
+"""Resolves the baserunning after a ball is hit fair.
 
-judge.py が「状態を変えずに」呼び、プラン(dict)を返す。
-実際に試合状況へ反映するのは match_state.apply_play()。
+judge.py calls it *without changing state* and gets a plan (a dict) back.
+What actually updates the game situation is match_state.apply_play().
 
-返り値:
+Return value:
     {
-      "batter_result": "アウト"/"エラー"/"単打"/"二塁打"/"三塁打"/"本塁打",
-      "outs_added":  int,   # 打者アウト・併殺を含む、このプレーで増えるアウト数
-      "runs":        int,   # このプレーの得点
-      "new_runners": [bool, bool, bool],       # プレー後の 一塁・二塁・三塁
-      "new_runner_speeds": [int|None, ...],    # 同じ並びで、その塁にいる走者の脚力
-      "label":       str,   # 表示用("単打" "併殺" "犠飛" など)
-      "detail":      str,   # 補足("走者一掃" "タッチアップ" など)
+      "batter_result": "Out"/"Error"/"Single"/"Double"/"Triple"/"Home run",
+      "outs_added":  int,   # outs added on this play, counting batter outs and double plays
+      "runs":        int,   # runs scored on this play
+      "new_runners": [bool, bool, bool],       # first, second, third after the play
+      "new_runner_speeds": [int|None, ...],    # in the same order, the speed of the runner on each base
+      "label":       str,   # for display ("Single", "Double play", "Sac fly", etc.)
+      "detail":      str,   # extra ("Bases cleared", "Tag-up", etc.)
     }
 
-走者の脚力(runner_speeds)は 20〜90 くらい。速い走者は
-  - 一塁から一気に三塁まで行きやすい
-  - 二塁から単打で還りやすい
-  - 併殺を取られにくい(judge/steal 側でも使う)
-物理シミュレーションではなく、読める確率モデル。
+Runner speed (runner_speeds) is around 20-90. A fast runner
+  - is more likely to go from first all the way to third
+  - is more likely to score from second on a single
+  - is harder to double up (judge/steal use it too)
+Not a physics simulation; a probability model you can read.
 """
 
 import random
 
 
 def _finish(result, outs_added, runs, new_runners, new_speeds, label, detail, outs_before):
-    # このプレーで 3 アウト目が成立するなら、その回の得点は数えない(簡略化)
+    # If this play makes the third out, runs in that inning do not count (a simplification)
     if outs_before + outs_added >= 3:
         runs = 0
-        detail = detail or "スリーアウトチェンジ"
+        detail = detail or "Side retired"
     return {
         "batter_result": result,
         "outs_added": outs_added,
@@ -40,12 +40,16 @@ def _finish(result, outs_added, runs, new_runners, new_speeds, label, detail, ou
     }
 
 
+def _runs_text(n):
+    return f"{n} run" if n == 1 else f"{n} runs"
+
+
 def resolve(batted_ball, fielding, runners, outs, batter, rng=None, runner_speeds=None,
             runner_moving=False):
-    """runner_moving=True は「エンドランで一塁走者がすでにスタートしている」状態。
-    併殺は起きず、内野ゴロでも走者は必ず 1 つ先へ進む(封殺回避)。"""
+    """runner_moving=True means "on a hit-and-run the runner on first has already broken".
+    There is no double play, and even on an infield grounder the runner always moves up one base (no force play)."""
     rng = rng or random
-    result = fielding["result"]           # "アウト" / "エラー" / "単打" / "二塁打" / "三塁打" / "本塁打"
+    result = fielding["result"]           # "Out" / "Error" / "Single" / "Double" / "Triple" / "Home run"
     r1, r2, r3 = runners
     speeds = list(runner_speeds) if runner_speeds else [None, None, None]
     s1, s2, s3 = speeds
@@ -53,39 +57,39 @@ def resolve(batted_ball, fielding, runners, outs, batter, rng=None, runner_speed
     to_outfield = batted_ball.ball_type in ("line", "fly")
     bsp = getattr(batter, "speed", 50)
 
-    def spd(s):   # 走者の脚力(不明なら平均50)を 0.0 中心のズレに
+    def spd(s):   # a runner's speed (average 50 if unknown) as an offset centered on 0.0
         return ((s if s is not None else 50) - 50) / 100.0
 
-    # ---------------- 長打・単打 ----------------
-    if result == "本塁打":
+    # ---------------- Extra-base hits and singles ----------------
+    if result == "Home run":
         runs = 1 + on
-        detail = "ソロ" if on == 0 else f"{runs}ラン"
-        return _finish("本塁打", 0, runs, [False] * 3, [None] * 3, "本塁打", detail, outs)
+        detail = "Solo" if on == 0 else f"{runs}-run"
+        return _finish("Home run", 0, runs, [False] * 3, [None] * 3, "Home run", detail, outs)
 
-    if result == "三塁打":
-        return _finish("三塁打", 0, on, [False, False, True], [None, None, bsp],
-                       "三塁打", "走者還る" if on else "", outs)
+    if result == "Triple":
+        return _finish("Triple", 0, on, [False, False, True], [None, None, bsp],
+                       "Triple", "Runners score" if on else "", outs)
 
-    if result == "二塁打":
-        detail = "走者一掃" if on >= 2 else ("1点" if on == 1 else "")
-        return _finish("二塁打", 0, on, [False, True, False], [None, bsp, None],
-                       "二塁打", detail, outs)
+    if result == "Double":
+        detail = "Bases cleared" if on >= 2 else ("1 run" if on == 1 else "")
+        return _finish("Double", 0, on, [False, True, False], [None, bsp, None],
+                       "Double", detail, outs)
 
-    if result in ("単打", "エラー"):
+    if result in ("Single", "Error"):
         new = [False, False, False]
         new_sp = [None, None, None]
         runs = 0
         if r3:
-            runs += 1                                       # 三塁走者は生還
+            runs += 1                                       # the runner on third scores
         if r2:
-            # 二塁走者: 外野への打球 + 脚力で生還率が上下(基準 0.55、俊足で最大 +0.30)
+            # Runner on second: a ball to the outfield + speed move his scoring odds (base 0.55, up to +0.30 if fast)
             if to_outfield and rng.random() < 0.55 + spd(s2) * 0.6:
                 runs += 1
             else:
                 new[2], new_sp[2] = True, s2
         if r1 and not new[2]:
-            # 一塁走者: 外野への打球 + 脚力で三塁まで(基準 0.30)。
-            # エンドラン中はスタートを切っているので、ほぼ三塁まで到達。
+            # Runner on first: a ball to the outfield + speed gets him to third (base 0.30).
+            # On a hit-and-run he has already broken, so he almost always reaches third.
             reach = 0.90 if runner_moving else (0.30 + spd(s1) * 0.6 if to_outfield else 0.0)
             if rng.random() < reach:
                 new[2], new_sp[2] = True, s1
@@ -93,43 +97,43 @@ def resolve(batted_ball, fielding, runners, outs, batter, rng=None, runner_speed
                 new[1], new_sp[1] = True, s1
         elif r1:
             new[1], new_sp[1] = True, s1
-        new[0], new_sp[0] = True, bsp                       # 打者は一塁
-        detail = f"{runs}点" if runs else ""
+        new[0], new_sp[0] = True, bsp                       # the batter reaches first
+        detail = _runs_text(runs) if runs else ""
         return _finish(result, 0, runs, new, new_sp, result, detail, outs)
 
-    # ---------------- アウト系 ----------------
+    # ---------------- Outs ----------------
     ball_type = batted_ball.ball_type
     infield = fielding["position"] in ("1B", "2B", "3B", "SS")
 
-    # 併殺: 一塁に走者 & 2アウト未満 & 内野ゴロ(エンドラン中は走者が走っているので無し)
+    # Double play: runner on first & fewer than 2 outs & an infield grounder (none on a hit-and-run, since the runner is going)
     if r1 and outs < 2 and ball_type == "ground" and infield and not runner_moving:
-        dp_p = 0.55 - (bsp - 50) / 100 * 0.30    # 打者の脚
-        dp_p -= spd(s1) * 0.40                   # 一塁走者の脚(速いと二封が難しい)
+        dp_p = 0.55 - (bsp - 50) / 100 * 0.30    # the batter's legs
+        dp_p -= spd(s1) * 0.40                   # the runner on first's legs (hard to get at second if he is fast)
         if batted_ball.hardness == "soft":
-            dp_p -= 0.15                         # ボテボテは間に合わない
+            dp_p -= 0.15                         # a dribbler is too slow to turn two
         elif batted_ball.hardness == "hard":
-            dp_p -= 0.05                         # 速すぎても抜けたり難しい
+            dp_p -= 0.05                         # too hard can mean it gets through or is tough to handle
         if rng.random() < max(0.05, dp_p):
-            return _finish("アウト", 2, 0, [False, r2, r3], [None, s2, s3],
-                           "併殺", "ゲッツー", outs)
-        # 併殺崩れ: 打者アウトのみ。一塁走者は二塁へ、詰まっていれば前が押し出される
+            return _finish("Out", 2, 0, [False, r2, r3], [None, s2, s3],
+                           "Double play", "Turned two", outs)
+        # Double play broken up: only the batter is out. The runner on first goes to second; if bases are full, the lead runner is forced home
         new = [False, True, bool(r2 or r3)]
         new_sp = [None, s1, s2 if r2 else (s3 if r3 else None)]
         runs = 1 if (r2 and r3) else 0
-        return _finish("アウト", 1, runs, new, new_sp, "アウト", "併殺崩れ", outs)
+        return _finish("Out", 1, runs, new, new_sp, "Out", "Double play broken up", outs)
 
-    # 犠飛: 三塁走者 & 2アウト未満 & フライアウト
+    # Sac fly: runner on third & fewer than 2 outs & a fly-ball out
     if fielding["air_out"] and r3 and outs < 2 and ball_type == "fly":
         deep = batted_ball.distance == "deep"
         if rng.random() < (0.85 if deep else 0.35) + spd(s3) * 0.4:
             new = [False, r2, False]
             new_sp = [None, s2, None]
             if deep and r2 and rng.random() < 0.40 + spd(s2) * 0.5:
-                new, new_sp = [False, False, True], [None, None, s2]   # 二塁走者もタッチアップ
-            return _finish("アウト", 1, 1, new, new_sp, "犠飛", "タッチアップ", outs)
+                new, new_sp = [False, False, True], [None, None, s2]   # the runner on second tags up too
+            return _finish("Out", 1, 1, new, new_sp, "Sac fly", "Tag-up", outs)
 
-    # ふつうのアウト。内野ゴロなら走者が 1 つ進む「進塁打」がある
-    # (エンドラン中は走者が走っているので、ほぼ確実に進む)
+    # An ordinary out. On an infield grounder there is a "productive out" where runners move up one base
+    # (on a hit-and-run the runners are going, so they almost always move up)
     new = list(runners)
     new_sp = list(speeds)
     runs = 0
@@ -140,5 +144,5 @@ def resolve(batted_ball, fielding, runners, outs, batter, rng=None, runner_speed
             runs += 1
         new = [False, bool(new[0]), bool(new[1])]
         new_sp = [None, speeds[0], speeds[1]]
-        detail = "進塁打" + ("（エンドラン）" if runner_moving else "")
-    return _finish("アウト", 1, runs, new, new_sp, "アウト", detail, outs)
+        detail = "Productive out" + (" (hit and run)" if runner_moving else "")
+    return _finish("Out", 1, runs, new, new_sp, "Out", detail, outs)

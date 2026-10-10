@@ -1,12 +1,12 @@
-"""相手打線(9 人)と打順の管理。
+"""The opposing lineup (nine batters) and batting-order management.
 
-- SAMPLE_LINEUP : 特徴が明確に違う架空の 9 人(打順 1〜9 番)の設計値
-- build_sample_lineup() : そこから Batter を 9 人作る(archetype 内で少しランダム化)
-- Lineup : 9 人 + 現在の打順位置。advance() で 1 番→2 番→…→9 番→1 番 と回る
-- Lineup.from_records() / load_lineup_file() : 将来 CSV / JSON / API のデータに差し替える口
+- SAMPLE_LINEUP : design values for nine fictional batters with clearly different traits (spots 1-9)
+- build_sample_lineup() : builds nine Batters from it (a little randomness within each archetype)
+- Lineup : the nine + the current spot. advance() cycles 1 -> 2 -> ... -> 9 -> 1
+- Lineup.from_records() / load_lineup_file() : the hook for swapping in CSV / JSON / API data later
 
-将来 侍ジャパンや MLB チームの実データを使うときは、選手 1 人を
-下の dict と同じキーの dict にして from_records() に渡せばよい。
+To use real data later (a national team, an MLB club), turn each player into a dict with
+the same keys as the dicts below and pass them to from_records().
 """
 
 import csv
@@ -15,58 +15,58 @@ import random
 
 from batter import Batter
 
-# 各 archetype の「中心値」。build_sample_lineup がこの周辺で乱数を振る。
-# spot: 打順 / coarse_type: 表示ラベル用
+# The "center values" of each archetype. build_sample_lineup rolls randomness around these.
+# spot: batting order / coarse_type: for the display label
 SAMPLE_LINEUP = [
-    {"spot": 1, "name": "1 リードオフ", "coarse_type": "patient", "bats": "L",
+    {"spot": 1, "name": "1 Leadoff", "coarse_type": "patient", "bats": "L",
      "obp": 0.375, "slg": 0.390, "power": 0.30, "contact": 0.70, "discipline": 0.78,
      "chase_rate": 0.20, "whiff_rate": 0.16, "aggression": 0.40,
      "pull": 0.40, "gb": 0.55, "vs_fb": 0.60, "vs_br": 0.50, "vs_off": 0.52,
      "hot": "mid_lo", "weak": "in_mid", "guess_bias": 0.62, "two_strike": 0.65,
      "pressure": 0.60, "speed": 72},
-    {"spot": 2, "name": "2 コンタクト", "coarse_type": "contact", "bats": "R",
+    {"spot": 2, "name": "2 Contact", "coarse_type": "contact", "bats": "R",
      "obp": 0.340, "slg": 0.400, "power": 0.32, "contact": 0.80, "discipline": 0.62,
      "chase_rate": 0.26, "whiff_rate": 0.13, "aggression": 0.55,
      "pull": 0.45, "gb": 0.50, "vs_fb": 0.58, "vs_br": 0.56, "vs_off": 0.50,
      "hot": "out_mid", "weak": "mid_hi", "guess_bias": 0.58, "two_strike": 0.70,
      "pressure": 0.55, "speed": 58},
-    {"spot": 3, "name": "3 総合型", "coarse_type": "power", "bats": "L",
+    {"spot": 3, "name": "3 Complete", "coarse_type": "power", "bats": "L",
      "obp": 0.375, "slg": 0.520, "power": 0.72, "contact": 0.68, "discipline": 0.66,
      "chase_rate": 0.24, "whiff_rate": 0.20, "aggression": 0.55,
      "pull": 0.55, "gb": 0.42, "vs_fb": 0.66, "vs_br": 0.60, "vs_off": 0.58,
      "hot": "mid_mid", "weak": "in_mid", "guess_bias": 0.55, "two_strike": 0.62,
      "pressure": 0.62, "speed": 52},
-    {"spot": 4, "name": "4 強打者", "coarse_type": "power", "bats": "R",
+    {"spot": 4, "name": "4 Cleanup", "coarse_type": "power", "bats": "R",
      "obp": 0.360, "slg": 0.560, "power": 0.85, "contact": 0.58, "discipline": 0.55,
      "chase_rate": 0.28, "whiff_rate": 0.27, "aggression": 0.60,
      "pull": 0.66, "gb": 0.38, "vs_fb": 0.66, "vs_br": 0.54, "vs_off": 0.50,
      "hot": "in_mid", "weak": "out_mid", "guess_bias": 0.60, "two_strike": 0.52,
      "pressure": 0.58, "speed": 42},
-    {"spot": 5, "name": "5 長打型", "coarse_type": "power", "bats": "R",
+    {"spot": 5, "name": "5 Masher", "coarse_type": "power", "bats": "R",
      "obp": 0.320, "slg": 0.540, "power": 0.88, "contact": 0.46, "discipline": 0.44,
      "chase_rate": 0.32, "whiff_rate": 0.33, "aggression": 0.66,
      "pull": 0.72, "gb": 0.33, "vs_fb": 0.60, "vs_br": 0.44, "vs_off": 0.42,
      "hot": "mid_mid", "weak": "mid_lo", "guess_bias": 0.66, "two_strike": 0.40,
      "pressure": 0.50, "speed": 40},
-    {"spot": 6, "name": "6 フリースインガー", "coarse_type": "free_swinger", "bats": "L",
+    {"spot": 6, "name": "6 Free Swinger", "coarse_type": "free_swinger", "bats": "L",
      "obp": 0.300, "slg": 0.430, "power": 0.55, "contact": 0.50, "discipline": 0.30,
      "chase_rate": 0.40, "whiff_rate": 0.30, "aggression": 0.80,
      "pull": 0.58, "gb": 0.45, "vs_fb": 0.52, "vs_br": 0.42, "vs_off": 0.40,
      "hot": "mid_hi", "weak": "out_mid", "guess_bias": 0.70, "two_strike": 0.38,
      "pressure": 0.45, "speed": 50},
-    {"spot": 7, "name": "7 平均的", "coarse_type": "average", "bats": "R",
+    {"spot": 7, "name": "7 Average", "coarse_type": "average", "bats": "R",
      "obp": 0.320, "slg": 0.400, "power": 0.50, "contact": 0.55, "discipline": 0.50,
      "chase_rate": 0.30, "whiff_rate": 0.24, "aggression": 0.55,
      "pull": 0.48, "gb": 0.47, "vs_fb": 0.50, "vs_br": 0.50, "vs_off": 0.50,
      "hot": "mid_mid", "weak": "mid_lo", "guess_bias": 0.55, "two_strike": 0.50,
      "pressure": 0.50, "speed": 52},
-    {"spot": 8, "name": "8 選球眼型", "coarse_type": "patient", "bats": "L",
+    {"spot": 8, "name": "8 Patient Eye", "coarse_type": "patient", "bats": "L",
      "obp": 0.340, "slg": 0.330, "power": 0.25, "contact": 0.58, "discipline": 0.80,
      "chase_rate": 0.18, "whiff_rate": 0.20, "aggression": 0.35,
      "pull": 0.42, "gb": 0.52, "vs_fb": 0.50, "vs_br": 0.48, "vs_off": 0.46,
      "hot": "mid_lo", "weak": "mid_hi", "guess_bias": 0.60, "two_strike": 0.62,
      "pressure": 0.55, "speed": 55},
-    {"spot": 9, "name": "9 俊足弱打", "coarse_type": "weak", "bats": "R",
+    {"spot": 9, "name": "9 Speedy Slap", "coarse_type": "weak", "bats": "R",
      "obp": 0.290, "slg": 0.320, "power": 0.22, "contact": 0.48, "discipline": 0.44,
      "chase_rate": 0.34, "whiff_rate": 0.28, "aggression": 0.55,
      "pull": 0.46, "gb": 0.60, "vs_fb": 0.44, "vs_br": 0.42, "vs_off": 0.42,
@@ -110,7 +110,7 @@ def build_sample_lineup(rng=None):
 
 class Lineup:
     def __init__(self, batters, index=0):
-        assert len(batters) == 9, "打線は 9 人"
+        assert len(batters) == 9, "a lineup has nine batters"
         self.batters = list(batters)
         self.index = index % 9
 
@@ -118,22 +118,22 @@ class Lineup:
         return self.batters[self.index]
 
     def spot_number(self):
-        """今の打者が『何番』か(1〜9)。"""
+        """Which spot in the order the current batter is (1-9)."""
         return self.index + 1
 
     def advance(self):
         self.index = (self.index + 1) % 9
 
-    # ---- 将来のデータ差し替え口 ----
+    # ---- Hook for swapping in data later ----
     @classmethod
     def from_records(cls, records, index=0):
-        """records: 選手 1 人 = dict のリスト(9 件)。
+        """records: a list of nine dicts, one per player.
 
-        Batter.__init__ が知っているキーだけを拾う(余分な "_note" 等は無視)。
-        MLB / Statcast の CSV・JSON をここに流し込めば実在打線になる。
+        Only keys that Batter.__init__ knows are used (extras like "_note" are ignored).
+        Feed MLB / Statcast CSV or JSON in here and you get a real lineup.
         """
         if len(records) != 9:
-            raise ValueError(f"打線は 9 人ちょうど必要です（{len(records)} 人でした）")
+            raise ValueError(f"a lineup needs exactly 9 batters (got {len(records)})")
         batters = [Batter(**{k: v for k, v in rec.items() if k in _BATTER_FIELDS})
                    for rec in records]
         return cls(batters, index)
@@ -148,7 +148,7 @@ _BATTER_FIELDS = {
 
 
 def load_lineup_file(path, index=0):
-    """.json / .csv から打線を読む(将来 実データ用。今はサンプルで十分)。"""
+    """Read a lineup from .json / .csv (for real data later; the sample is enough for now)."""
     if path.endswith(".json"):
         with open(path, encoding="utf-8") as fp:
             records = json.load(fp)
@@ -159,7 +159,7 @@ def load_lineup_file(path, index=0):
                 for row in csv.DictReader(fp)
             ]
     else:
-        raise ValueError("対応形式は .json / .csv")
+        raise ValueError("supported formats are .json / .csv")
     return Lineup.from_records(records, index)
 
 

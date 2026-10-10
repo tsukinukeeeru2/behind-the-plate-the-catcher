@@ -1,8 +1,8 @@
-"""ターミナルの色付けヘルパー。
+"""Terminal color helpers.
 
-パイプ・リダイレクト・NO_COLOR・TERM=dumb のときは自動で無効になる
-(テストや `python main.py > log.txt` を汚さない)。
-PITCHSIM_COLOR=1 で強制有効(デモ・スクリーンショット用)。
+Colors turn off automatically when output is piped or redirected, or when
+NO_COLOR / TERM=dumb is set (so tests and `python main.py > log.txt` stay clean).
+Set PITCHSIM_COLOR=1 to force colors on (for demos and screenshots).
 """
 
 import os
@@ -37,11 +37,11 @@ def paint(text, *styles):
 
 
 def strip(text):
-    """色コードを取り除く(幅計算・テスト用)。"""
+    """Remove color codes (for width calculations and tests)."""
     return _ANSI_RE.sub("", text)
 
 
-# よく使う短縮
+# Handy shortcuts
 def bold(t):
     return paint(t, "bold")
 

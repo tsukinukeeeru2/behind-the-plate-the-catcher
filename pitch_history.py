@@ -1,8 +1,8 @@
-"""配球履歴を保持する PitchHistory クラス。
+"""The PitchHistory class that keeps the pitch history.
 
-やることは「投げた球を古い順に記録し、パターンを問い合わせられるようにする」
-だけ。判定そのものは judge.py が行い、ここはデータ置き場に徹する。
-(思考は batter.py、判定は judge.py、記録は pitch_history.py、と役割を分ける)
+All it does is record each pitch thrown in order and answer pattern questions.
+The judging itself is done by judge.py; this file is just a data holder.
+(Thinking lives in batter.py, judging in judge.py, recording in pitch_history.py.)
 """
 
 from constants import COURSE_SHORT
@@ -11,20 +11,20 @@ from pitch_data import guess_class_of, pitch_name
 
 class PitchHistory:
     def __init__(self):
-        self.records = []   # 1球ごとの辞書を古い順に並べたリスト
+        self.records = []   # one dict per pitch, oldest first
 
     def clear(self):
-        """打者が代わったら履歴を空にする。"""
+        """Clear the history when the batter changes."""
         self.records = []
 
     def add(self, pitch_type, course, result, timing, swung,
             actual_course=None, intent=None, velocity=None, family=None, in_zone=None):
-        """1球分を記録する。
+        """Record one pitch.
 
-        course        : 捕手が要求したコース
-        actual_course : 実際に来たコース(失投でズレることがある)
-        family        : "fastball" / "breaking" / "offspeed"(3分類)
-        pitch_class   : "fastball" / "offspeed"(打者の待ちは2択で考えるため)
+        course        : the location the catcher called
+        actual_course : where the ball actually went (it can drift on a miss)
+        family        : "fastball" / "breaking" / "offspeed" (3-way)
+        pitch_class   : "fastball" / "offspeed" (a batter sits on one of two)
         """
         self.records.append({
             "pitch_type": pitch_type,
@@ -47,19 +47,19 @@ class PitchHistory:
         return len(self.records)
 
     def last(self):
-        """直前の1球の記録。まだ無ければ None。"""
+        """The previous pitch's record, or None if there is none yet."""
         return self.records[-1] if self.records else None
 
     def same_type_streak(self):
-        """末尾から見て、同じ球種が何球連続しているか。"""
+        """How many pitches in a row, counting from the end, were the same pitch type."""
         return self._streak("pitch_type")
 
     def same_course_streak(self):
-        """末尾から見て、同じコースが何球連続しているか(実際のコースで見る)。"""
+        """How many pitches in a row, counting from the end, hit the same location (actual location)."""
         return self._streak("actual_course")
 
     def family_streak(self):
-        """末尾から見て、同系統(fastball/breaking/offspeed)が何球連続しているか。"""
+        """How many pitches in a row, counting from the end, were the same family (fastball/breaking/offspeed)."""
         return self._streak("family")
 
     def _streak(self, key):
@@ -75,16 +75,16 @@ class PitchHistory:
         return streak
 
     def recent_class_counts(self, n):
-        """直近 n 球の球種クラス(fastball / offspeed)の内訳を数える。"""
+        """Count the pitch classes (fastball / offspeed) in the last n pitches."""
         counts = {"fastball": 0, "offspeed": 0}
         for record in self.records[-n:]:
             counts[record["pitch_class"]] += 1
         return counts
 
     def summary_text(self):
-        """画面表示用。『1.フォーシーム/外 → 2.スライダー/低(失投)』の形。"""
+        """For display. Looks like '1.Four-seam/Out -> 2.Slider/Lo*' (* = missed the spot)."""
         if not self.records:
-            return "（まだ無し）"
+            return "(none yet)"
         parts = []
         for i, r in enumerate(self.records, start=1):
             loc = COURSE_SHORT.get(r["actual_course"], r["actual_course"])

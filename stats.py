@@ -1,10 +1,10 @@
-"""複数ゲームのログ(logs/game_*.json)を集計する成績ダッシュボード。
+"""A stats dashboard that tallies logs from many games (logs/game_*.json).
 
-    python stats.py                  # logs/ 以下すべて
+    python stats.py                  # everything under logs/
     python stats.py logs/game_2026*.json
 
-ゲームロジックには一切触らない。pitch_log の call_label
-("投手/コース(意図)")を読み解いて、コース別・意図別の傾向を出すだけ。
+It never touches the game logic. It just parses the call_label in pitch_log
+("pitch/location(intent)") and reports tendencies by location and by intent.
 """
 
 import glob
@@ -17,9 +17,9 @@ from constants import COURSE_SHORT
 
 _CALL_RE = re.compile(r"^(?P<pitch>[^/]+)/(?P<course>[^(]+)\((?P<intent>.+)\)$")
 
-# strategy.py の分類と揃えている(打者が塁に出た = 守備にとって悪い結果)
-_BAD_RESULTS = {"単打", "二塁打", "三塁打", "本塁打", "四球", "エラー"}
-_GOOD_RESULTS = {"アウト", "空振り", "三振"}
+# Kept in line with the classification in strategy.py (a batter reaching base = a bad result for the defense)
+_BAD_RESULTS = {"Single", "Double", "Triple", "Home run", "Walk", "Error"}
+_GOOD_RESULTS = {"Out", "Whiff", "Strikeout"}
 
 
 def _load_logs(patterns):
@@ -32,7 +32,7 @@ def _load_logs(patterns):
             with open(path, encoding="utf-8") as fp:
                 games.append(json.load(fp))
         except (OSError, json.JSONDecodeError) as err:
-            print(f"（{path} を読めませんでした: err）".replace("err", str(err)))
+            print(f"(Could not read {path}: {err})")
     return games
 
 
@@ -44,7 +44,7 @@ def _parse_call(call_label):
 
 
 class _Bucket:
-    """1 つの切り口(コース / 意図)ごとの集計。"""
+    """The tally for one slice (location / intent)."""
 
     def __init__(self):
         self.n = 0
@@ -69,14 +69,14 @@ class _Bucket:
 
 def _print_table(title, rows, label_width=10):
     print(ansi.bold(title))
-    header = f"  {'':<{label_width}} {'球数':>6} {'被弾率':>8} {'平均決断':>8}"
+    header = f"  {'':<{label_width}} {'Pitches':>7} {'Bad %':>8} {'Avg dq':>8}"
     print(ansi.dim(header))
     for label, bucket in rows:
         if bucket.n == 0:
             continue
         rate = bucket.bad_rate()
         color = "bred" if rate >= 0.35 else ("byellow" if rate >= 0.20 else "bgreen")
-        print(f"  {label:<{label_width}} {bucket.n:>6} "
+        print(f"  {label:<{label_width}} {bucket.n:>7} "
               f"{ansi.paint(f'{rate * 100:5.1f}%', color):>8} {bucket.avg_dq():>8.3f}")
 
 
@@ -100,25 +100,25 @@ def build_dashboard(games):
                 by_intent.setdefault(intent, _Bucket()).add(result, dq)
 
     n_games = len(games)
-    print(ansi.bold(ansi.cyan(f"=== 成績ダッシュボード（{n_games} ゲーム / {total_pitches} 球） ===")))
+    print(ansi.bold(ansi.cyan(f"=== Stats dashboard ({n_games} games / {total_pitches} pitches) ===")))
     if n_games:
-        print(f"  平均失点: {total_runs / n_games:.2f} 点/半イニング"
-              f"　平均 decision_quality: {(dq_sum / total_pitches if total_pitches else 0):.3f}")
+        print(f"  Average runs allowed: {total_runs / n_games:.2f} per half inning"
+              f"   Average decision_quality: {(dq_sum / total_pitches if total_pitches else 0):.3f}")
     print()
 
     course_rows = sorted(by_course.items(), key=lambda kv: -kv[1].n)
-    _print_table("コース別（被弾率が高いほど赤）",
+    _print_table("By location (redder = more damage)",
                  [(COURSE_SHORT.get(c, c), b) for c, b in course_rows])
     print()
     intent_rows = sorted(by_intent.items(), key=lambda kv: -kv[1].n)
-    _print_table("配球意図別", intent_rows, label_width=14)
+    _print_table("By intent", intent_rows, label_width=14)
 
 
 def main():
     patterns = sys.argv[1:] or ["logs/game_*.json"]
     games = _load_logs(patterns)
     if not games:
-        print("ログが見つかりません（logs/game_*.json）。まず python main.py で何試合か遊んでください。")
+        print("No logs found (logs/game_*.json). Play a few games with python main.py first.")
         return
     build_dashboard(games)
 

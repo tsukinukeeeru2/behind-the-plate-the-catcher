@@ -1,25 +1,25 @@
-"""打者の反応を「顔文字 + 短い文」で表すモジュール。
+"""Expresses the batter's reaction as "a face + a short line".
 
-思想(前バージョンから引き継ぎ):
-  返すのは「打者の本当の状態そのもの」ではない。
-  judge.py が出した 1 球の結果(タイミング・振ったか・見逃し方)だけを見て
-  「素直なカテゴリ」を決め、そのうえで
-    - REACTION_MISLEAD_RATE の確率で「逆の印象」を返す
-    - REACTION_REVEAL_RATE の確率で素直なカテゴリを返す
-    - 残りは情報の薄いカテゴリ(neutral / uncertain / frustrated)を返す
+Philosophy (carried over from the previous version):
+  What comes back is NOT the batter's true state itself.
+  It looks only at the result of one pitch from judge.py (timing, whether he swung, how he took it),
+  decides an "honest category", and then
+    - with probability REACTION_MISLEAD_RATE returns the "opposite impression"
+    - with probability REACTION_REVEAL_RATE returns the honest category
+    - otherwise returns a low-information category (neutral / uncertain / frustrated)
 
-顔文字が「正解」を直接教えないための工夫:
-  1. 1 カテゴリに複数の顔文字候補・複数の文がある(毎回変わる)
-  2. 同じ内部状態でも複数カテゴリに散らす余地がある
-  3. neutral / mislead のカテゴリを混ぜる
-  4. 顔文字だけでは内部状態を 100% 特定できない
+How faces avoid handing you "the answer" directly:
+  1. Each category has several face candidates and several lines (it changes every time)
+  2. The same internal state can scatter across several categories
+  3. Neutral / mislead categories are mixed in
+  4. A face alone can never pin down the internal state 100%
 
-戻り値:
+Return value:
     {"face": "(・_・;)", "ascii_face": ":-S",
-     "text": "一瞬タイミングを取り直した",
+     "text": "Briefly re-set his timing",
      "category": "uncertain", "kind": "reveal"}
 
-このファイルが「表情表示の責務」を持つ。judge.py / batter.py に顔文字は書かない。
+This file owns "showing facial expressions". No faces are written in judge.py / batter.py.
 """
 
 import random
@@ -28,7 +28,7 @@ import sys
 import ansi
 from constants import REACTION_MISLEAD_RATE, REACTION_REVEAL_RATE, zone_x, zone_y
 
-# カテゴリ → 表示色(顔文字を彩る)
+# category -> display color (colors the face)
 _CAT_COLOR = {
     "jammed": "bred", "out_front": "bred", "frustrated": "bred", "surprised": "bmagenta",
     "confident": "bgreen", "locked_in": "bgreen",
@@ -36,66 +36,66 @@ _CAT_COLOR = {
     "uncertain": "bcyan", "neutral": "grey",
 }
 
-# --- 8〜12 個に絞った表情カテゴリ ---
-# kaomoji : Windows Terminal などで読める顔文字(第一候補)
-# ascii   : ASCII だけの代替(環境依存で化けるとき用)
-# texts   : そのカテゴリの短い反応文(複数)
+# --- Facial-expression categories, trimmed to ten ---
+# kaomoji : emoticons readable in Windows Terminal and the like (first choice)
+# ascii   : pure-ASCII substitutes (for when the environment garbles them)
+# texts   : short reaction lines for the category (several)
 FACE_TABLE = {
-    "jammed": {  # 差し込まれた
+    "jammed": {  # jammed
         "kaomoji": ["(-_-;)", "(>_<)", "(๑•́ㅿ•̀)"],
         "ascii": [">_<", "-_-;", "x_x"],
-        "texts": ["少し詰まったように見えた", "差し込まれて振り遅れた", "手が出たが窮屈そうだった"],
+        "texts": ["He looked a little jammed", "Jammed and late on it", "Got the bat on it but looked cramped"],
     },
-    "out_front": {  # 泳いだ・前に出た
+    "out_front": {  # lunged out front
         "kaomoji": ["(´・ω・｀)", "(＞ｍ＜)", "( ˘•ω•˘ )"],
         "ascii": [":-/", "x_x", ":-("],
-        "texts": ["体が前に泳いだ", "タイミングが early で崩れた", "上体が突っ込んでいた"],
+        "texts": ["He lunged out front", "Timing broke down, way out in front", "His upper body flew forward"],
     },
-    "confident": {  # 自信・狙い通り
+    "confident": {  # confident / right on it
         "kaomoji": ["(￣ー￣)", "(｀・ω・´)", "( ¯꒳¯ )"],
         "ascii": ["^_~", ">:)", "-_-b"],
-        "texts": ["打席で落ち着いている", "自信ありげにバットを構えた", "軽くうなずいて構え直した"],
+        "texts": ["He looks settled in the box", "Held the bat like he owns the plate", "Gave a small nod and reset"],
     },
-    "comfortable": {  # 余裕を持った見送り
+    "comfortable": {  # a comfortable take
         "kaomoji": ["(⌒,_ゝ⌒)", "(´ー｀)", "( ˘ω˘ )"],
         "ascii": [":-)", "=)", "^_^"],
-        "texts": ["外の球を余裕を持って見送った", "きわどい球を楽に見極めた", "無理をせず1球見た"],
+        "texts": ["Let the outside pitch go with ease", "Read the borderline pitch easily", "Took one without forcing it"],
     },
-    "uncertain": {  # 迷い
+    "uncertain": {  # unsure
         "kaomoji": ["(・_・;)", "(◎_◎;)", "(・・;)"],
         "ascii": [":-S", "o_O", "?_?"],
-        "texts": ["一瞬タイミングを取り直した", "迷ったように見えた", "打席を外して間を取った"],
+        "texts": ["Briefly re-set his timing", "He looked unsure", "Stepped out of the box to take a breath"],
     },
-    "surprised": {  # 意表を突かれた
+    "surprised": {  # caught off guard
         "kaomoji": ["(ﾟДﾟ)", "(°口°)", "Σ(・□・;)"],
         "ascii": [":-O", "O_o", "!_!"],
-        "texts": ["意表を突かれた様子だった", "のけぞって驚いた", "反応が一歩遅れた"],
+        "texts": ["He looked caught off guard", "Recoiled in surprise", "Reacted a beat late"],
     },
-    "frustrated": {  # イラつき
+    "frustrated": {  # annoyed
         "kaomoji": ["(-\"-)", "(￢_￢)", "(#`д´)"],
         "ascii": [">:(", "-.-", "`_`"],
-        "texts": ["いらだった様子でバットを振った", "首をひねっていた", "小さく舌打ちしたように見えた"],
+        "texts": ["Took an irritated swing", "Tilted his head, puzzled", "Seemed to mutter under his breath"],
     },
-    "locked_in": {  # しっかり振り抜いた
+    "locked_in": {  # a full, confident swing
         "kaomoji": ["(๑•̀ㅂ•́)و", "(ｷﾘｯ)", "( •̀ω•́ )"],
         "ascii": ["\\o/", ">_>b", "=D"],
-        "texts": ["鋭くバットを振り抜いた", "力強いスイングだった", "振り切って残心があった"],
+        "texts": ["Ripped right through the swing", "A powerful, committed cut", "Followed all the way through"],
     },
-    "defensive": {  # 追い込まれて粘り
+    "defensive": {  # fighting off pitches
         "kaomoji": ["(；・∀・)", "(・∀・;)", "( ；´Д｀)"],
         "ascii": [";-)", ":-|", ";_;"],
-        "texts": ["食らいついてカットした", "粘って的を絞っていた", "追い込まれて守りに入った"],
+        "texts": ["Hung in and fouled it off", "Battling and narrowing it down", "Backed into protect mode"],
     },
-    "neutral": {  # 無表情・情報が薄い
+    "neutral": {  # blank / low information
         "kaomoji": ["(´・_・`)", "(・_・)", "( ᐛ )"],
         "ascii": [":-|", "._.", "-_-"],
-        "texts": ["表情を変えずに構えた", "淡々とボックスに入り直した", "とくに変化は見えなかった"],
+        "texts": ["Set his stance without changing expression", "Stepped back in calmly", "Nothing visible changed"],
     },
 }
 
 FACE_CATEGORIES = list(FACE_TABLE)
 
-# MISLEAD のときに使う「逆の印象」対応表
+# The "opposite impression" table used for a MISLEAD
 _OPPOSITE = {
     "jammed": "confident",
     "out_front": "comfortable",
@@ -109,12 +109,12 @@ _OPPOSITE = {
     "neutral": "neutral",
 }
 
-# 情報の薄い「ぼかし」カテゴリ
+# Low-information "blur" categories
 _AMBIGUOUS = ["neutral", "uncertain", "frustrated"]
 
 
 def _true_category(course, outcome):
-    """内部の真実(タイミング・見逃し方)に対応する『素直なカテゴリ』。"""
+    """The "honest category" matching the internal truth (timing, how he took it)."""
     timing = outcome["timing"]
     swung = outcome["swung"]
     in_zone = outcome["in_zone"]
@@ -132,18 +132,18 @@ def _true_category(course, outcome):
     if timing == "early":
         return "out_front"
 
-    # timing == "on_time" で振った
-    if result == "空振り":
+    # timing == "on_time" and he swung
+    if result == "Whiff":
         return "locked_in"
-    if result == "ファウル":
+    if result == "Foul":
         return "defensive"
-    if result in ("単打", "二塁打", "三塁打", "本塁打"):
+    if result in ("Single", "Double", "Triple", "Home run"):
         return "confident"
-    return "locked_in"   # アウト(いい当たりでもアウト、など)
+    return "locked_in"   # an out (even a well-hit out, etc.)
 
 
 def _stdout_supports_kaomoji():
-    """今の出力先で顔文字(非 ASCII)が化けずに出せそうか。"""
+    """Whether the current output can show kaomoji (non-ASCII) without garbling."""
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
         "（´・ω・｀）".encode(encoding)
@@ -153,10 +153,10 @@ def _stdout_supports_kaomoji():
 
 
 def describe_reaction(pitch_type, course, outcome, rng=None):
-    """1 球の結果 → 反応(顔文字 + 文 + カテゴリ)の辞書を返す。
+    """One pitch's result -> a reaction dict (face + line + category).
 
-    pitch_type は今は使わないが、将来「球種で仕草を変える」余地として受け取る。
-    course は実際に来たコース(actual_course)を渡す想定。
+    pitch_type is unused for now; it is accepted so a future version can vary the gestures by pitch.
+    `course` is expected to be the actual course (actual_course).
     """
     rng = rng or random
 
@@ -181,11 +181,11 @@ def describe_reaction(pitch_type, course, outcome, rng=None):
 
 
 def render_reaction_block(reaction, ascii_only=None):
-    """CLI 表示用。顔文字が目に飛び込むレイアウトにする。
+    """For the CLI. Lays it out so the face jumps out at you.
 
         BATTER REACTION
             (・_・;)
-          一瞬タイミングを取り直した
+          Briefly re-set his timing
     """
     if ascii_only is None:
         ascii_only = not _stdout_supports_kaomoji()

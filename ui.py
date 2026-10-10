@@ -1,18 +1,18 @@
-"""CLI 表示の組み立て(色つき)。
+"""Builds the CLI display (with colors).
 
-ここを差し替えれば GUI 化できる(ロジックは触らない)。
-色は ansi.py が担当し、パイプ時などは自動で無効になる。
+Swap this out and you can turn the game into a GUI (the logic is untouched).
+ansi.py handles the colors, and they turn off automatically when piped.
 
-decision_quality などの内部指標はプレイ中は絶対に出さない(試合後だけ)。
+Internal measures such as decision_quality are NEVER shown during play (only after the game).
 """
 
 import ansi
 from constants import COURSE_SHORT
 from pitch_data import pitch_name
 from reaction import render_reaction_block
-from strategy import PITCH_INTENTS, build_analysis, grade_reads
+from strategy import PITCH_INTENTS, build_analysis, catcher_rating, grade_reads
 
-_COURSE_JP = COURSE_SHORT
+_COURSE_TEXT = COURSE_SHORT
 
 
 def _pips(filled, total, color):
@@ -21,29 +21,29 @@ def _pips(filled, total, color):
 
 
 def _result_color(result):
-    if result in ("アウト", "空振り", "三振"):
+    if result in ("Out", "Whiff", "Strikeout"):
         return "bgreen"
-    if result in ("単打", "二塁打", "三塁打", "本塁打", "四球", "エラー"):
+    if result in ("Single", "Double", "Triple", "Home run", "Walk", "Error"):
         return "bred"
-    if result == "ボール":
+    if result == "Ball":
         return "byellow"
-    return "bcyan"          # ストライク / ファウル
+    return "bcyan"          # Strike / Foul
 
 
 _BEGINNER_HINTS = (
-    "\n" + ansi.dim("--- 初心者向けヒント（--difficulty beginner）---") + "\n"
-    " ・顔文字は本音とは限りません（60% 本音 / 15% 逆 / 25% ぼかし）。1 球だけで信じすぎない。\n"
-    " ・配球意図の（）内は狙いの説明です。カウントや場面に合っているか意識してみましょう。\n"
-    " ・3 アウト後の「配球のふり返り」では、結果と判断の質を分けて評価します。"
+    "\n" + ansi.dim("--- Beginner hints (--difficulty beginner) ---") + "\n"
+    " - A face is not always the truth (60% honest / 15% opposite / 25% blurred). Do not trust a single pitch.\n"
+    " - The text in parentheses after each intent explains the goal. Ask whether it fits the count and the situation.\n"
+    " - The pitch-calling review after three outs judges results and decision quality separately."
 )
 
 
 def render_intro(hints=False):
     text = (
-        ansi.bold(ansi.cyan("══════════ 終盤の守り切りゲーム ══════════")) + "\n"
-        " 毎回ちがう終盤の場面から。この半イニングで 3 アウトを取るまでが 1 ゲーム。\n"
-        " 捕手として 球種 / 狙うコース / 配球意図 を選びます。\n"
-        " 正解は出ません。反応・履歴・打者・守備・打球チャートから読んでください。\n"
+        ansi.bold(ansi.cyan("══════════ BEHIND THE PLATE ══════════")) + "\n"
+        " A different late-inning scene every time. One game = get three outs this half inning.\n"
+        " As the catcher you pick the pitch type / target location / intent.\n"
+        " No answers are shown. Read the reactions, history, batter, defense, and spray chart.\n"
         + ansi.dim("═══════════════════════════════════════════")
     )
     if hints:
@@ -52,18 +52,18 @@ def render_intro(hints=False):
 
 
 # ---------------------------------------------------------------------------
-# 開始時の状況カード
+# The situation card at the start
 # ---------------------------------------------------------------------------
 def render_situation_card(state):
     b = state.batter
-    hand = "右投" if state.pitcher.throws == "R" else "左投"
+    hand = "RHP" if state.pitcher.throws == "R" else "LHP"
     return "\n".join([
         ansi.dim("--------------------------------"),
         ansi.bold(ansi.cyan(state.inning_label())),
-        f"自軍 {ansi.green(state.our_score)}  -  {ansi.bold(state.opp_score)} 相手",
+        f"Us {ansi.green(state.our_score)}  -  {ansi.bold(state.opp_score)} Them",
         "",
-        f"{state.outs} OUT    走者: {ansi.yellow(state.runners_text())}",
-        f"投手: リリーフ ({hand})",
+        f"{state.outs} OUT    Runners: {ansi.yellow(state.runners_text())}",
+        f"Pitcher: Reliever ({hand})",
         "",
         ansi.bold(f"BATTER #{state.lineup.spot_number()}  {b.public_line()}"),
         ansi.yellow(b.type_label()),
@@ -72,7 +72,7 @@ def render_situation_card(state):
 
 
 # ---------------------------------------------------------------------------
-# 毎球のダッシュボード = スコアボード + ベース図 + 打者カード
+# The per-pitch dashboard = scoreboard + base diagram + batter card
 # ---------------------------------------------------------------------------
 def _diamond(state):
     occ = lambda i: (ansi.paint("◆", "bold", "byellow") if state.runners[i] else ansi.dim("◇"))
@@ -85,38 +85,38 @@ def _diamond(state):
 
 def render_dashboard(state, last_outcome):
     b = state.batter
-    hand = "右投" if state.pitcher.throws == "R" else "左投"
-    tire = {0: "", 1: ansi.yellow("  ⚠疲れ"), 2: ansi.red("  ⚠⚠バテ")}[state.pitcher.fatigue_level()]
+    hand = "RHP" if state.pitcher.throws == "R" else "LHP"
+    tire = {0: "", 1: ansi.yellow("  ⚠ Tired"), 2: ansi.red("  ⚠⚠ Gassed")}[state.pitcher.fatigue_level()]
 
     head = ansi.bold(ansi.cyan(f"═══ {state.inning_label()} ═══"))
-    score = f"相手 {ansi.bold(state.opp_score)} - {ansi.green(state.our_score)} 自軍"
-    line1 = f" {head}  {score}   投手{hand}　球数 {state.pitcher.pitches_thrown}{tire}"
+    score = f"Them {ansi.bold(state.opp_score)} - {ansi.green(state.our_score)} Us"
+    line1 = f" {head}  {score}   {hand}   Pitches {state.pitcher.pitches_thrown}{tire}"
     line2 = (f"   OUT {_pips(state.outs, 3, 'bred')}    "
              f"B {_pips(state.balls, 4, 'byellow')}   S {_pips(state.strikes, 3, 'bcyan')}"
-             f"   走者 {ansi.yellow(state.runners_text())}")
+             f"   Runners {ansi.yellow(state.runners_text())}")
     if state.lead_runner_fast() and not state.runners[1]:
-        line2 += ansi.red("  ⚡盗塁警戒")
+        line2 += ansi.red("  ⚡ Steal alert")
 
     dia = _diamond(state)
     card = [
         ansi.bold(f" ┌ BATTER #{state.lineup.spot_number()}  {b.type_label()}  "
                   f"{b.public_line()}"),
-        ansi.dim(f" │ 偵察: {b.scouting_note()}"),
+        ansi.dim(f" │ Scouting: {b.scouting_note()}"),
     ]
     read = state.current_read()
     if read and (read["wait"] or read["weak"]):
         bits = []
         if read["wait"]:
-            bits.append("速球待ち" if read["wait"] == "fastball" else "変化球待ち")
+            bits.append("Fastball" if read["wait"] == "fastball" else "Off-speed")
         if read["weak"]:
-            bits.append(f"弱点={read['weak']}")
-        card.append(ansi.magenta(f" │ あなたの読み: {' / '.join(bits)}"))
+            bits.append(f"weak={read['weak']}")
+        card.append(ansi.magenta(f" │ Your read: {' / '.join(bits)}"))
     if last_outcome is not None and last_outcome.get("reaction"):
         r = last_outcome["reaction"]
         card.append(f" │   {ansi.bold(r['face'])}   {ansi.dim(r['text'])}")
-    card.append(ansi.dim(f" └ 配球: {state.history.summary_text()}"))
+    card.append(ansi.dim(f" └ Calls: {state.history.summary_text()}"))
 
-    # ベース図を右側に添える
+    # Put the base diagram on the right side
     body = []
     for i, cl in enumerate(card):
         d = dia[i] if i < len(dia) else ""
@@ -127,13 +127,13 @@ def render_dashboard(state, last_outcome):
 
 
 # ---------------------------------------------------------------------------
-# 打球チャート(#B 打球傾向がゲーム中に溜まって見える)
+# The spray chart (#B batted-ball tendencies build up and become visible during the game)
 # ---------------------------------------------------------------------------
 _SPRAY_W, _SPRAY_H = 25, 6
 
 
 def _spray_cell(entry):
-    # 左右(打者の左右を考慮した実方向)
+    # Left / right (the real direction, taking the batter's handedness into account)
     d, bats = entry["direction"], entry["bats"]
     if d == "center":
         side = "center"
@@ -142,25 +142,25 @@ def _spray_cell(entry):
     else:
         side = "right"
     col = {"left": 5, "center": 12, "right": 19}[side]
-    # 前後(飛距離)
+    # Front / back (the distance)
     row = {"deep": 0, "shallow": 2, "infield": 4}[entry["distance"]]
     glyph, color = {
-        "アウト": ("·", "grey"), "単打": ("o", "white"), "エラー": ("e", "byellow"),
-        "二塁打": ("O", "byellow"), "三塁打": ("O", "byellow"), "本塁打": ("H", "bred"),
+        "Out": ("·", "grey"), "Single": ("o", "white"), "Error": ("e", "byellow"),
+        "Double": ("O", "byellow"), "Triple": ("O", "byellow"), "Home run": ("H", "bred"),
     }.get(entry["result"], ("?", "white"))
     return row, col, glyph, color
 
 
 def render_spray(state):
-    title = ansi.bold("打球チャート（このゲーム）") + ansi.dim(
-        "   · アウト  o 単打  e エラー  O 長打  H 本塁打")
+    title = ansi.bold("Spray chart (this game)") + ansi.dim(
+        "   · out  o single  e error  O extra-base  H home run")
     if not state.spray:
-        return title + "\n  " + ansi.dim("（まだ打球なし）")
+        return title + "\n  " + ansi.dim("(no balls in play yet)")
 
     grid = [[" "] * _SPRAY_W for _ in range(_SPRAY_H)]
     for entry in state.spray:
         row, col, glyph, color = _spray_cell(entry)
-        for dc in range(2):                       # ちょっと横に散らす
+        for dc in range(2):                       # scatter it slightly sideways
             r, c = row + (dc and entry["ball_type"] == "fly"), col + dc
             if 0 <= r < _SPRAY_H and 0 <= c < _SPRAY_W and grid[r][c] == " ":
                 grid[r][c] = ansi.paint(glyph, color)
@@ -171,12 +171,12 @@ def render_spray(state):
 
 
 # ---------------------------------------------------------------------------
-# 守備陣の能力表
+# The fielders' ability table
 # ---------------------------------------------------------------------------
 def render_fielder_table(defense):
     from fielders import ATTRS, POSITIONS, position_fit, weakest_fielder
     weak = weakest_fielder(defense.fielders)
-    header = "  Pos 選手  " + " ".join(f"{a[:5]:>5}" for a in ATTRS) + "   総合  適性"
+    header = "  Pos Name  " + " ".join(f"{a[:5]:>5}" for a in ATTRS) + "   Ovr   Fit"
     rows = [ansi.dim(header), ansi.dim("  " + "─" * (len(header) - 2))]
     for pos in POSITIONS:
         f = defense.fielder_at(pos)
@@ -184,32 +184,32 @@ def render_fielder_table(defense):
         line = f"  {pos:<3} {f.name:<4} {stats}   {f.overall():4.0f}  {position_fit(f, pos):4.0f}"
         rows.append(ansi.red(line) if f is weak else line)
     rows.append("")
-    rows.append(ansi.bold(f"  Expected Defensive Efficiency (参考値): "
+    rows.append(ansi.bold(f"  Expected Defensive Efficiency (reference): "
                           f"{defense.expected_defensive_efficiency():.0f} / 100"))
-    rows.append(ansi.dim("  ※目安であって最適解ではありません。"))
+    rows.append(ansi.dim("  * A rough guide, not the best answer."))
     return "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
-# 1 球の結果
+# The result of one pitch
 # ---------------------------------------------------------------------------
 def render_play_result(outcome, ascii_only=None):
     pn = pitch_name(outcome["pitch_type"])
-    tgt = f"{pn} / {_COURSE_JP[outcome['target_course']]}"
+    tgt = f"{pn} / {_COURSE_TEXT[outcome['target_course']]}"
     if outcome["missed"]:
-        act = f"{pn} / {ansi.red(_COURSE_JP[outcome['actual_course']])}  {ansi.red('← 失投')}"
+        act = f"{pn} / {ansi.red(_COURSE_TEXT[outcome['actual_course']])}  {ansi.red('<- missed spot')}"
     else:
-        act = f"{pn} / {_COURSE_JP[outcome['actual_course']]}"
+        act = f"{pn} / {_COURSE_TEXT[outcome['actual_course']]}"
     rc = _result_color(outcome["result"])
     lines = [
-        ansi.dim(f"要求: {tgt}    意図: {PITCH_INTENTS[outcome['intent']]}"),
-        f"実投: {act}    球の出来: {int(outcome['quality'] * 100)}",
-        f">>> 結果: {ansi.bold(ansi.paint(outcome['result'], rc))}",
+        ansi.dim(f"Call: {tgt}    Intent: {PITCH_INTENTS[outcome['intent']]}"),
+        f"Actual: {act}    Pitch quality: {int(outcome['quality'] * 100)}",
+        f">>> Result: {ansi.bold(ansi.paint(outcome['result'], rc))}",
     ]
     bb, fd = outcome.get("batted_ball"), outcome.get("fielding")
     if bb is not None and fd is not None:
-        lines.append(ansi.dim(f">>> 打球: {bb.describe()} → {fd['position']} の {fd['fielder']}"
-                              f"（アウト確率 {fd['out_probability'] * 100:.0f}%）"))
+        lines.append(ansi.dim(f">>> Batted ball: {bb.describe()} -> {fd['fielder']} at {fd['position']}"
+                              f" (out probability {fd['out_probability'] * 100:.0f}%)"))
     play = outcome.get("play")
     if play is not None:
         bits = []
@@ -218,11 +218,11 @@ def render_play_result(outcome, ascii_only=None):
         if play["detail"]:
             bits.append(play["detail"])
         if play["runs"]:
-            bits.append(ansi.red(f"{play['runs']}失点"))
+            bits.append(ansi.red(f"{play['runs']} run{'s' if play['runs'] != 1 else ''} allowed"))
         if play["outs_added"] >= 2:
-            bits.append("2アウト")
+            bits.append("2 outs")
         if bits:
-            lines.append(f">>> 走塁: {' / '.join(bits)}")
+            lines.append(f">>> Baserunning: {' / '.join(bits)}")
     r = outcome.get("reaction")
     if r is not None:
         lines.append("")
@@ -231,31 +231,31 @@ def render_play_result(outcome, ascii_only=None):
 
 
 # ---------------------------------------------------------------------------
-# 試合後(3 アウト後だけ)
+# After the game (only after three outs)
 # ---------------------------------------------------------------------------
 def render_inning_result(state):
     run_txt, status = state.result_summary()
     runc = "bgreen" if state.runs_this_inning == 0 else "bred"
     return "\n".join([
         ansi.dim("═" * 44),
-        ansi.bold(f" イニング終了：{ansi.paint(run_txt, runc)} ／ {ansi.yellow(status)}"),
-        f" 自軍 {state.our_score} - {state.opp_score} 相手"
-        + ansi.dim(f"（開始 {state.start_our} - {state.start_opp}）"),
+        ansi.bold(f" Inning over: {ansi.paint(run_txt, runc)} / {ansi.yellow(status)}"),
+        f" Us {state.our_score} - {state.opp_score} Them"
+        + ansi.dim(f" (started {state.start_our} - {state.start_opp})"),
         ansi.dim("═" * 44),
     ])
 
 
 def _fmt_moments(moments, limit=3, color=None):
     if not moments:
-        return ansi.dim("  なし")
+        return ansi.dim("  none")
     out = []
     for item in moments[:limit]:
         num, label = item[0], item[1]
-        tail = f" → {item[2]}" if len(item) > 2 else ""
-        line = f"  {num}球目 {label}{tail}"
+        tail = f" -> {item[2]}" if len(item) > 2 else ""
+        line = f"  Pitch {num}: {label}{tail}"
         out.append(ansi.paint(line, color) if color else line)
     if len(moments) > limit:
-        out.append(ansi.dim(f"  …ほか {len(moments) - limit} 件"))
+        out.append(ansi.dim(f"  ...and {len(moments) - limit} more"))
     return "\n".join(out)
 
 
@@ -263,36 +263,42 @@ def render_analysis(state):
     a = build_analysis(state.pitch_log)
     reads = grade_reads(state.reads, state.lineup.batters)
     lines = [
-        ansi.bold("--- 配球のふり返り（結果と判断は別ものとして評価）---"),
-        f"総投球: {a['total_pitches']} 球",
+        ansi.bold("--- Pitch-calling review (results and decisions judged separately) ---"),
+        f"Total pitches: {a['total_pitches']}",
         "",
-        ansi.green("◎ 良かった配球（狙いを外す / 崩す / 守備と噛み合う）:"),
+        ansi.green("◎ Good calls (fooled him / threw him off / fit the defense):"),
         _fmt_moments(a["good_calls"], color="green"),
         "",
-        ansi.yellow("△ 危険だった配球（甘い / 見せすぎ / カウントに合わない）:"),
+        ansi.yellow("△ Risky calls (loose / overshown / wrong for the count):"),
         _fmt_moments(a["risky_calls"], color="byellow"),
         "",
-        f"狙いを外せた場面: {len(a['fooled_moments'])} 球   "
-        f"読まれていた場面: {len(a['read_moments'])} 球",
-        f"守備配置と噛み合った場面: {len(a['defense_moments'])} 球   "
-        f"失投で結果が悪化: {len(a['misfire_moments'])} 球",
+        f"Fooled his guess: {len(a['fooled_moments'])}   "
+        f"He read it: {len(a['read_moments'])}",
+        f"Defense fit: {len(a['defense_moments'])}   "
+        f"Misses that hurt: {len(a['misfire_moments'])}",
         "",
-        ansi.red("◇ 浴びた長打:"),
+        ansi.red("◇ Extra-base hits allowed:"),
         _fmt_moments(a["extra_base"], color="bred"),
         "",
-        ansi.cyan("★ 結果は悪いが、判断としては良かった球（不運）:"),
+        ansi.cyan("★ Bad result, good decision (unlucky):"),
         _fmt_moments(a["unlucky"], color="bcyan"),
-        ansi.yellow("★ 判断は悪いが、結果に救われた球（幸運）:"),
+        ansi.yellow("★ Bad decision, saved by the result (lucky):"),
         _fmt_moments(a["lucky"], color="byellow"),
         "",
     ]
     if reads["rows"]:
-        lines.append(ansi.magenta(f"あなたの読み: {reads['correct']} / {reads['graded']} 当たり"))
+        lines.append(ansi.magenta(f"Your reads: {reads['correct']} / {reads['graded']} right"))
         lines += reads["rows"]
         lines.append("")
     framed = getattr(state, "framed_strikes", 0)
     if framed:
-        lines.append(ansi.cyan(f"フレーミングで奪ったストライク: {framed} 球"))
-    lines.append(ansi.bold(f"判断の質（平均）: {a['decision_quality_label']}"))
-    lines.append(ansi.dim("※試合後の振り返りです。プレイ中に正解は表示していません。"))
+        lines.append(ansi.cyan(f"Strikes stolen by framing: {framed}"))
+    lines.append(ansi.bold(f"Decision quality (average): {a['decision_quality_label']}"))
+    rating = catcher_rating(state, analysis=a)
+    lines.append("")
+    lines.append(ansi.bold(ansi.cyan(
+        f"=== CATCHER RATING: {rating['grade']}  ({rating['score']} / 100)  {rating['title']} ===")))
+    if rating["badges"]:
+        lines.append("Badges: " + ", ".join(name for name, _ in rating["badges"]))
+    lines.append(ansi.dim("* This is a post-game review. No answers are shown during play."))
     return "\n".join(lines)

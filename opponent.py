@@ -1,16 +1,17 @@
-"""相手ベンチの作戦(小技) ―― 犠打(バント) / ヒットエンドラン。
+"""The opposing bench's small-ball tactics: sacrifice bunt / hit-and-run.
 
-打席の初球の前に decide_tactic() を1回だけ呼ぶ。返り値:
-    None            … 普通に打ってくる
-    "bunt"          … 犠打(送りバント)。打者がバントの構えを見せる = 捕手に見える
-    "hit_and_run"   … エンドラン。走者がスタート + 打者は必ず振る = 捕手には見えない
+decide_tactic() is called exactly once before the first pitch of each at-bat. It returns:
+    None            ... the batter just hits away
+    "bunt"          ... a sacrifice bunt. The batter shows bunt = the catcher can see it
+    "hit_and_run"   ... hit-and-run. The runner breaks and the batter must swing = the catcher cannot see it
 
-捕手はこれに対して「ピッチアウト」「高め速球(バントしにくい球)」などで
-対抗できる ―― engine.py と match_state.py がその読み合いを解決する。
+The catcher can counter with a pitchout, a high fastball (hard to bunt), and so on --
+engine.py and match_state.py resolve that guessing game.
 
-このゲームは常に終盤の接戦なので、状況(点差・アウト・走者)と打者タイプで
-「教科書どおりに仕掛けてくる」かどうかだけを判断する。相手を強くしすぎない
-ため、確率は控えめ(最大でも 35%)。
+The game is always a close late-inning situation, so this only decides whether the
+opponent "plays it by the book" given the situation (score, outs, runners) and the
+batter type. To keep the opponent from getting too strong, probabilities are kept
+modest (35% at most).
 """
 
 
@@ -25,27 +26,27 @@ def _contact_hitter(batter):
 
 
 def decide_tactic(state, rng):
-    """相手ベンチが仕掛けてくる作戦を返す(None / "bunt" / "hit_and_run")。"""
+    """Return the tactic the opposing bench calls (None / "bunt" / "hit_and_run")."""
     if state.outs >= 2:
         return None
     r1, r2, r3 = state.runners
-    forceable = r1 or r2                     # 送れる走者(封殺されうる塁の走者)がいる
+    forceable = r1 or r2                     # there is a runner who can be moved over
     if not forceable:
         return None
 
-    # 守備側(自軍)から見た点差。1点差以内なら「1点を取りにくる」状況。
+    # Score difference from our (the fielding team's) point of view. Within 2 runs = "go for one run".
     close = abs(state.score_diff) <= 2
-    one_run_game = -2 <= state.score_diff <= 1   # 同点〜1点ビハインド(守る側)= 相手は手堅く
+    one_run_game = -2 <= state.score_diff <= 1   # tied to 1 behind (we are fielding) = opponent plays it safe
 
     batter = state.batter
 
-    # --- 犠打: 弱打者 + 走者一塁(or 一二塁) + 僅差 ---
+    # --- Sacrifice: weak hitter + runner on 1st (or 1st & 2nd) + close game ---
     if _weak_hitter(batter) and r1 and not r3 and close:
         p = 0.35 if one_run_game else 0.18
         if rng.random() < p:
             return "bunt"
 
-    # --- エンドラン: 巧打者 + 走者一塁のみ + 僅差 ---
+    # --- Hit-and-run: contact hitter + runner on 1st only + close game ---
     if _contact_hitter(batter) and r1 and not r2 and not r3 and close:
         if rng.random() < 0.20:
             return "hit_and_run"
@@ -55,6 +56,6 @@ def decide_tactic(state, rng):
 
 def describe(tactic):
     return {
-        "bunt": "打者がバントの構えを見せた",
-        "hit_and_run": "",   # エンドランは捕手に見えない
+        "bunt": "The batter squares to bunt",
+        "hit_and_run": "",   # the catcher cannot see a hit-and-run
     }.get(tactic, "")

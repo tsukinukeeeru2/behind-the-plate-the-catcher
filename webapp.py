@@ -1,31 +1,31 @@
-"""ブラウザで遊べる Web UI(標準ライブラリのみ、追加インストール不要)。
+"""A browser-playable Web UI (standard library only, nothing extra to install).
 
-    python webapp.py                 # http://127.0.0.1:8765 で起動
+    python webapp.py                 # starts at http://127.0.0.1:8765
     python webapp.py --port 9000
     python webapp.py --lineup lineups/sample_team.json
-    python webapp.py --seed 12345    # 場面・投球判定を再現可能にする
-    python webapp.py --host 0.0.0.0  # 同じ Wi-Fi の他端末からもアクセス可能に
+    python webapp.py --seed 12345    # make scene generation and pitch judging reproducible
+    python webapp.py --host 0.0.0.0  # also reachable from other devices on the same Wi-Fi
 
-main.py(CLI)と同じ engine.py を呼ぶだけの「進行役」。ゲームロジック
-(judge.py 以下)には一切触れない ―― ロジックの二重実装をしない、という
-このプロジェクトの一貫した方針どおり。
+It is just the "show runner" that calls the same engine.py as main.py (CLI). It never touches the game logic
+(judge.py and below) -- in keeping with this project's consistent policy of never
+implementing the logic twice.
 
     Game Engine (engine.py)
         ↑            ↑
       main.py     webapp.py
       (CLI)         (Web)
 
-基本はフォーム送信だけで組み、安定性・自動テストのしやすさを見た目より
-優先している(詳細は README「Web UI」参照)。唯一の例外が捕手のリズムゲーム
-(受球=フレーミング / 盗塁の送球 / ワンバウンドのブロッキング / 振り逃げ /
-サイン交換 / バント処理。render_qte)で、ここだけタイミング入力に小さな JS を
-使う ―― JS 無効でもボタン送信で中立(bonus 0)で先へ進める(<noscript>)。
+It is built mostly from plain form submits, putting stability and ease of automated testing
+ahead of looks (see README "Web UI"). The only exception is the catcher's rhythm games
+(receive = framing / the steal throw / blocking a ball in the dirt / dropped third strike /
+changing signs / bunt fielding. See render_qte), which use a little JS for timing input
+-- and even with JS off, a button submit moves on neutrally (bonus 0) (<noscript>).
 
-仕組み: engine.resolve_pitch_flow() のジェネレータが QTE 地点で ("種別",
-payload) を yield し、webapp はそれを HTTP リクエストをまたいで駆動する
-(SESSION.pitch_gen に生きたジェネレータを持ち、/qte の POST ごとに .send())。
-PITCHSIM_QTE=0 は据え置き(qte.* の CLI 用 print/input を止めるため)だが、
-Web はジェネレータ経由で独自のリズム UI を出すので QTE は"入る"。
+How it works: the generator in engine.resolve_pitch_flow() yields ("kind",
+payload) at each QTE point, and webapp drives it across HTTP requests
+(a live generator is kept in SESSION.pitch_gen and .send() is called on every /qte POST).
+PITCHSIM_QTE=0 is kept as is (to silence the CLI print/input of qte.*), but
+the Web shows its own rhythm UI through the generator, so QTEs DO happen.
 """
 
 import argparse
@@ -35,7 +35,10 @@ import os
 import random
 import re
 import socketserver
+import threading
+import traceback
 import urllib.parse
+import webbrowser
 
 os.environ["PITCHSIM_QTE"] = "0"
 
@@ -46,15 +49,17 @@ from engine import begin_at_bat, resolve_pitch_flow, save_game_log
 from fielders import POSITIONS, position_fit, weakest_fielder
 from lineup import load_lineup_file
 from match_state import generate_random_situation
+import playview
 from pitch_data import pitch_name, repertoire_options, velocity_of
-from strategy import PITCH_INTENTS, build_analysis, build_postgame_report, grade_reads
+from strategy import (PITCH_INTENTS, build_analysis, build_postgame_report, catcher_rating, grade_reads,
+                      intent_label)
 
 _COURSE_ROWS = ["hi", "mid", "lo"]
 
 
 def _course_cols(bats):
-    """打者から見て「内→外」の並び。右打者=in/mid/out、左打者=out/mid/in
-    (捕手・投手側から見た実際の左右がミラーする、放送のストライクゾーン表示と同じ考え方)。"""
+    """The order from the batter's view, inside -> outside. Right-handed batter = in/mid/out, left-handed = out/mid/in
+    (the real left/right from the catcher's and pitcher's side mirror, the same idea as a broadcast strike-zone display)."""
     return ["in", "mid", "out"] if bats == "R" else ["out", "mid", "in"]
 
 
@@ -62,10 +67,10 @@ def _course_grid(bats):
     return [[f"{c}_{r}" for c in _course_cols(bats)] for r in _COURSE_ROWS]
 
 
-# 球種ごとの「ざっくりした変化」。捕手視点の小さな枠に、ボールがどこから入って
-# どう曲がって落ちるかを1本の矢印で描くだけ(雑でいい・見て分かればいい)。
-#   drop  : 落ち量(0=落ちない 〜 1=大きく落ちる)
-#   sweep : 横変化(- = 三塁側へ滑る / + = 一塁側へ食い込む。右投手基準の目安)
+# A "rough break" for each pitch. In a small frame from the catcher's view, it just draws, with one arrow, where the ball comes in and
+# how it bends and drops (rough is fine -- it only has to read at a glance).
+#   drop  : how much it drops (0 = no drop ... 1 = a big drop)
+#   sweep : lateral break (- = slides toward third base / + = runs in toward first base. A guide for a right-handed pitcher)
 _PITCH_MOVE = {
     "four_seam": (0.10, 0.05), "two_seam": (0.30, 0.35), "sinker": (0.44, 0.42),
     "cutter": (0.24, -0.32), "slider": (0.50, -0.55), "sweeper": (0.52, -0.92),
@@ -74,12 +79,12 @@ _PITCH_MOVE = {
 
 
 def _pitch_arc_svg(key, size=34):
-    """球種の変化を捕手視点で1本の矢印にした小さな SVG(雑な軌道イメージ)。"""
+    """A small SVG that draws a pitch's movement as one arrow from the catcher's view (a rough trajectory image)."""
     drop, sweep = _PITCH_MOVE.get(key, (0.35, 0.0))
     x0, y0 = 20.0, 3.0
     x1 = 20.0 + sweep * 12.0
     y1 = 12.0 + drop * 23.0
-    cx = 20.0 + sweep * 2.5              # 変化は「遅れて」出る感じにする
+    cx = 20.0 + sweep * 2.5              # make the break show up "late"
     cy = y0 + (y1 - y0) * 0.32
     return (f'<svg class="parc" width="{size}" height="{size}" viewBox="0 0 40 40" aria-hidden="true">'
             f'<rect x="6" y="4" width="28" height="30" rx="2" class="pz"/>'
@@ -88,23 +93,25 @@ def _pitch_arc_svg(key, size=34):
 
 
 _SCENARIOS = ("steal", "block", "dropped3", "bunt", "signs")
+_DIFFICULTIES = ("beginner", "normal", "expert")
+_KEEP = object()   # "leave the current setting alone" marker for start_new_game()
 
 
 def _apply_scenario(state, name):
-    """動作確認用: 開始場面を特定のリズムゲームが出やすい形に仕込む(--scenario)。
-    ゲームの確率はいじらない ―― 「その場面で正しい球を投げれば出る」ところまで。"""
+    """For testing: set up the opening scene so a specific rhythm game is likely to appear (--scenario).
+    The game's probabilities are untouched -- it only gets you to "throw the right pitch in this scene and it appears"."""
     if name == "steal":
-        # 一塁だけに俊足の走者。見送り/空振り/ボールで盗塁を仕掛けてくる
+        # A fast runner on first only. He steals on a take / whiff / ball
         state.runners, state.runner_speeds, state.outs = [True, False, False], [85, None, None], 0
     elif name == "block":
-        # 走者一・三塁(二塁は空けてサイン盗みを避ける)。低め(内角低め/外角低め)に
-        # 大きく外す球を何球か投げるとワンバウンド → ブロッキング
+        # Runners on first and third (second is left empty to avoid sign stealing). Throw a few pitches missing
+        # big low (down-in / down-away) and one ends up in the dirt -> blocking
         state.runners, state.runner_speeds, state.outs = [True, False, True], [55, None, 60], 1
     elif name == "dropped3":
-        # 一塁が空 + 2アウト。低めの空振り三振でワンバウンドなら振り逃げ
+        # First base open + two outs. A swinging strikeout on a low pitch in the dirt is a dropped third strike
         state.runners, state.runner_speeds, state.outs = [False, False, True], [None, None, 55], 2
     elif name == "bunt":
-        # 一塁走者・接戦・弱い打者。相手はバント(初球からバント処理のリズムゲーム)
+        # A runner on first, a close game, a weak hitter. The opponent bunts (the bunt-fielding rhythm game from the first pitch)
         state.runners, state.runner_speeds, state.outs = [True, False, False], [60, None, None], 0
         state.our_score = state.opp_score = max(state.our_score, state.opp_score)
         state.start_our = state.start_opp = state.our_score
@@ -112,30 +119,52 @@ def _apply_scenario(state, name):
         b.coarse_type, b.power = "weak", 0.30
         state.opp_tactic, state.tactic_decided = "bunt", True
     elif name == "signs":
-        # 二塁に走者 → 投球前にサインを覗かれることがある(まれ。何球か投げる)
+        # A runner on second -> the signs may get stolen before the pitch (rare. Throw a few pitches)
         state.runners, state.runner_speeds, state.outs = [False, True, False], [None, 55, None], 0
 
 
-# 開始前の操作練習で 1 回ずつ成功させるリズム 6 種。(key, 表示名, ひとこと)
+# The six rhythm games to clear once each in the pre-game practice. (key, display name, short description)
 _TUTORIAL_ITEMS = [
-    ("tempo", "返球のテンポ", "捕った球を投手へリズムよく返す。緑の帯の中央で Space を 3 回。"),
-    ("frame", "受球（フレーミング）", "きわどい見送りを静かに捕ってストライクに見せる。中央で 1 回。"),
-    ("wild_block", "ブロッキング", "ワンバウンドを体で止める。まず方向（内/中/外）→ タイミング 1 回。"),
-    ("steal_throw", "盗塁の送球", "走者を刺す二塁送球。握り替え → 送球の 2 回。"),
-    ("field_bunt", "バント処理", "前に出て掴む → 送球の 2 回。"),
-    ("change_signs", "サイン交換", "二塁走者に覗かれる前にサインを組み替える。1 回。"),
+    ("tempo", "Return tempo", "Return the caught ball to the pitcher on rhythm. Space three times in the middle of the green band."),
+    ("frame", "Receive (framing)", "Quietly catch a borderline take and make it look like a strike. Once, in the middle."),
+    ("wild_block", "Blocking", "Stop the ball in the dirt with your body. First the direction (in / middle / out), then the timing once."),
+    ("steal_throw", "Steal throw", "Throw the runner out at second. Transfer, then the throw: two steps."),
+    ("field_bunt", "Bunt fielding", "Charge and grab it, then throw: two steps."),
+    ("change_signs", "Change signs", "Switch the signs before the runner on second can peek. Once."),
 ]
-_TUT_DIR = {"wild_block": "mid"}   # 練習ではボールは「中」に来る
+_TUT_DIR = {"wild_block": "mid"}   # in practice the ball comes "middle"
+
+
+class _Server(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _start_options(form):
+    """Read the start-screen / play-again form into start_new_game() arguments (bad values are ignored)."""
+    opts = {}
+    seed = (form.get("seed") or "").strip()
+    if seed.isdigit():
+        opts["challenge_seed"] = int(seed)
+    scenario = form.get("scenario")
+    if scenario == "random":
+        opts["scenario"] = None
+    elif scenario in _SCENARIOS:
+        opts["scenario"] = scenario
+    if form.get("difficulty") in _DIFFICULTIES:
+        opts["difficulty"] = form["difficulty"]
+    return opts
 
 
 class GameSession:
-    """1 プロセス = 1 ゲーム(ローカルで自分ひとりが遊ぶ想定。同時アクセスは考慮しない)。"""
+    """One process = one game (meant for one person playing locally. Simultaneous access is not considered)."""
 
     def __init__(self, lineup_batters=None, seed=None, difficulty="normal", scenario=None):
         self.lineup_batters = lineup_batters
         self.seed = seed
         self.difficulty = difficulty
-        self.scenario = scenario   # 動作確認用に開始場面を仕込む(--scenario)
+        self.scenario = scenario   # the opening scene for drills (--scenario or the start-screen buttons)
+        self.game_seed = seed      # the code of the game being played (shown at the end so it can be shared)
         self.rng = random.Random(seed) if seed is not None else random
         self.state = None
         self.started = False
@@ -146,17 +175,29 @@ class GameSession:
         self.last_call = None      # {"pitch_type","course","intent"}
         self.last_outcome = None
         self.pending_swap = None
-        # リズムゲーム進行中の状態: 生きたジェネレータと「今出す QTE」(kind, payload)
+        # State while a rhythm game is running: the live generator and the "QTE to show now" (kind, payload)
         self.pitch_gen = None
         self.pending_qte = None
-        # 開始前の操作練習: 6 種のリズムをそれぞれ 1 回 GOOD 以上でクリア
+        # Pre-game practice: clear each of the six rhythms once with GOOD or better
         self.tutorial = {k: False for k, _, _ in _TUTORIAL_ITEMS}
         self.tutorial_skipped = False
         self.log_path = None
+        self.play_shown = None     # which pitch's Play Viewer has already auto-played
 
-    def start_new_game(self):
-        # --seed のときは毎回同じ場面から始まる(再現性優先)。それ以外は毎回ランダム。
-        rng = random.Random(self.seed) if self.seed is not None else random
+    def start_new_game(self, challenge_seed=None, scenario=_KEEP, difficulty=None):
+        """Start a game. Every game gets a seed (its Challenge Code): the one typed on the start screen,
+        else --seed, else a fresh random one. The same code gives the same opening scene."""
+        if challenge_seed is not None:
+            self.game_seed = challenge_seed
+        elif self.seed is not None:
+            self.game_seed = self.seed
+        else:
+            self.game_seed = random.randrange(1000, 10000)
+        if scenario is not _KEEP:
+            self.scenario = scenario
+        if difficulty in _DIFFICULTIES:
+            self.difficulty = difficulty
+        rng = random.Random(self.game_seed)
         self.rng = rng
         self.state = generate_random_situation(rng=rng, lineup_batters=self.lineup_batters)
         if self.scenario:
@@ -173,6 +214,7 @@ class GameSession:
         self.tutorial = {k: False for k, _, _ in _TUTORIAL_ITEMS}
         self.tutorial_skipped = False
         self.log_path = None
+        self.play_shown = None
 
     def finish_if_over(self):
         if self.state is not None and self.state.is_over() and self.log_path is None:
@@ -193,59 +235,59 @@ _NAME_PREFIX = re.compile(r"^\d+\s+")
 
 
 def _bname(batter):
-    """打者の表示名。設計データの先頭にある打順番号（"3 三宅" など）は
-    打順バッジで別に出しているので、名前からは落として重複を避ける。"""
+    """The batter's display name. The batting-order number at the front of the design data (such as "3 Carter") is
+    shown separately in the order badge, so it is dropped from the name to avoid duplication."""
     return _e(_NAME_PREFIX.sub("", batter.name))
 
 
-# --- 野球を知らない人向けの用語説明(hover / タップで出る) ---
+# --- Plain-language explanations of terms for people who do not know baseball (shown on hover / tap) ---
 def _term(label, tip):
-    """点線の下線つきの用語。カーソルを乗せる/タップすると説明が出る。"""
+    """A term with a dotted underline. An explanation appears when you hover or tap."""
     return f'<span class="term" tabindex="0" data-tip="{_e(tip)}">{_e(label)}</span>'
 
 
 def _help(tip):
-    """見出しの横に置く「？」バッジ。乗せる/タップで説明。"""
+    """A "?" badge placed next to a heading. Hover / tap for an explanation."""
     return (f'<span class="term badge" tabindex="0" role="note" '
-            f'aria-label="用語の説明: {_e(tip)}" data-tip="{_e(tip)}">?</span>')
+            f'aria-label="Term explanation: {_e(tip)}" data-tip="{_e(tip)}">?</span>')
 
 
 _TIP = {
-    "pitch_type": "球種。速い球（フォーシーム＝直球など）と、曲がる／落ちる球（スライダー・カーブなど）がある。"
-                  "数字は球速の目安（mph）。速い球と遅い球を交互に見せると打者のタイミングを外せる。",
-    "course": "狙うコース。3×3のマスでストライクゾーンと少し外側を表す。真ん中＝打ちごろ、"
-              "隅＝きわどい（打たれにくいが失投で甘く入るリスクも）。左右は捕手から見た向き。",
-    "intent": "その1球の狙い。ストライク先行＝カウントを取りにいく／チェイス＝ボール球を振らせる／"
-              "打たせて取る＝弱い当たりを打たせる／見せ球＝次を活かす捨て球／"
-              "見逃しを狙う＝きわどい所で見逃し三振を取りにいく／ピッチアウト＝走者を刺すため大きく外す。",
-    "count": "カウント。B（ボール）が4つで打者を歩かせる＝四球で一塁へ。S（ストライク）が3つで三振＝アウト。"
-             "OUT が3つでこの回は終了。ストライクが先行すると投手が有利。",
-    "runners": "塁に出ている相手の走者。1B＝一塁 2B＝二塁 3B＝三塁。"
-               "三塁の走者は外野フライや内野ゴロでも生還する（＝失点）ので特に危ない。▶は俊足。",
-    "alignment": "守備シフト。打者の傾向に合わせて野手の守る位置をずらす作戦。"
-                 "引っ張り警戒／逆方向警戒／前進守備（一歩前で失点を防ぐ）／長打警戒／バント警戒 など。"
-                 "読みが当たればアウトが増え、逆を突かれるとヒットになる。",
-    "fit": "適性。その選手をそのポジションで使ったときの守備力の目安（0〜99）。"
-           "同じ選手でも守る場所によって変わる。難しいポジション（遊撃＝SS など）ほど差が出る。",
-    "ede": "守備全体のかみ合い具合の目安（参考値）。高いほど守備が安定している、という程度の指標。",
-    "ops": "出塁率＋長打率。打者の総合力のざっくり指標。.800超なら強打者、.700未満なら怖くない打者。",
-    "reaction": "打者の反応（顔文字）。本音とは限らない（約6割は素直・約1.5割は逆・残りはぼかし）。"
-                "1球だけで信じすぎないこと。",
-    "framing": "フレーミング。捕手の技術で、ゾーンをわずかに外れた見逃しを、静かに捕って"
-               "「ストライク」に見せること。きわどい隅を要求しているほど決まりやすい。",
-    "quality": "球の出来（0〜100）。高いほど打ちにくい鋭い球。投手の調子と球種で毎球変わる。",
+    "pitch_type": "The kind of pitch. There are fast pitches (four-seam = the straight fastball, etc.) and pitches that bend or drop (slider, curveball, etc.). "
+                  "The number is the approximate speed (mph). Alternating fast and slow pitches throws off the batter's timing.",
+    "course": "Where you aim. The 3x3 grid stands for the strike zone and a bit outside it. Middle = easy to hit, "
+              "corners = borderline (harder to hit, but a miss can catch the middle). Left and right are as seen from the catcher.",
+    "intent": "What this one pitch is for. Get ahead = go for a strike / Chase = get him to swing at a ball / "
+              "Induce weak contact = get a soft hit / Waste pitch = a throwaway that sets up the next / "
+              "Freeze him = go for a called strike on the edge / Pitchout = miss big to throw out a runner.",
+    "count": "The count. Four B (balls) is a walk to first. Three S (strikes) is a strikeout = an out. "
+             "Three OUT ends the half inning. The pitcher has the edge when strikes come first.",
+    "runners": "The opposing runners on base. 1B = first, 2B = second, 3B = third. "
+               "A runner on third can score even on a fly ball or an infield grounder (= a run), so he is especially dangerous. ▶ means fast.",
+    "alignment": "The defensive shift: moving fielders based on the batter's tendencies. "
+                 "Shade pull / shade opposite / infield in (cut off the run one step in) / no doubles / bunt defense, and so on. "
+                 "If you read it right there are more outs; if he goes the other way it becomes a hit.",
+    "fit": "Position fit. A guide (0-99) to a fielder's defensive value when used at that position. "
+           "The same player changes by where he plays. The harder the position (shortstop = SS, etc.), the bigger the gap.",
+    "ede": "A guide (reference number) to how well the whole defense fits together. Higher means a steadier defense, roughly.",
+    "ops": "On-base plus slugging. A rough measure of a batter's overall strength. Above .800 is a dangerous hitter, below .700 is not scary.",
+    "reaction": "The batter's reaction (face). It is not always the truth (about 60% honest, about 15% opposite, the rest blurred). "
+                "Do not trust a single pitch too much.",
+    "framing": "Framing. A catcher's skill: quietly catching a take that barely missed the zone so it looks like "
+               "a strike. It works better the closer to a borderline corner you asked.",
+    "quality": "Pitch quality (0-100). Higher = a sharper pitch that is harder to hit. It changes every pitch with the pitcher's form and the pitch type.",
 }
 
 
 # ---------------------------------------------------------------------------
-# ページの外枠(CSS はここに集約)
+# The outer page frame (all the CSS is gathered here)
 # ---------------------------------------------------------------------------
 _PAGE = """<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0b111c">
-<title>配球判断シミュレーター</title>
+<title>Behind the Plate — A Catcher's Game</title>
 <style>
 :root {{
   --bg:#0b111c; --bg-2:#0f1826; --panel:#141f30; --panel-2:#1b2a40;
@@ -277,14 +319,14 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
   outline:2px solid var(--accent); outline-offset:2px;
 }}
 
-/* --- ブランドバー --- */
+/* --- Brand bar --- */
 .brand {{ display:flex; align-items:baseline; gap:.6em; padding:.85em 0 .55em; }}
 .brand .mark {{ font-weight:800; letter-spacing:.16em; font-size:.92em;
   color:var(--ink); text-transform:uppercase; }}
 .brand .mark .dot {{ color:var(--accent); }}
 .brand .sub {{ color:var(--faint); font-size:.72em; letter-spacing:.14em; text-transform:uppercase; }}
 
-/* --- スコアボード帯(sticky) --- */
+/* --- Scoreboard strip (sticky) --- */
 .scorebar {{
   position:sticky; top:0; z-index:20;
   background:linear-gradient(180deg, #0c1622, #0a121c);
@@ -315,7 +357,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 .mini-diamond .base.on {{ fill:var(--warn); stroke:var(--warn); }}
 .mini-diamond .base.fast {{ fill:var(--accent); stroke:var(--accent); }}
 
-/* --- カード --- */
+/* --- Cards --- */
 .card {{
   background:linear-gradient(180deg, var(--panel), var(--bg-2));
   border:1px solid var(--line); border-radius:var(--r);
@@ -332,7 +374,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
   font-weight:700; margin:.9em 0 .35em; }}
 .eyebrow:first-child {{ margin-top:0; }}
 
-/* --- 球場図 --- */
+/* --- Field diagram --- */
 .field {{ position:relative; width:100%; aspect-ratio:1.7; border-radius:12px; overflow:hidden;
   border:1px solid var(--line);
   background:
@@ -363,7 +405,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 @media (max-width:520px) {{ .posbtn button {{ width:52px; padding:.26em .12em; font-size:.64em; }} }}
 @media (max-width:380px) {{ .posbtn button {{ width:44px; font-size:.58em; }} }}
 
-/* --- 打者カード --- */
+/* --- Batter card --- */
 .batter-head {{ display:flex; align-items:center; gap:.7em; }}
 .batter-num {{ width:2.1em; height:2.1em; flex:none; border-radius:50%; display:grid; place-items:center;
   background:var(--panel-2); border:1px solid var(--line-2); font-weight:800; }}
@@ -382,7 +424,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
   padding:.42em .1em; border-top:1px dashed var(--line); }}
 .batter-mini:first-of-type {{ margin-top:.5em; }}
 
-/* --- 反応(顔文字) --- */
+/* --- Reaction (face) --- */
 .reaction {{ text-align:center; padding:.7em 0 .3em; }}
 .reaction .face {{ font-size:2.5em; font-weight:800; line-height:1.1;
   text-shadow:0 2px 12px rgba(0,0,0,.4); }}
@@ -394,7 +436,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 .rc-defensive .face, .rc-uncertain .face {{ color:var(--accent); }}
 .rc-neutral .face {{ color:var(--muted); }}
 
-/* --- ストライクゾーン --- */
+/* --- Strike zone --- */
 .zonewrap {{ display:flex; gap:1.5em; flex-wrap:wrap; align-items:flex-start; }}
 .zone-shadow {{ display:inline-block; padding:12px; border:1px dashed var(--line-2); border-radius:12px;
   background:radial-gradient(120% 120% at 50% 50%, rgba(63,169,255,.06), transparent 72%); }}
@@ -418,7 +460,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 .zone-key .dot {{ display:inline-block; width:10px; height:10px; border-radius:50%; margin:0 .3em 0 .1em;
   vertical-align:middle; }}
 
-/* --- チップ(球種・意図) --- */
+/* --- Chips (pitch type / intent) --- */
 .callgrid {{ display:flex; flex-wrap:wrap; gap:1.4em 1.8em; align-items:flex-start; margin-top:.3em; }}
 .callgrid-zone {{ flex:0 0 auto; }}
 .callgrid-intent {{ flex:1 1 200px; min-width:200px; }}
@@ -433,7 +475,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
   font-weight:800; }}
 .chiprow input:checked + label .v {{ color:var(--accent-ink); opacity:.75; }}
 
-/* --- 球種の軌道イメージ(雑) --- */
+/* --- Pitch trajectory image (rough) --- */
 .parc {{ vertical-align:middle; margin-right:.35em; }}
 .parc .pz {{ fill:none; stroke:var(--line-2); stroke-width:1; }}
 .parc .pl {{ fill:none; stroke:var(--muted); stroke-width:2.2; stroke-linecap:round; }}
@@ -442,7 +484,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 .chiprow input:checked + label .parc .pb {{ stroke:var(--accent-ink); fill:var(--accent-ink); }}
 .chiprow input:checked + label .parc .pz {{ stroke:rgba(6,18,31,.4); }}
 
-/* --- 用語ツールチップ(野球を知らない人向け。hover / タップで説明) --- */
+/* --- Term tooltips (for people who do not know baseball. Explained on hover / tap) --- */
 .term {{ border-bottom:1px dotted var(--muted); cursor:help; position:relative; outline:none; }}
 .term.badge {{ border:1px solid var(--line-2); border-radius:50%; display:inline-flex;
   align-items:center; justify-content:center; width:1.4em; height:1.4em; font-size:.72em;
@@ -461,7 +503,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 .term:hover::after, .term:focus::after {{ opacity:1; visibility:visible; transform:translateY(0); }}
 @media (max-width:560px) {{ .term::after {{ left:auto; right:0; }} }}
 
-/* --- 受球リズムゲーム(きわどい球のフレーミング) --- */
+/* --- Receive rhythm game (framing a borderline pitch) --- */
 .rg-wrap {{ text-align:center; padding:.4em 0 .2em; }}
 .rg-call {{ color:var(--muted); font-size:.95em; margin:.2em 0 .1em; }}
 .rg-call b {{ color:var(--ink); }}
@@ -505,7 +547,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 .tut-list li.done {{ color:var(--good); }}
 .tut-list li.now {{ color:var(--accent); font-weight:700; }}
 .prev-strip {{ font-size:.85em; font-weight:700; margin:.1em 0 .4em; }}
-/* --- 返球のテンポ(配球コール画面の一番上。他のリズムゲームと同じ形式を3回) --- */
+/* --- Return tempo (at the very top of the pitch-call screen. The same format as the other rhythm games, three times) --- */
 .tempo-box {{ border:1px solid var(--accent); border-radius:10px; padding:.75em .95em;
   margin-bottom:1em; background:rgba(63,169,255,.08); }}
 .tempo-head {{ display:flex; align-items:baseline; gap:.9em; flex-wrap:wrap; }}
@@ -513,7 +555,7 @@ button:focus-visible, input:focus-visible + label, select:focus-visible, a:focus
 #tempo-track {{ margin:.6em auto .3em; }}
 #tempo-label {{ font-weight:800; color:var(--accent); }}
 
-/* --- ボタン --- */
+/* --- Buttons --- */
 button, .btn {{
   padding:.55em 1.05em; border-radius:var(--r-sm); border:1px solid var(--line-2);
   background:var(--panel-2); cursor:pointer; font-size:.9em; color:var(--ink);
@@ -530,7 +572,7 @@ select {{ padding:.5em .7em; border-radius:var(--r-sm); border:1px solid var(--l
   background:var(--panel-2); color:var(--ink); font-family:inherit; font-size:.9em; }}
 .form-actions {{ display:flex; flex-wrap:wrap; gap:.6em; align-items:center; }}
 
-/* --- 直近の1球 --- */
+/* --- The last pitch --- */
 .resultline {{ display:inline-block; font-size:1.2em; font-weight:800; letter-spacing:.03em;
   padding:.28em .85em; border-radius:.6em; margin:.5em 0;
   background:var(--panel-2); border:1px solid var(--line-2); border-left-width:4px; }}
@@ -547,7 +589,7 @@ select {{ padding:.5em .7em; border-radius:var(--r-sm); border:1px solid var(--l
 .msg.bad {{ color:var(--bad); }}
 .msg.good {{ color:var(--good); }}
 
-/* --- 配球履歴 --- */
+/* --- Pitch history --- */
 .tablescroll {{ overflow-x:auto; -webkit-overflow-scrolling:touch; }}
 table.history {{ width:100%; min-width:340px; border-collapse:collapse; font-size:.86em; }}
 table.history th {{ text-align:left; color:var(--muted); font-weight:700; padding:.3em .5em;
@@ -562,21 +604,30 @@ table.history tr:last-child td {{ border-bottom:none; }}
 .res-out {{ color:var(--good); }} .res-out .rdot {{ background:var(--good); }}
 .framed-mark {{ color:var(--accent); font-size:.82em; }}
 
-/* --- 打球チャート --- */
+/* --- Spray chart --- */
 pre.spray {{ background:var(--bg); border:1px solid var(--line); color:#9fe3b6;
   padding:.7em .9em; border-radius:8px; font-size:.9em; line-height:1.35; overflow-x:auto; }}
 
-/* --- ヒント / 作戦警告 --- */
+/* --- Hints / tactic warnings --- */
 .hint {{ background:rgba(244,185,66,.09); border:1px solid #6a5320; border-radius:10px;
   padding:.75em 1em; font-size:.88em; color:#f0d9a6; margin-bottom:1.1em; }}
 .tactic-alert {{ background:rgba(255,96,96,.10); border:1px solid #7a2b2b; border-radius:12px;
   padding:.8em 1em; margin-bottom:1.1em; color:#ffc9c9; font-weight:600; }}
 .tactic-alert b {{ color:#fff; }}
 
-/* --- スタットタイル / メーター --- */
+/* --- Stat tiles / meters --- */
 .report-hero {{ text-align:center; padding:1.4em 1em 1.2em; }}
 .report-hero .headline {{ font-size:1.5em; font-weight:800; letter-spacing:.02em; margin:.15em 0; }}
 .report-hero .score {{ font-size:1.05em; color:var(--muted); }}
+.rating-card {{ display:flex; gap:1.1em; align-items:center; }}
+.rating-card .grade {{ font-size:3.6em; font-weight:900; line-height:1; width:1.3em; text-align:center;
+  border:3px solid currentColor; border-radius:14px; padding:.1em 0; }}
+.g-S {{ color:#ffd35a; }} .g-A {{ color:var(--good); }} .g-B {{ color:var(--accent); }}
+.g-C {{ color:var(--muted); }} .g-D {{ color:var(--bad); }}
+.badge-chip {{ display:inline-block; font-size:.78em; font-weight:700; margin:.15em .3em .15em 0; padding:.15em .7em;
+  border-radius:999px; border:1px solid var(--accent); color:var(--accent); }}
+.again {{ display:flex; gap:.6em; flex-wrap:wrap; align-items:center; margin-top:1em; }}
+.again form {{ margin:0; }}
 .report-stats {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(96px,1fr)); gap:.65em; }}
 .stat {{ background:var(--panel-2); border:1px solid var(--line-2); border-radius:10px;
   padding:.7em .5em; text-align:center; }}
@@ -608,14 +659,21 @@ pre.spray {{ background:var(--bg); border:1px solid var(--line); color:#9fe3b6;
   .zone {{ grid-template-columns:repeat(3,52px); grid-template-rows:repeat(3,52px); }}
   .sb-team .run {{ font-size:1.3em; }}
 }}
+.startopts {{ display:flex; gap:1em; justify-content:center; flex-wrap:wrap; margin-top:1em;
+  font-size:.85em; color:var(--muted); }}
+.startopts input, .startopts select {{ background:var(--panel-2); color:var(--ink); border:1px solid var(--line-2);
+  border-radius:8px; padding:.35em .6em; font:inherit; }}
+.drills {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(140px,1fr)); gap:.6em; text-align:left; }}
+.drill {{ display:flex; flex-direction:column; gap:.25em; align-items:flex-start; padding:.7em .8em; }}
+.drill .dim {{ font-size:.78em; font-weight:400; }}
 .bgm-btn {{ margin-left:auto; font-size:.72em; letter-spacing:.06em; padding:.3em .8em;
   border-radius:999px; color:var(--muted); }}
 </style></head><body>
 <div class="wrap">
   <div class="brand">
-    <span class="mark">CATCHER<span class="dot">'</span>S CALL</span>
-    <span class="sub">終盤の守り切りゲーム</span>
-    <button type="button" id="bgm-btn" class="bgm-btn" title="応援 BGM（オリジナル）">♪ 応援 ON</button>
+    <span class="mark">BEHIND THE <span class="dot">·</span> PLATE</span>
+    <span class="sub">A catcher's game</span>
+    <button type="button" id="bgm-btn" class="bgm-btn" title="Music (original)">♪ Music ON</button>
   </div>
 {body}
 </div>
@@ -623,22 +681,22 @@ pre.spray {{ background:var(--bg); border:1px solid var(--line); color:#9fe3b6;
 </body></html>"""
 
 
-# BGM を Web Audio で合成する。トランペット＋太鼓の自作曲(著作物は不使用)。
-# D 自然短調・♩=162・全16小節ループ。8〜11小節目が盛り上がる「サビ」。
-# フォーム送信のたびにページが再読み込みされるので、localStorage に開始時刻を持ち、
-# 曲の正しい位置から鳴らし直す(1球ごとに一瞬だけ途切れる)。
+# Synthesize the BGM with Web Audio. An original trumpet + drums piece (no copyrighted material).
+# D natural minor, quarter = 162, a 16-bar loop. Bars 8-11 are the rousing "hook".
+# The page reloads on every form submit, so the start time is kept in localStorage, and
+# playback restarts from the correct position in the song (a tiny gap on every pitch).
 _BGM_JS = """
 window.CCBGM = (function () {
-  // トランペット＋太鼓の自作曲(著作物は不使用)。D 自然短調・♩=162・全16小節ループ。
-  // 8〜11小節目を「サビ」にして、高い音＋ハモリ＋16分の太鼓で盛り上げる。
+  // An original trumpet + drums piece (no copyrighted material). D natural minor, quarter = 162, a 16-bar loop.
+  // Bars 8-11 are the "hook": higher notes + harmony + 16th-note drums for a big lift.
   var A = null, running = false, sched = null, step = 0, nextT = 0, master = null;
   var BPM = 162, SPB = 60 / BPM / 4;
   var N = {
     A4:440.00, C5:523.25, D5:587.33, E5:659.25, F5:698.46, G5:783.99,
     A5:880.00, Bb5:932.33, C6:1046.50, D6:1174.66, E6:1318.51
   };
-  var H3b = {D6:'Bb5', C6:'A5', E6:'C6', Bb5:'G5', A5:'F5', G5:'E5', F5:'D5'}; // 3度下ハモリ
-  // --- 旋律(1マス = 16分音符、0 = 休符) ---
+  var H3b = {D6:'Bb5', C6:'A5', E6:'C6', Bb5:'G5', A5:'F5', G5:'E5', F5:'D5'}; // harmony a third below
+  // --- Melody (one cell = a 16th note, 0 = rest) ---
   var MEL = [
     'D5',0,'D5',0, 'F5',0,'D5',0, 'A5',0,0,0, 'A5',0,'G5',0,        // m1
     'F5',0,0,0, 'E5',0,'F5',0, 'D5',0,0,0, 0,0,0,0,                 // m2
@@ -647,17 +705,17 @@ window.CCBGM = (function () {
     'D6',0,'A5',0, 'F5',0,'A5',0, 'D6',0,'A5',0, 'F5',0,0,0,        // m5
     'C6',0,'A5',0, 'Bb5',0,'C6',0, 'A5',0,0,0, 0,'G5','A5','Bb5',   // m6
     'C6',0,'C6',0, 'A5',0,'C6',0, 'D6',0,0,0, 'D6',0,'C6',0,        // m7
-    'Bb5',0,'C6',0, 'D6',0,'E6',0, 'D6',0,'C6',0, 'A5','C6','D6','E6', // m8 (サビへ)
-    'E6',0,0,0, 'D6',0,'C6',0, 'D6',0,0,0, 0,0,0,0,                 // m9  サビ
-    'C6',0,0,0, 'D6',0,'A5',0, 'Bb5',0,0,0, 0,'A5','Bb5','C6',      // m10 サビ
-    'D6',0,0,0, 'E6',0,'D6',0, 'C6',0,'A5',0, 0,0,0,0,              // m11 サビ
-    'Bb5',0,'A5',0, 'G5',0,'A5',0, 'D6',0,0,0, 'C6',0,'Bb5',0,      // m12 サビ
+    'Bb5',0,'C6',0, 'D6',0,'E6',0, 'D6',0,'C6',0, 'A5','C6','D6','E6', // m8 (into the hook)
+    'E6',0,0,0, 'D6',0,'C6',0, 'D6',0,0,0, 0,0,0,0,                 // m9  hook
+    'C6',0,0,0, 'D6',0,'A5',0, 'Bb5',0,0,0, 0,'A5','Bb5','C6',      // m10 hook
+    'D6',0,0,0, 'E6',0,'D6',0, 'C6',0,'A5',0, 0,0,0,0,              // m11 hook
+    'Bb5',0,'A5',0, 'G5',0,'A5',0, 'D6',0,0,0, 'C6',0,'Bb5',0,      // m12 hook
     'A5',0,0,0, 'F5',0,'A5',0, 'D5',0,'F5',0, 'A5',0,0,0,           // m13
     'G5',0,'F5',0, 'E5',0,'F5',0, 'D5',0,0,0, 0,0,'E5',0,           // m14
     'F5',0,0,0, 'E5',0,'D5',0, 'E5',0,'F5',0, 'G5',0,'A5',0,        // m15
     'Bb5',0,'A5',0, 'G5',0,'F5',0, 'E5',0,0,0, 0,'A4','C5','D5'     // m16
   ];
-  var STEPS = MEL.length, LOOP = SPB * STEPS;                      // 16小節 = 256マス
+  var STEPS = MEL.length, LOOP = SPB * STEPS;                      // 16 bars = 256 cells
   function osc(freq, t, dur, type, gain, slideTo) {
     var o = A.createOscillator(), g = A.createGain();
     o.type = type; o.frequency.setValueAtTime(freq, t);
@@ -677,7 +735,7 @@ window.CCBGM = (function () {
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     n.connect(f); f.connect(g); g.connect(master); n.start(t); n.stop(t + dur);
   }
-  function taiko(t, f0, gain) {                          // 大太鼓 ドーン
+  function taiko(t, f0, gain) {                          // big drum: boom
     osc(f0, t, 0.34, 'sine', gain, f0 * 0.4);
     osc(f0 * 1.5, t, 0.12, 'triangle', gain * 0.45, f0 * 0.7);
     noise(t, 0.06, 'lowpass', 160, gain * 0.5);
@@ -685,7 +743,7 @@ window.CCBGM = (function () {
   function snare(t, gain) { noise(t, 0.10, 'bandpass', 1900, gain); noise(t, 0.09, 'highpass', 3600, gain * 0.55); }
   function hat(t, gain) { noise(t, 0.03, 'highpass', 9000, gain); }
   function crash(t) { noise(t, 1.0, 'highpass', 4200, 0.20); noise(t, 0.4, 'bandpass', 7000, 0.12); }
-  function trumpet(t, dur, freq, gain) {                 // トランペット(ユニゾン)
+  function trumpet(t, dur, freq, gain) {                 // trumpet (unison)
     osc(freq, t, dur, 'sawtooth', gain, freq * 1.004);
     osc(freq * 1.006, t, dur, 'sawtooth', gain * 0.7);
     osc(freq, t, dur * 0.85, 'square', gain * 0.28);
@@ -693,28 +751,28 @@ window.CCBGM = (function () {
   }
   function scheduleStep(s, t) {
     var bar = Math.floor(s / 16), k = s % 16;
-    var hook = (bar >= 8 && bar < 12);                    // サビ(盛り上がり)
-    var fill = (bar === 7 || bar === 15);                 // サビ前 / ループ前のフィル
+    var hook = (bar >= 8 && bar < 12);                    // the hook (the big lift)
+    var fill = (bar === 7 || bar === 15);                 // fills before the hook / before the loop
 
-    // --- 太鼓(ドラム) ---
-    if (k === 0 || k === 8) taiko(t, 100, 0.68);          // 大太鼓 1・3拍
-    if (hook && (k === 4 || k === 12)) taiko(t, 116, 0.44); // サビは4つ打ち気味
-    if (k === 4 || k === 12) snare(t, 0.28);              // スネア 2・4拍
-    else if (k % 2 === 1) snare(t, hook ? 0.09 : 0.03);   // 16分(サビは強く)
-    if (k % 2 === 0) hat(t, hook ? 0.045 : 0.03);         // ハイハット 8分
-    if (hook && k % 2 === 1) hat(t, 0.02);                // サビは16分ハット
-    if (k === 0 && (bar === 0 || bar === 8)) crash(t);    // ループ頭 / サビ頭
-    if (fill && k >= 10) snare(t, 0.06 + (k - 10) * 0.02); // フィル
-    if (bar === 15 && k === 14) taiko(t, 84, 0.85);       // キメ
+    // --- Drums ---
+    if (k === 0 || k === 8) taiko(t, 100, 0.68);          // big drum on beats 1 and 3
+    if (hook && (k === 4 || k === 12)) taiko(t, 116, 0.44); // the hook goes nearly four-on-the-floor
+    if (k === 4 || k === 12) snare(t, 0.28);              // snare on beats 2 and 4
+    else if (k % 2 === 1) snare(t, hook ? 0.09 : 0.03);   // 16ths (louder in the hook)
+    if (k % 2 === 0) hat(t, hook ? 0.045 : 0.03);         // hi-hat on 8ths
+    if (hook && k % 2 === 1) hat(t, 0.02);                // 16th hi-hats in the hook
+    if (k === 0 && (bar === 0 || bar === 8)) crash(t);    // loop start / hook start
+    if (fill && k >= 10) snare(t, 0.06 + (k - 10) * 0.02); // fill
+    if (bar === 15 && k === 14) taiko(t, 84, 0.85);       // the closing hit
 
-    // --- 旋律(トランペット) ---
+    // --- Melody (trumpet) ---
     var m = MEL[s];
     if (m) {
       var held = (MEL[(s + 1) % STEPS] === 0 && MEL[(s + 2) % STEPS] === 0);
       var dur = SPB * (held ? 3.4 : 1.9);
       trumpet(t, dur, N[m], hook ? 0.17 : 0.15);
-      osc(N[m] / 2, t, dur, 'sawtooth', 0.055);           // オクターブ下で厚み
-      if (hook && held && H3b[m]) trumpet(t, dur, N[H3b[m]], 0.06); // サビの伸ばしに3度下ハモリ
+      osc(N[m] / 2, t, dur, 'sawtooth', 0.055);           // an octave below for body
+      if (hook && held && H3b[m]) trumpet(t, dur, N[H3b[m]], 0.06); // a third-below harmony on held notes in the hook
     }
   }
   function tick() {
@@ -729,7 +787,7 @@ window.CCBGM = (function () {
     if (sched) clearInterval(sched);
     sched = setInterval(tick, 25);
   }
-  // 既定は ON。ユーザーが自分で切ったとき('0')だけ鳴らさない。
+  // On by default. It is silent only when the user turned it off themselves ('0').
   function want() { try { return localStorage.getItem('cc_bgm') !== '0'; } catch (e) { return true; } }
   function startEpoch() {
     var now = Date.now();
@@ -770,12 +828,12 @@ window.CCBGM = (function () {
   var btn = document.getElementById('bgm-btn'); if (!btn) return;
   function label() {
     var on = true; try { on = localStorage.getItem('cc_bgm') !== '0'; } catch (e) {}
-    btn.textContent = on ? '♪ 応援 ON' : '♪ 応援 OFF';
+    btn.textContent = on ? '♪ Music ON' : '♪ Music OFF';
     btn.style.color = on ? 'var(--accent)' : 'var(--muted)';
   }
   label();
   btn.addEventListener('click', function () { window.CCBGM.toggle(); label(); });
-  // 最初から鳴らす。自動再生がブロックされても、最初の操作(クリック/キー/タップ)で開始。
+  // Play from the start. If autoplay is blocked, begin on the first interaction (click / key / tap).
   window.CCBGM.resumeIfWanted();
   var evs = ['pointerdown', 'keydown', 'touchstart'];
   function kick() {
@@ -792,42 +850,69 @@ def _page(body):
 
 
 # ---------------------------------------------------------------------------
-# START 画面
+# START screen
 # ---------------------------------------------------------------------------
+_DRILLS = (
+    ("steal", "Throw Him Out", "A speedster on first is going. Win the throw to second."),
+    ("block", "Dirt Ball Drill", "Runners on the corners. Anything in the dirt must be blocked."),
+    ("dropped3", "Dropped Third", "Two outs, first base open. Do not let a strikeout turn into a rally."),
+    ("bunt", "Bunt Defense", "Close game, runner on first. They are laying one down."),
+    ("signs", "Sign Stealer", "A runner on second is peeking. Change the signs in time."),
+)
+_DIFFICULTY_LABELS = (("beginner", "Beginner (hints on)"), ("normal", "Normal"),
+                      ("expert", "Expert (no spray chart)"))
+
+
 def render_start_screen(session):
-    seed_note = (f'<p class="dim">seed = {session.seed} / 再現可能モード</p>'
+    seed_note = (f'<p class="dim">seed = {session.seed} / reproducible mode</p>'
                  if session.seed is not None else "")
+    drills = "".join(
+        f'<button type="submit" name="scenario" value="{k}" class="drill">'
+        f'<b>{_e(name)}</b><span class="dim">{_e(desc)}</span></button>'
+        for k, name, desc in _DRILLS)
+    diff_opts = "".join(
+        f'<option value="{k}"{" selected" if k == session.difficulty else ""}>{_e(label)}</option>'
+        for k, label in _DIFFICULTY_LABELS)
     return f"""
-<div class="card center" style="padding:2.6em 1.2em;">
+<div class="card center" style="padding:2.2em 1.2em;">
   <p class="eyebrow center" style="margin-bottom:.6em;">Late-inning · Defensive half · 3 outs to survive</p>
-  <p style="font-size:1.25em; font-weight:800;">試合終盤、捕手として1イニングを守り切る</p>
+  <p style="font-size:1.25em; font-weight:800;">Late in the game, you are the catcher. Hold the inning.</p>
   <p class="dim" style="max-width:34em; margin:.6em auto 0;">
-    球種・狙うコース（3×3）・配球意図を選び、3アウトを取るまでが1ゲーム。
-    プレイ中に正解は出ません。打者の反応・配球履歴・打者情報から自分で読みます。</p>
+    Pick the pitch type, the target location (3×3), and your intent. One game = get three outs.
+    No answers are shown during play. Read the batter's reactions, the pitch history, and the batter info yourself.</p>
   {seed_note}
   <form method="post" action="/start" style="margin-top:1.4em;">
-    <button class="primary big" type="submit">START GAME</button>
+    <button class="primary big" type="submit" name="scenario" value="random">START GAME</button>
+    <div class="startopts">
+      <label>Difficulty <select name="difficulty">{diff_opts}</select></label>
+      <label>Challenge code <input type="text" name="seed" inputmode="numeric" maxlength="6" size="7"
+        placeholder="random" aria-label="Challenge code (optional)"></label>
+    </div>
+    <p class="eyebrow center" style="margin:1.6em 0 .6em;">Or run a drill</p>
+    <div class="drills">{drills}</div>
   </form>
+  <p class="dim" style="font-size:.8em; margin-top:1.2em;">
+    Every game has a Challenge Code. Share it and a friend gets the exact same opening situation.</p>
 </div>"""
 
 
 def render_situation_intro(state):
     b = state.batter
-    hand = "右投" if state.pitcher.throws == "R" else "左投"
-    lead = "自軍" if state.our_score > state.opp_score else ("相手" if state.opp_score > state.our_score else "")
-    lead_txt = f"{lead}が{abs(state.our_score - state.opp_score)}点リード" if lead else "同点"
+    hand = "RHP" if state.pitcher.throws == "R" else "LHP"
+    lead = "We lead" if state.our_score > state.opp_score else ("They lead" if state.opp_score > state.our_score else "")
+    lead_txt = f"{lead} by {abs(state.our_score - state.opp_score)}" if lead else "Tied game"
     return f"""
 <div class="card center" style="padding:2.2em 1.2em;">
   <p class="eyebrow center">{_e(state.inning_label())} · {_e(lead_txt)}</p>
   <div style="font-size:2.2em; font-weight:800; letter-spacing:.02em; margin:.25em 0;">
-    <span class="dim" style="font-size:.5em; letter-spacing:.14em;">自軍</span>
+    <span class="dim" style="font-size:.5em; letter-spacing:.14em;">US</span>
     {state.our_score} <span class="dim" style="font-size:.6em;">–</span> {state.opp_score}
-    <span class="dim" style="font-size:.5em; letter-spacing:.14em;">相手</span></div>
+    <span class="dim" style="font-size:.5em; letter-spacing:.14em;">THEM</span></div>
   <div style="margin:.6em 0;">{_base_diamond_svg(state, size=64)}</div>
-  <p>{state.outs} OUT　{_term("走者", _TIP["runners"])}: {_e(state.runners_text())}</p>
-  <p class="dim">投手 リリーフ（{hand}）</p>
-  <p style="margin-top:1.1em;">BATTER #{state.lineup.spot_number()}　<b>{_bname(b)}</b>
-     <span class="hand {b.bats}">{_e(b.bats)}</span>　{_e(b.public_line())}
+  <p>{state.outs} OUT &nbsp; {_term("Runners", _TIP["runners"])}: {_e(state.runners_text())}</p>
+  <p class="dim">Pitcher: Reliever ({hand})</p>
+  <p style="margin-top:1.1em;">BATTER #{state.lineup.spot_number()} <b>{_bname(b)}</b>
+     <span class="hand {b.bats}">{_e(b.bats)}</span> {_e(b.public_line())}
      <span class="tag">{_e(b.type_label())}</span></p>
   <p style="font-weight:800; letter-spacing:.14em; margin-top:1.3em; color:var(--accent);">DEFEND THE LEAD.</p>
   <form method="post" action="/playball" style="margin-top:.8em;">
@@ -837,14 +922,14 @@ def render_situation_intro(state):
 
 
 # ---------------------------------------------------------------------------
-# スコアボード帯
+# Scoreboard strip
 # ---------------------------------------------------------------------------
 def _pip_row(filled, total, kind):
     return "".join(
         f'<span class="pip {kind}{" on" if i < filled else ""}"></span>' for i in range(total))
 
 
-# ベースの並び: 2B(上) / 3B(左) / 1B(右) / home(下)。走者インデックスは 0=1B 1=2B 2=3B。
+# Base order: 2B (top) / 3B (left) / 1B (right) / home (bottom). Runner index: 0=1B 1=2B 2=3B.
 _DIAMOND_POINTS = {0: "right", 1: "top", 2: "left"}
 
 
@@ -862,34 +947,34 @@ def _base_diamond_svg(state, size=22):
 
 
 def render_scorebar(state):
-    hand = "右" if state.pitcher.throws == "R" else "左"
+    hand = "R" if state.pitcher.throws == "R" else "L"
     our_lead = "lead" if state.our_score > state.opp_score else ""
     opp_lead = "lead" if state.opp_score > state.our_score else ""
     tire = ""
     lvl = state.pitcher.fatigue_level()
     if lvl == 1:
-        tire = ' <span style="color:var(--warn);">⚠疲</span>'
+        tire = ' <span style="color:var(--warn);">⚠ tired</span>'
     elif lvl == 2:
-        tire = ' <span style="color:var(--bad);">⚠⚠バテ</span>'
+        tire = ' <span style="color:var(--bad);">⚠⚠ gassed</span>'
     steal = ('<span class="warnpill">⚡STEAL</span>'
              if state.lead_runner_fast() and not state.runners[1] else "")
     return f"""
 <div class="scorebar"><div class="sb-row">
-  <span class="sb-team {our_lead}"><span class="abbr">自軍</span><span class="run">{state.our_score}</span></span>
+  <span class="sb-team {our_lead}"><span class="abbr">US</span><span class="run">{state.our_score}</span></span>
   <span class="sb-inning">{_e(state.inning_label())}</span>
-  <span class="sb-team {opp_lead}"><span class="run">{state.opp_score}</span><span class="abbr">相手</span></span>
+  <span class="sb-team {opp_lead}"><span class="run">{state.opp_score}</span><span class="abbr">THEM</span></span>
   <span class="sb-sep"></span>
   <span class="sb-grp">{_base_diamond_svg(state)} {_e(state.runners_text())} {steal}</span>
   <span class="sb-sep"></span>
-  <span class="sb-grp">B {_pip_row(state.balls, 4, 'b')}　S {_pip_row(state.strikes, 3, 's')}
-     　OUT {_pip_row(state.outs, 3, 'o')}{_help(_TIP["count"])}</span>
+  <span class="sb-grp">B {_pip_row(state.balls, 4, 'b')} S {_pip_row(state.strikes, 3, 's')}
+      OUT {_pip_row(state.outs, 3, 'o')}{_help(_TIP["count"])}</span>
   <span class="sb-sep"></span>
-  <span class="sb-grp">投手 <b>{hand}投</b>　球数 <b>{state.pitcher.pitches_thrown}</b>{tire}</span>
+  <span class="sb-grp">Pitcher <b>{hand}HP</b> &nbsp; Pitches <b>{state.pitcher.pitches_thrown}</b>{tire}</span>
 </div></div>"""
 
 
 # ---------------------------------------------------------------------------
-# 球場図(守備配置。クリック→クリックでSwap)
+# The field diagram (defensive alignment. Click -> click to swap)
 # ---------------------------------------------------------------------------
 _FIELD_XY = {
     "CF": (50, 16), "LF": (23, 33), "RF": (77, 33),
@@ -897,8 +982,8 @@ _FIELD_XY = {
     "3B": (25, 78), "1B": (75, 78),
 }
 
-# 放送っぽい上からの球場図。芝は CSS グラデ、内野の土・塁・ファウルライン・マウンドを SVG で。
-# viewBox は .field の aspect-ratio(1.7)に合わせ、preserveAspectRatio=none で目一杯に伸ばす。
+# A broadcast-style bird's-eye field. The grass is a CSS gradient; the infield dirt, bases, foul lines, and mound are SVG.
+# The viewBox matches the .field aspect-ratio (1.7) and stretches to fill with preserveAspectRatio=none.
 _FIELD_SVG = """
 <svg viewBox="0 0 100 59" preserveAspectRatio="none">
   <defs><radialGradient id="dirt" cx="50%" cy="88%" r="72%">
@@ -942,41 +1027,41 @@ def render_field_diagram(session):
 <div class="{cls}" style="left:{x}%; top:{y}%; --tier:{_fit_tier(fit)};">
   <form method="post" action="/swap">
     <input type="hidden" name="position" value="{pos}">
-    <button type="submit" title="{_e(f.name)} を {pos} で使う">
-      <b>{pos}</b>{_e(f.name)}<br><span class="fit">適性 {fit:.0f}{' ▼' if f is weak else ''}</span>
+    <button type="submit" title="Play {_e(f.name)} at {pos}">
+      <b>{pos}</b>{_e(f.name)}<br><span class="fit">Fit {fit:.0f}{' ▼' if f is weak else ''}</span>
     </button>
   </form>
 </div>""")
     cancel = ""
     if session.pending_swap:
-        cancel = (f'<p style="margin-top:.5em;"><span class="tag">{session.pending_swap} を選択中 '
-                 f'→ 交換先をクリック</span> '
+        cancel = (f'<p style="margin-top:.5em;"><span class="tag">{session.pending_swap} selected '
+                 f'-> click where to swap</span> '
                  '<form method="post" action="/cancel_swap" style="display:inline;">'
-                 '<button type="submit">選択解除</button></form></p>')
+                 '<button type="submit">Cancel</button></form></p>')
     align_opts = "".join(
         f'<option value="{k}"{" selected" if k == defense.alignment else ""}>{v}</option>'
         for k, v in ALIGNMENTS.items())
     ede = defense.expected_defensive_efficiency()
     return f"""
 <div class="card">
-  <h3>Defense — 守備配置</h3>
+  <h3>Defense</h3>
   <div class="field">
     <div class="align-badge">{_e(defense.describe_alignment())}</div>
     {_FIELD_SVG}{''.join(cells)}
     <div class="homeplate">⌂ HOME · You (C)</div>
   </div>
-  <p class="field-legend">数字＝そのポジションでの{_term("適性", _TIP["fit"])}(0-99)。上端の色は適性帯。▼＝総合力が最も低い選手。
-    ポジション→交換先の順にクリックで Swap。　{_term("EDE", _TIP["ede"])}(参考値) {ede:.0f}/100</p>
+  <p class="field-legend">The number = {_term("fit", _TIP["fit"])} at that position (0-99). The color on top marks the fit band. ▼ = the weakest fielder.
+    Click a position, then the one to swap with. &nbsp; {_term("EDE", _TIP["ede"])} (reference) {ede:.0f}/100</p>
   {cancel}
   <form method="post" action="/alignment" class="form-actions" style="margin-top:.5em;">
     <select name="alignment">{align_opts}</select>
-    <button type="submit">守備シフト変更</button>{_help(_TIP["alignment"])}
+    <button type="submit">Change shift</button>{_help(_TIP["alignment"])}
   </form>
 </div>"""
 
 
 # ---------------------------------------------------------------------------
-# 打者カード(現在 / NEXT / ON DECK)
+# Batter card (current / NEXT / ON DECK)
 # ---------------------------------------------------------------------------
 def render_batter_card(state):
     lu = state.lineup
@@ -988,13 +1073,13 @@ def render_batter_card(state):
     if read and (read["wait"] or read["weak"]):
         bits = []
         if read["wait"]:
-            bits.append("速球待ち" if read["wait"] == "fastball" else "変化球待ち")
+            bits.append("Fastball" if read["wait"] == "fastball" else "Off-speed")
         if read["weak"]:
-            bits.append(f"弱点={_e(COURSE_SHORT.get(read['weak'], read['weak']))}")
-        read_html = f'<div class="myread">あなたの読み: {" / ".join(bits)}</div>'
+            bits.append(f"weak={_e(COURSE_SHORT.get(read['weak'], read['weak']))}")
+        read_html = f'<div class="myread">Your read: {" / ".join(bits)}</div>'
     return f"""
 <div class="card">
-  <h3>At Bat — 打者</h3>
+  <h3>At Bat</h3>
   <div class="batter-head">
     <span class="batter-num">{lu.spot_number()}</span>
     <span class="name">{_bname(cur)}</span>
@@ -1006,7 +1091,7 @@ def render_batter_card(state):
     <span>SLG <b>{cur.slg:.3f}</b></span>
     <span>{_term("OPS", _TIP["ops"])} <b>{cur.ops:.3f}</b></span>
   </div>
-  <div class="scout">偵察: {_e(cur.scouting_note())}</div>
+  <div class="scout">Scouting: {_e(cur.scouting_note())}</div>
   {read_html}
   <div class="batter-mini"><span>NEXT · #{lu.batters.index(nxt) + 1} {_bname(nxt)} ({nxt.bats})</span>
     <span>OPS {nxt.ops:.3f}</span></div>
@@ -1016,24 +1101,24 @@ def render_batter_card(state):
 
 
 # ---------------------------------------------------------------------------
-# 反応(顔文字)
+# Reaction (the face)
 # ---------------------------------------------------------------------------
 def render_reaction(reaction):
     if reaction is None:
-        return ('<div class="card"><h3>Batter Reaction — 打者の反応</h3>'
-                '<p class="dim">初球を投げるとここに出ます。</p></div>')
+        return ('<div class="card"><h3>Batter Reaction</h3>'
+                '<p class="dim">It shows up here after the first pitch.</p></div>')
     return f"""
 <div class="card">
-  <h3>Batter Reaction — 打者の反応{_help(_TIP["reaction"])}</h3>
+  <h3>Batter Reaction{_help(_TIP["reaction"])}</h3>
   <div class="reaction rc-{_e(reaction.get('category', 'neutral'))}">
     <div class="face">{_e(reaction['face'])}</div>
-    <div class="text">「{_e(reaction['text'])}」</div>
+    <div class="text">“{_e(reaction['text'])}”</div>
   </div>
 </div>"""
 
 
 # ---------------------------------------------------------------------------
-# Pitch Call → Actual Pitch(ストライクゾーン上に Target / Actual)
+# Pitch Call -> Actual Pitch (Target / Actual on the strike zone)
 # ---------------------------------------------------------------------------
 def _zone_markers(bats, target_course, actual_course):
     grid = _course_grid(bats)
@@ -1051,12 +1136,12 @@ def _zone_markers(bats, target_course, actual_course):
 
 
 _RESULT_KIND = {
-    "アウト": "r-out", "空振り": "r-out", "三振": "r-out",
-    "犠打成功": "r-out", "バント（封殺）": "r-out", "バント（本封殺）": "r-out",
-    "バント失敗（小フライ）": "r-out",
-    "単打": "r-hit", "二塁打": "r-hit", "三塁打": "r-hit", "本塁打": "r-hit", "エラー": "r-hit",
-    "四球": "r-hit", "バント安打": "r-hit",
-    "ボール": "r-ball",
+    "Out": "r-out", "Whiff": "r-out", "Strikeout": "r-out",
+    "Sacrifice bunt": "r-out", "Bunt (force out)": "r-out", "Bunt (out at home)": "r-out",
+    "Bunt popped up": "r-out",
+    "Single": "r-hit", "Double": "r-hit", "Triple": "r-hit", "Home run": "r-hit", "Error": "r-hit",
+    "Walk": "r-hit", "Bunt single": "r-hit",
+    "Ball": "r-ball",
 }
 
 
@@ -1064,13 +1149,13 @@ def _result_kind(result):
     return _RESULT_KIND.get(result, "r-strike")
 
 
-_PRAISE = "これが進学校のキャッチャーか！ 感心"
-_TAUNT = "あーあ、こんなもんか。進学校のキャッチャーはがっかり"
+_PRAISE = "Now THAT is a catcher. Impressive."
+_TAUNT = "Ugh. Is that all you've got, catcher?"
 
 
 def _catcher_line(session):
-    """よく配球がハマった / 痛打を浴びた ときだけ出す一言（作者が実際に言われたセリフ）。
-    プレイ中は decision_quality を出さない方針なので、見えている結果だけで判定する。"""
+    """A one-liner shown only when the calling really clicked or you got hit hard.
+    Because the policy is to never show decision_quality during play, it judges only by the visible result."""
     o = session.last_outcome
     if not o:
         return ""
@@ -1079,34 +1164,34 @@ def _catcher_line(session):
     play = o.get("play") if isinstance(o.get("play"), dict) else {}
     runs = play.get("runs", 0)
     label = play.get("label", "")
-    # 痛打・失点・押し出し → がっかり
-    if res in ("本塁打", "二塁打", "三塁打") or runs >= 1 or end == "walk":
+    # Hard hit / a run allowed / a bases-loaded walk -> disappointed
+    if res in ("Home run", "Double", "Triple") or runs >= 1 or end == "walk":
         return f'<p class="catcher-line ng">{_TAUNT}</p>'
-    # 三振・フレーミングでストライク奪取・併殺 → 感心
-    if end == "strikeout" or o.get("framed") or label == "併殺":
+    # Strikeout / a framed strike / a double play -> impressed
+    if end == "strikeout" or o.get("framed") or label == "Double play":
         return f'<p class="catcher-line ok">{_PRAISE}</p>'
     return ""
 
 
 _GOOD_CALL_LINES = (
-    "ナイスリード。打者の狙いを外せてる",
-    "いい球。バッテリーの主導権はこっちだ",
-    "落ち着いた配球。投手も投げやすそうだ",
-    "よく考えられた1球。この読みでいい",
+    "Nice game-calling. You kept him guessing",
+    "Good pitch. The battery has the upper hand",
+    "A calm call. The pitcher looks comfortable",
+    "A well thought-out pitch. Good read",
 )
 
 
 def _good_call_line(session):
-    """いい配球ができたときの軽いほめ言葉＋ボーナスの可視化（Web の Result カード）。
-    大きな見せ場は _catcher_line（感心）が担当するので、そこと重ならない範囲で。"""
+    """A light word of praise for a good call + making the bonus visible (the Web Result card).
+    The big moments are handled by _catcher_line (impressed), so this stays clear of overlapping it."""
     o = session.last_outcome
     if not o or not o.get("good_call"):
         return ""
     n = len(getattr(session.state, "pitch_log", []) or [1])
     line = _GOOD_CALL_LINES[n % len(_GOOD_CALL_LINES)]
     streak = o.get("good_call_streak", 0)
-    badge = (f'<span class="gc-badge">◯ いい配球 ×{streak}・ボーナス</span>'
-             if streak >= 2 else '<span class="gc-badge">◯ いい配球</span>')
+    badge = (f'<span class="gc-badge">◯ Good call x{streak} · bonus</span>'
+             if streak >= 2 else '<span class="gc-badge">◯ Good call</span>')
     return f'<p class="good-call-line">{badge} <span class="dim">{line}</span></p>'
 
 
@@ -1117,13 +1202,13 @@ def render_pitch_result(session):
     outcome = session.last_outcome
     zone = _zone_markers(session.last_batter_bats, call["target_course"], outcome["actual_course"])
     if outcome["missed"]:
-        miss_note = ' <span class="msg bad" style="font-size:.85em;">失投</span>'
+        miss_note = ' <span class="msg bad" style="font-size:.85em;">missed spot</span>'
     else:
-        miss_note = ' <span class="dim" style="font-size:.85em;">要求どおり</span>'
-    framed = (f' <span class="framed-mark">⌂→ {_term("フレーミング", _TIP["framing"])}</span>'
+        miss_note = ' <span class="dim" style="font-size:.85em;">as called</span>'
+    framed = (f' <span class="framed-mark">⌂→ {_term("Framing", _TIP["framing"])}</span>'
               if outcome.get("framed") else "")
     bb = outcome.get("batted_ball")
-    bb_line = f'<p class="callline">打球　<b>{_e(bb.describe())}</b></p>' if bb else ""
+    bb_line = f'<p class="callline">Batted ball &nbsp;<b>{_e(bb.describe())}</b></p>' if bb else ""
     play = outcome.get("play")
     play_line = ""
     if play and (play["label"] != outcome["result"] or play["detail"] or play["runs"]):
@@ -1131,23 +1216,23 @@ def render_pitch_result(session):
         if play["detail"]:
             bits.append(play["detail"])
         if play["runs"]:
-            bits.append(f'{play["runs"]}失点')
-        play_line = f'<p class="callline">走塁　<b>{_e(" / ".join(bits))}</b></p>'
+            bits.append(f'{play["runs"]} run{"s" if play["runs"] != 1 else ""} allowed')
+        play_line = f'<p class="callline">Baserunning &nbsp;<b>{_e(" / ".join(bits))}</b></p>'
     msgs_html = "".join(f'<div class="msg{" bad" if _looks_bad(m) else ""}">{_e(m)}</div>'
                         for m in session.messages)
     return f"""
 <div class="card">
-  <h3>Result — 直前の1球</h3>
+  <h3>Last Pitch</h3>
   <div class="zonewrap">
     <div class="zone-shadow"><div class="zone">{zone}</div></div>
     <div style="flex:1; min-width:12em;">
       <p class="callline">{_pitch_arc_svg(call['pitch_type'], size=40)}
          <b>{_e(pitch_name(call['pitch_type']))}</b>
-         <span class="dim" style="font-size:.85em;">の球筋（雑）</span></p>
-      <p class="callline">CALL　<b>{_e(pitch_name(call['pitch_type']))} / {_e(COURSE_SHORT[call['target_course']])}</b>
-         / {_e(PITCH_INTENTS[call['intent']].split('（')[0])}</p>
-      <p class="callline">ACTUAL　<b>{_e(pitch_name(call['pitch_type']))} / {_e(COURSE_SHORT[outcome['actual_course']])}</b>{miss_note}
-         <span class="dim" style="font-size:.85em;">{_term("出来", _TIP["quality"])} {int(outcome['quality']*100)}</span></p>
+         <span class="dim" style="font-size:.85em;">movement (rough)</span></p>
+      <p class="callline">CALL <b>{_e(pitch_name(call['pitch_type']))} / {_e(COURSE_SHORT[call['target_course']])}</b>
+         / {_e(intent_label(call['intent']))}</p>
+      <p class="callline">ACTUAL <b>{_e(pitch_name(call['pitch_type']))} / {_e(COURSE_SHORT[outcome['actual_course']])}</b>{miss_note}
+         <span class="dim" style="font-size:.85em;">{_term("quality", _TIP["quality"])} {int(outcome['quality']*100)}</span></p>
       <p class="resultline {_result_kind(outcome['result'])}"><span class="eyebrow" style="margin:0;">RESULT</span> {_e(outcome['result'])}{framed}</p>
       {_catcher_line(session)}
       {_good_call_line(session)}
@@ -1159,7 +1244,7 @@ def render_pitch_result(session):
 </div>"""
 
 
-_BAD_HINTS = ("三振", "打たれた", "後逸", "エラー", "四球", "振り逃げが成立")
+_BAD_HINTS = ("They hit", "Passed ball", "error", "Walk", "reaches on the dropped third", "We gave up", "Stolen base", "stole the signs")
 
 
 def _looks_bad(msg):
@@ -1167,61 +1252,61 @@ def _looks_bad(msg):
 
 
 # ---------------------------------------------------------------------------
-# 捕手のリズムゲーム(Web 版。webapp.py で JavaScript を使う唯一の画面)
+# The catcher's rhythm games (Web version. The only screens in webapp.py that use JavaScript)
 #
-# engine.resolve_pitch_flow() のジェネレータが ("種別", payload) を yield し、
-# ここで種別ごとの小さなタイミングゲームを出す。結果(perfect/good/miss の列
-# ＋方向)を /qte に POST し、engine 側の採点(qte.bonus_from_verdicts など)を
-# 通して gen.send() で返す。JS 無効でもボタン送信で中立(bonus 0)で進める。
+# The generator in engine.resolve_pitch_flow() yields ("kind", payload),
+# and here a small timing game is shown for each kind. The result (a list of perfect/good/miss
+# + the direction) is POSTed to /qte, run through the engine's scoring (qte.bonus_from_verdicts and so on),
+# and returned with gen.send(). With JS off, a button submit still moves on neutrally (bonus 0).
 # ---------------------------------------------------------------------------
 _QTE_SPEC = {
     "frame": {
-        "title": "Receive — 受球", "jp": "受球！", "tip": "framing", "btn": "受ける",
-        "hint": "流れる線が<b style=\"color:var(--good);\">緑の帯</b>の中央に来た瞬間に "
-                "<span class=\"rg-key\">Space</span>（帯をタップでも可）。"
-                "ジャストで捕るほど、ボール球でも「ストライク」に見せやすくなる。",
-        "labels": ["受ける"], "direction": False,
+        "title": "Receive (Framing)", "jp": "RECEIVE!", "tip": "framing", "btn": "Catch it",
+        "hint": "Press <span class=\"rg-key\">Space</span> the moment the moving line reaches the middle of the <b style=\"color:var(--good);\">green band</b> "
+                "(tapping the band works too). "
+                "The more exact the catch, the easier it is to make even a ball look like a strike.",
+        "labels": ["Catch it"], "direction": False,
     },
     "change_signs": {
-        "title": "Change Signs — サインを変えろ", "jp": "サインを変えろ！",
-        "tip": "reaction", "btn": "サインを変える",
-        "hint": "二塁走者にサインを覗かれている。タイミングよく "
-                "<span class=\"rg-key\">Space</span> でサインを組み替える。",
-        "labels": ["サインを変える"], "direction": False,
+        "title": "Change Signs", "jp": "CHANGE THE SIGNS!",
+        "tip": "reaction", "btn": "Change signs",
+        "hint": "The runner on second is peeking at your signs. Press "
+                "<span class=\"rg-key\">Space</span> on time to switch the signs.",
+        "labels": ["Change signs"], "direction": False,
     },
     "steal_throw": {
-        "title": "Throw Down — 二塁へ送球", "jp": "盗塁！！", "tip": None, "btn": "送球",
-        "hint": "走者がスタート！ ① 握り替え → ② 素早く連打 → ③ 二塁送球。",
-        "labels": ["① 握り替え", "② 連打！", "③ 二塁へ送球"], "direction": False,
+        "title": "Throw Down", "jp": "STEAL!!", "tip": None, "btn": "Throw",
+        "hint": "He's going! ① Transfer → ② Mash fast → ③ Throw to second.",
+        "labels": ["① Transfer", "② Mash!", "③ Throw to second"], "direction": False,
         "mash": [1],
     },
     "d3_throw": {
-        "title": "Throw to First — 一塁へ送球", "jp": "一塁へ！", "tip": None, "btn": "送球",
-        "hint": "ワンバウンド三振を拾った。① 拾って握る → ② 一塁送球。",
-        "labels": ["① 拾って握る", "② 一塁へ送球"], "direction": False,
+        "title": "Throw to First", "jp": "TO FIRST!", "tip": None, "btn": "Throw",
+        "hint": "You picked up the strikeout in the dirt. ① Pick up and grip → ② Throw to first.",
+        "labels": ["① Pick up and grip", "② Throw to first"], "direction": False,
     },
     "wild_block": {
-        "title": "Block — ワンバウンドを止めろ", "jp": "ワンバウンド！", "tip": None, "btn": "止める",
-        "hint": "まずボールが逸れた方向へ体を入れる（内 / 中 / 外）。"
-                "次に <span class=\"rg-key\">Space</span> で体を落とす。",
-        "labels": ["体を落とす"], "direction": True,
+        "title": "Block the Ball in the Dirt", "jp": "IN THE DIRT!", "tip": None, "btn": "Block",
+        "hint": "First get your body to the side the ball went (in / middle / out). "
+                "Then press <span class=\"rg-key\">Space</span> to drop your body.",
+        "labels": ["Drop your body"], "direction": True,
     },
     "d3_block": {
-        "title": "Block — ワンバウンド三振を止めろ", "jp": "振り逃げ！", "tip": None, "btn": "止める",
-        "hint": "方向へ体を入れて（内 / 中 / 外）、<span class=\"rg-key\">Space</span> で止める。",
-        "labels": ["体を落とす"], "direction": True,
+        "title": "Block the Dropped Third", "jp": "DROPPED THIRD!", "tip": None, "btn": "Block",
+        "hint": "Get your body over (in / middle / out), then <span class=\"rg-key\">Space</span> to block it.",
+        "labels": ["Drop your body"], "direction": True,
     },
     "field_bunt": {
-        "title": "Field the Bunt — バント処理", "jp": "バント！！", "tip": None, "btn": "処理",
-        "hint": "バントだ！ ① 飛び出して掴む（やや早め＝帯は左）→ ② 送球（遅らせて＝帯は右端）。",
-        "labels": ["① 飛び出して掴む", "② 送球"], "direction": False,
+        "title": "Field the Bunt", "jp": "BUNT!!", "tip": None, "btn": "Field it",
+        "hint": "A bunt! ① Charge and grab it (a little early = the band is on the left) → ② Throw (hold it a beat = the band is at the far right).",
+        "labels": ["① Charge and grab it", "② Throw"], "direction": False,
         "targets": [0.40, 0.82],
     },
-    # チュートリアル専用(本編では返球のテンポは配球コール画面に埋め込み)
+    # Tutorial only (in the main game the return tempo is embedded in the pitch-call screen)
     "tempo": {
-        "title": "Return — 返球のテンポ", "jp": "返球！", "tip": None, "btn": "返球",
-        "hint": "流れる線を<b style=\"color:var(--good);\">緑の帯</b>の中央で "
-                "<span class=\"rg-key\">Space</span>（帯タップ可）。一定のリズムで 3 回。",
+        "title": "Return Tempo", "jp": "RETURN!", "tip": None, "btn": "Return",
+        "hint": "Press when the moving line is in the middle of the <b style=\"color:var(--good);\">green band</b>: "
+                "<span class=\"rg-key\">Space</span> (tapping the band works). Three times at a steady rhythm.",
         "labels": ["①", "②", "③"], "direction": False,
     },
 }
@@ -1261,7 +1346,7 @@ _QTE_JS = """
   function tick(now) { if (phase !== SWEEP) return; marker.style.left = (frac(now) * 100) + '%'; requestAnimationFrame(tick); }
   function mashTick(now) {
     if (phase !== MASH) return;
-    place(0.5, Math.max(0.03, (mashEnd - now) / 1800));   // 帯が縮む＝残り時間
+    place(0.5, Math.max(0.03, (mashEnd - now) / 1800));   // the band shrinks = time left
     requestAnimationFrame(mashTick);
   }
   function recordVerdict(v, txt) {
@@ -1272,10 +1357,10 @@ _QTE_JS = """
   function beginStep() {
     if (bar >= nbars) return finish();
     vEl.textContent = ''; vEl.className = 'rg-verdict'; phase = IDLE;
-    var lbl = labels[bar] || ('タイミング ' + (bar + 1));
-    labEl.textContent = lbl;                 // 太字ラベルで「次に何をやるか」を表示
-    if (mash[bar]) { announce('連打！！ はじめ', 900); setTimeout(startMash, 950); }
-    else { setTimeout(startSweep, bar === 0 ? 120 : 620); }   // 少し間を置いてから流す
+    var lbl = labels[bar] || ('Timing ' + (bar + 1));
+    labEl.textContent = lbl;                 // show "what to do next" in a bold label
+    if (mash[bar]) { announce('MASH!! GO', 900); setTimeout(startMash, 950); }
+    else { setTimeout(startSweep, bar === 0 ? 120 : 620); }   // pause briefly, then start the sweep
   }
   function startSweep() {
     place(center(), 0.18); marker.style.left = '0%';
@@ -1292,9 +1377,9 @@ _QTE_JS = """
     if (phase !== MASH) return;
     place(0.5, 0.18);
     var v = mashN >= 12 ? 'perfect' : (mashN >= 6 ? 'good' : 'miss');
-    recordVerdict(v, mashN + ' 連打 → ' + v.toUpperCase());
-    announce('連打 おわり', 700);
-    setTimeout(beginStep, 1150);                          // 明確に間を置いてから次へ
+    recordVerdict(v, mashN + ' hits -> ' + v.toUpperCase());
+    announce('MASH OVER', 700);
+    setTimeout(beginStep, 1150);                          // pause clearly before the next step
   }
   function hit() {
     if (phase === MASH) {
@@ -1317,12 +1402,12 @@ _QTE_JS = """
   });
   track.addEventListener('click', hit);
 
-  // まず大きく「盗塁！！」等を出してから始める
+  // First show a big "STEAL!!" or similar, then begin
   if (jp) announce(jp, 1000);
   setTimeout(function () {
     if (wantDir && dirsEl) {
       dirsEl.hidden = false;
-      announce('方向を選べ', 700);
+      announce('PICK A SIDE', 700);
       Array.prototype.forEach.call(dirsEl.querySelectorAll('button'), function (b) {
         b.addEventListener('click', function () { fD.value = b.dataset.dir; dirsEl.hidden = true; beginStep(); });
       });
@@ -1334,17 +1419,17 @@ _QTE_JS = """
 
 
 def _rhythm_widget(spec, action, call_html="", extra_hidden="", header_extra="", targets=None):
-    """QTE / チュートリアル共通のタイミングバー・ウィジェット。
-    targets: 各ビートの帯の中心(0..1)。省略時は spec["targets"] か全て中央(0.5)。"""
+    """The timing-bar widget shared by QTEs and the tutorial.
+    targets: the center (0..1) of each beat's band. Omitted = spec["targets"] or all centered (0.5)."""
     tip = _help(_TIP[spec["tip"]]) if spec.get("tip") else ""
     tgt = targets if targets is not None else spec.get("targets", [])
     mash = spec.get("mash", [])
     dir_html = ""
     if spec["direction"]:
         dir_html = ('<div id="qte-dirs" class="qte-dirs" hidden>'
-                    '<button type="button" data-dir="in">◀ 内</button>'
-                    '<button type="button" data-dir="mid">● 中</button>'
-                    '<button type="button" data-dir="out">外 ▶</button></div>')
+                    '<button type="button" data-dir="in">◀ In</button>'
+                    '<button type="button" data-dir="mid">● Middle</button>'
+                    '<button type="button" data-dir="out">Out ▶</button></div>')
     return f"""
 <div class="card rg-wrap">
   <h3>{_e(spec["title"])}{tip}</h3>
@@ -1359,7 +1444,7 @@ def _rhythm_widget(spec, action, call_html="", extra_hidden="", header_extra="",
     <div id="qte-announce" class="qte-announce"></div>
     {dir_html}
     <div id="qte-label" class="qte-label"></div>
-    <div id="rg-track" class="rg-track" tabindex="0" aria-label="タイミングを合わせて Space を押す">
+    <div id="rg-track" class="rg-track" tabindex="0" aria-label="Press Space in time with the band">
       <div class="rg-target" id="rg-target"><div class="core"></div></div>
       <div id="rg-marker" class="rg-marker"></div>
     </div>
@@ -1369,7 +1454,7 @@ def _rhythm_widget(spec, action, call_html="", extra_hidden="", header_extra="",
     <input type="hidden" name="verdicts" id="f-verdicts" value="">
     <input type="hidden" name="dir" id="f-dir" value="">
     {extra_hidden}
-    <noscript><p class="rg-hint">JavaScript が無効です。「{_e(spec["btn"])}」でそのまま先へ進みます。</p></noscript>
+    <noscript><p class="rg-hint">JavaScript is off. Press "{_e(spec["btn"])}" to move on.</p></noscript>
     <button type="submit" class="primary big">{_e(spec["btn"])}</button>
   </form>
 </div>
@@ -1377,18 +1462,18 @@ def _rhythm_widget(spec, action, call_html="", extra_hidden="", header_extra="",
 
 
 def _prev_result_strip(outcome):
-    """直前の1球の結果を緑(よし)/赤(まずい)で簡単に。"""
+    """A quick green (good) / red (bad) for the previous pitch's result."""
     if not outcome:
         return ""
     k = _result_kind(outcome.get("result", ""))
     if k in ("r-out", "r-strike"):
-        col, mk = "var(--good)", "◯ よし"
+        col, mk = "var(--good)", "◯ Good"
     elif k in ("r-hit", "r-ball"):
-        col, mk = "var(--bad)", "✕ まずい"
+        col, mk = "var(--bad)", "✕ Bad"
     else:
         col, mk = "var(--muted)", "—"
-    return (f'<p class="prev-strip" style="color:{col};">前の1球　'
-            f'<b>{_e(outcome.get("result", ""))}</b>　{mk}</p>')
+    return (f'<p class="prev-strip" style="color:{col};">Last pitch &nbsp;'
+            f'<b>{_e(outcome.get("result", ""))}</b> {mk}</p>')
 
 
 def render_qte(session):
@@ -1399,7 +1484,7 @@ def render_qte(session):
     targets = None
     if kind == "frame":
         v = payload.get("velocity", 90)
-        # 速い球は早く(帯を左)・遅い球は遅く(帯を右)受ける
+        # a fast pitch is received early (band on the left), a slow one late (band on the right)
         targets = [0.24 if v >= 92 else (0.74 if v <= 84 else 0.5)]
     return _rhythm_widget(spec, "/qte", call_html=call_html, targets=targets,
                           header_extra=_prev_result_strip(session.last_outcome))
@@ -1410,7 +1495,7 @@ def _tutorial_complete(session):
 
 
 def _tutorial_ok(item, form):
-    """練習の 1 回が「クリア」か。全ビートが GOOD 以上ならクリア。"""
+    """Whether one practice attempt is a "clear". It is a clear if every beat is GOOD or better."""
     vs = [v for v in (form.get("verdicts", "") or "").split(",") if v in ("perfect", "good", "miss")]
     if not vs:
         return False
@@ -1425,33 +1510,33 @@ def render_tutorial(session):
     names = {k: n for k, n, _ in _TUTORIAL_ITEMS}
     rows = "".join(
         f'<li class="{"done" if session.tutorial[k] else ("now" if todo and k == todo[0] else "")}">'
-        f'{"✓" if session.tutorial[k] else ("▶" if todo and k == todo[0] else "・")} {_e(name)}'
+        f'{"✓" if session.tutorial[k] else ("▶" if todo and k == todo[0] else "·")} {_e(name)}'
         f'<span class="dim"> — {_e(desc)}</span></li>'
         for k, name, desc in _TUTORIAL_ITEMS)
     skip = ('<form method="post" action="/skiptutorial" style="margin-top:.8em;">'
-            '<button type="submit">スキップして本編を始める</button></form>')
+            '<button type="submit">Skip and start the game</button></form>')
     checklist = (
-        f'<div class="card"><h3>操作の練習 <span class="dim">（{done_n} / '
-        f'{len(_TUTORIAL_ITEMS)} クリア）</span></h3>'
+        f'<div class="card"><h3>Practice <span class="dim">({done_n} / '
+        f'{len(_TUTORIAL_ITEMS)} cleared)</span></h3>'
         '<p class="dim" style="font-size:.88em; margin-bottom:.4em;">'
-        '6 つのリズムを各 1 回 <b>GOOD 以上</b>で。MISS が混じったら同じ項目をもう一度。</p>'
+        'Clear each of the six rhythms once with <b>GOOD or better</b>. If a MISS slips in, try the same item again.</p>'
         f'<ul class="tut-list">{rows}</ul>{skip}</div>')
     if not todo:
         return checklist
     item = todo[0]
     spec = _QTE_SPEC[item]
-    hdr = f'<p class="rg-call">練習　<b>{_e(names[item])}</b></p>'
+    hdr = f'<p class="rg-call">Practice &nbsp;<b>{_e(names[item])}</b></p>'
     if item in _TUT_DIR:
-        hdr += '<p class="rg-hint">練習ではボールは <b>中</b> に来ます。</p>'
+        hdr += '<p class="rg-hint">In practice the ball comes <b>middle</b>.</p>'
     widget = _rhythm_widget(spec, "/tutorial",
                             extra_hidden=f'<input type="hidden" name="item" value="{item}">',
                             header_extra=hdr)
-    # リズムのウィジェットを先頭に（送信のたび先頭に戻るので、常に見える所に置く）
+    # Put the rhythm widget first (the page returns to the top on every submit, so keep it where it is always visible)
     return widget + checklist
 
 
 def _qte_answer(kind, payload, form):
-    """提出された verdict 列（＋方向）を、engine が期待する答えに変換する。"""
+    """Convert the submitted verdict list (+ direction) into the answer the engine expects."""
     verdicts = [v for v in (form.get("verdicts", "") or "").split(",")
                 if v in ("perfect", "good", "miss")]
     if kind == "frame":
@@ -1463,12 +1548,12 @@ def _qte_answer(kind, payload, form):
 
 
 def _tempo_bonus(form):
-    """配球コールと一緒に送られてくる返球リズム(3拍)を tempo(-0.25〜0.25)に。"""
+    """Turn the return rhythm (3 beats) sent with the pitch call into a tempo (-0.25 to 0.25)."""
     vs = [v for v in (form.get("tempo", "") or "").split(",") if v in ("perfect", "good", "miss")]
     return qte.bonus_from_verdicts(*vs) if vs else 0.0
 
 
-# 配球コール画面に埋め込む「返球のテンポ」ウィジェット。直前の球を捕球していたときだけ出す。
+# The "return tempo" widget embedded in the pitch-call screen. Shown only when you caught the previous pitch.
 _TEMPO_JS = """
 (function () {
   var box = document.getElementById('tempo'); if (!box) return;
@@ -1498,7 +1583,7 @@ _TEMPO_JS = """
   function finish() {
     if (done) return; done = true; fld.value = vs.join(','); labEl.textContent = '';
     var p = vs.filter(function (x) { return x === 'perfect'; }).length, m = vs.indexOf('miss') >= 0;
-    msg.textContent = p >= 2 ? 'テンポ◎ 投手が乗ってきた' : (m ? 'テンポが乱れた' : 'まずまずのテンポ');
+    msg.textContent = p >= 2 ? 'Great tempo - the pitcher is in a groove' : (m ? 'Tempo broke down' : 'Decent tempo');
     msg.style.color = p >= 2 ? 'var(--good)' : (m ? 'var(--bad)' : 'var(--muted)');
   }
   document.addEventListener('keydown', function (e) {
@@ -1517,26 +1602,26 @@ _TEMPO_JS = """
 
 
 def _tempo_widget(state, reaction=None, prev_outcome=None):
-    """(ウィジェット HTML, スクリプト HTML)。返球するものが無ければ両方空文字。
-    他のリズムゲームと同じ「流れる線を緑の帯の中央で止める」形式を 3 回。"""
+    """(widget HTML, script HTML). Both are empty strings if there is nothing to return.
+    The same "stop the moving line in the middle of the green band" format as the other rhythm games, three times."""
     last = state.history.last()
-    if last is None or last.get("result") not in ("ボール", "ストライク", "空振り"):
+    if last is None or last.get("result") not in ("Ball", "Strike", "Whiff"):
         return "", ""
     rx = ""
     if reaction:
         rx = (f'<span class="tempo-react">{_e(reaction.get("face", ""))}'
-              f' <span class="dim">「{_e(reaction.get("text", ""))}」</span></span>')
+              f' <span class="dim">“{_e(reaction.get("text", ""))}”</span></span>')
     html = (
         '<div id="tempo" class="tempo-box">'
         '<div class="tempo-head">'
-        '<span class="eyebrow" style="margin:0;">Return — 返球のテンポ</span>'
+        '<span class="eyebrow" style="margin:0;">Return Tempo</span>'
         f'{rx}</div>'
         f'{_prev_result_strip(prev_outcome)}'
         '<p class="dim" style="font-size:.82em; margin:.15em 0 .5em;">'
-        '流れる線を<b style="color:var(--good);">緑の帯</b>の中央で '
-        '<span class="rg-key">Space</span>（帯タップ可）。これを3回、一定のテンポで。'
+        'Press when the moving line is in the middle of the <b style="color:var(--good);">green band</b>: '
+        '<span class="rg-key">Space</span> (tapping the band works). Three times, at a steady tempo.'
         ' <span id="tempo-label"></span></p>'
-        '<div id="tempo-track" class="rg-track" tabindex="0" aria-label="タイミングを合わせて Space">'
+        '<div id="tempo-track" class="rg-track" tabindex="0" aria-label="Press Space in time with the band">'
         '<div class="rg-target"><div class="core"></div></div>'
         '<div id="tempo-marker" class="rg-marker"></div></div>'
         '<div id="tempo-verdict" class="rg-verdict" style="min-height:1.2em; font-size:1.1em;"></div>'
@@ -1547,7 +1632,7 @@ def _tempo_widget(state, reaction=None, prev_outcome=None):
 
 
 # ---------------------------------------------------------------------------
-# 配球コール(球種・コース・意図)
+# The pitch call (pitch type / location / intent)
 # ---------------------------------------------------------------------------
 def render_pitch_call_form(state, reaction=None, prev_outcome=None):
     pitch_opts = "".join(
@@ -1558,7 +1643,7 @@ def render_pitch_call_form(state, reaction=None, prev_outcome=None):
     intent_opts = "".join(
         f'<input type="radio" name="intent" value="{k}" id="it_{k}"'
         f'{" checked" if k == "strike" else ""}>'
-        f'<label for="it_{k}">{_e(v.split("（")[0])}</label>'
+        f'<label for="it_{k}">{_e(intent_label(k))}</label>'
         for k, v in PITCH_INTENTS.items())
     grid = _course_grid(state.batter.bats)
     course_cells = ""
@@ -1567,20 +1652,20 @@ def render_pitch_call_form(state, reaction=None, prev_outcome=None):
             checked = " checked" if c == "mid_mid" else ""
             course_cells += (f'<div class="cell"><input type="radio" name="course" value="{c}" '
                             f'id="c_{c}"{checked}><label for="c_{c}">{_e(COURSE_SHORT[c])}</label></div>')
-    side_hint = "内角 ◀ ▶ 外角" if state.batter.bats == "R" else "外角 ◀ ▶ 内角"
+    side_hint = "Inside ◀ ▶ Away" if state.batter.bats == "R" else "Away ◀ ▶ Inside"
     tempo_html, tempo_js = _tempo_widget(state, reaction, prev_outcome)
     return f"""
 <div class="card">
-  <h3>Pitch Call — 配球コール</h3>
+  <h3>Pitch Call</h3>
   <form method="post" action="/pitch">
     {tempo_html}
     <p class="eyebrow">Pitch Type{_help(_TIP["pitch_type"])}
-       <span class="dim" style="font-weight:400;">（数字は球速）</span></p>
+       <span class="dim" style="font-weight:400;">(numbers are speed)</span></p>
     <div class="chiprow">{pitch_opts}</div>
     <div class="callgrid">
       <div class="callgrid-zone">
         <p class="eyebrow">Target Location{_help(_TIP["course"])}
-           <span class="dim" style="font-weight:400;">（{_e(side_hint)} · 打者 {state.batter.bats} · 捕手視点）</span></p>
+           <span class="dim" style="font-weight:400;">({_e(side_hint)} · Batter {state.batter.bats} · catcher's view)</span></p>
         <div class="zone-shadow"><div class="zone">{course_cells}</div></div>
       </div>
       <div class="callgrid-intent">
@@ -1588,8 +1673,8 @@ def render_pitch_call_form(state, reaction=None, prev_outcome=None):
         <div class="chiprow">{intent_opts}</div>
         <p style="margin:1.1em 0 0;"><button class="primary big" type="submit">CALL PITCH</button></p>
         <p class="hint" style="margin:.8em 0 0;">
-          チェイス・見せ球はボールになりやすく、ピッチアウトはほぼ確実にボール。
-          カウントと走者を見て選ぶ。</p>
+          Chase and waste pitches are likely to be balls, and a pitchout is almost surely a ball.
+          Choose by looking at the count and the runners.</p>
       </div>
     </div>
   </form>
@@ -1597,10 +1682,10 @@ def render_pitch_call_form(state, reaction=None, prev_outcome=None):
 
 
 # ---------------------------------------------------------------------------
-# 打球チャート(#B。expert 難易度では隠す)
+# Spray chart (#B. Hidden at expert difficulty)
 # ---------------------------------------------------------------------------
-_SPRAY_GLYPH = {"アウト": "·", "単打": "o", "エラー": "e",
-               "二塁打": "O", "三塁打": "O", "本塁打": "H"}
+_SPRAY_GLYPH = {"Out": "·", "Single": "o", "Error": "e",
+               "Double": "O", "Triple": "O", "Home run": "H"}
 
 
 def render_spray_chart(state):
@@ -1626,108 +1711,128 @@ def render_spray_chart(state):
     text = "\n".join("".join(r) for r in grid)
     if not state.spray:
         chart = ('<p class="hint" style="margin:.2em 0 0;">'
-                 'フェアの打球が出るとここに記録され、球場のどこに飛んだかが一目で分かります。</p>')
+                 'When a ball is hit fair it is recorded here, so you can see at a glance where it went on the field.</p>')
     else:
         chart = (f'<p class="dim" style="margin:.2em 0 .4em;">'
-                 f'· アウト　o 単打　e エラー　O 長打　H 本塁打</p>'
+                 f'· out &nbsp; o single &nbsp; e error &nbsp; O extra-base &nbsp; H home run</p>'
                  f'<pre class="spray">{_e(text)}</pre>')
-    return (f'<div class="card"><h3>Spray — 打球チャート（このゲーム）</h3>{chart}</div>')
+    return (f'<div class="card"><h3>Spray Chart (this game)</h3>{chart}</div>')
 
 
 # ---------------------------------------------------------------------------
-# 配球履歴
+# Pitch history
 # ---------------------------------------------------------------------------
 _RESULT_CSS = {
-    "ストライク": "res-strike", "空振り": "res-strike", "ファウル": "res-strike",
-    "ボール": "res-ball",
-    "アウト": "res-out", "三振": "res-out", "犠打成功": "res-out",
-    "バント（封殺）": "res-out", "バント（本封殺）": "res-out", "バント失敗（小フライ）": "res-out",
-    "単打": "res-hit", "二塁打": "res-hit", "三塁打": "res-hit", "本塁打": "res-hit",
-    "エラー": "res-hit", "四球": "res-hit", "バント安打": "res-hit",
+    "Strike": "res-strike", "Whiff": "res-strike", "Foul": "res-strike",
+    "Ball": "res-ball",
+    "Out": "res-out", "Strikeout": "res-out", "Sacrifice bunt": "res-out",
+    "Bunt (force out)": "res-out", "Bunt (out at home)": "res-out", "Bunt popped up": "res-out",
+    "Single": "res-hit", "Double": "res-hit", "Triple": "res-hit", "Home run": "res-hit",
+    "Error": "res-hit", "Walk": "res-hit", "Bunt single": "res-hit",
 }
 
 
 def render_pitch_history(state, limit=8):
     entries = state.pitch_log[-limit:][::-1]
     if not entries:
-        rows = '<tr><td colspan="5" class="dim">まだ投球なし</td></tr>'
+        rows = '<tr><td colspan="5" class="dim">No pitches yet</td></tr>'
     else:
         rows = "".join(
             f"<tr><td class=\"dim\">{e['pitch_number']}</td>"
             f"<td>{_e(pitch_name(e['pitch_type']))}</td>"
             f"<td>{_e(COURSE_SHORT[e['actual_course']])}</td>"
-            f"<td>{_e(PITCH_INTENTS[e['intent']].split('（')[0])}</td>"
+            f"<td>{_e(intent_label(e['intent']))}</td>"
             f"<td class=\"{_RESULT_CSS.get(e['result'], '')}\"><span class=\"rdot\"></span>{_e(e['result'])}"
             f"{'<span class=\"framed-mark\"> ⌂→</span>' if e.get('framed') else ''}</td></tr>"
             for e in entries)
     return f"""
 <div class="card">
-  <h3>Pitch History — 配球履歴（直近{limit}球・新しい順）</h3>
+  <h3>Pitch History — last {limit} pitches, newest first</h3>
   <div class="tablescroll"><table class="history">
-    <tr><th>#</th><th>球種</th><th>コース</th><th>意図</th><th>結果</th></tr>
+    <tr><th>#</th><th>Pitch</th><th>Location</th><th>Intent</th><th>Result</th></tr>
     {rows}
   </table></div>
 </div>"""
 
 
 # ---------------------------------------------------------------------------
-# サイドアクション(敬遠・継投・捕手メモ・中断)
+# Side actions (intentional walk, pitching change, catcher's notes, quit)
 # ---------------------------------------------------------------------------
 def render_side_actions(state, difficulty):
     extras = ""
-    if not all(state.runners):          # 満塁でなければ敬遠できる(押し出しになる満塁だけ除外)
+    if not all(state.runners):          # you can walk him unless bases are loaded (only a bases-loaded walk forces in a run)
         extras += '<form method="post" action="/walk" style="display:inline">'\
-                 '<button>敬遠</button></form> '
+                 '<button>Intentional walk</button></form> '
     if state.can_change_pitcher():
         if len(state.bullpen) == 1:
             extras += ('<form method="post" action="/change" style="display:inline">'
                       '<input type="hidden" name="index" value="0">'
-                      f'<button>継投（{_e(state.bullpen[0].name)}）</button></form> ')
+                      f'<button>Pitching change ({_e(state.bullpen[0].name)})</button></form> ')
         else:
             pitcher_opts = "".join(
-                f'<option value="{i}">{_e(p.name)}（{"右" if p.throws == "R" else "左"}投）</option>'
+                f'<option value="{i}">{_e(p.name)} ({"R" if p.throws == "R" else "L"}HP)</option>'
                 for i, p in enumerate(state.bullpen))
             extras += ('<form method="post" action="/change" style="display:inline">'
                       f'<select name="index">{pitcher_opts}</select>'
-                      '<button>継投</button></form> ')
+                      '<button>Pitching change</button></form> ')
     course_opts = "".join(f'<option value="{c}">{_e(v)}</option>' for c, v in COURSE_SHORT.items())
     hint = ""
     if difficulty == "beginner":
-        hint = ('<div class="hint"><b>ヒント</b> 顔文字は本音とは限りません（60%本音 / 15%逆 / 15%ぼかし）。'
-               '1球だけで信じすぎないこと。</div>')
+        hint = ('<div class="hint"><b>Hint</b> A face is not always the truth (60% honest / 15% opposite / 25% blurred). '
+               'Do not trust a single pitch too much.</div>')
     return f"""
 {hint}
 <div class="card">
-  <h3>Catcher's Notes — 捕手メモ（読みを記録 · 試合後に採点）</h3>
+  <h3>Catcher's Notes (graded after the game)</h3>
   <form method="post" action="/memo" class="form-actions">
-    <select name="wait"><option value="unknown">待ち球: わからない</option>
-      <option value="fastball">速球待ち</option><option value="offspeed">変化球待ち</option></select>
-    <select name="weak"><option value="">弱点コース: わからない</option>{course_opts}</select>
-    <button type="submit">メモする</button>
+    <select name="wait"><option value="unknown">Looking for: not sure</option>
+      <option value="fastball">Fastball</option><option value="offspeed">Off-speed</option></select>
+    <select name="weak"><option value="">Weak zone: not sure</option>{course_opts}</select>
+    <button type="submit">Save note</button>
   </form>
 </div>
 <div class="card">
-  <h3>Bench — その他の操作</h3>
+  <h3>Bench</h3>
   <div class="form-actions">
     {extras}
     <form method="post" action="/newgame" style="display:inline;">
-      <button>中断して新規開始</button></form>
+      <button>Quit and start over</button></form>
   </div>
 </div>"""
 
 
 # ---------------------------------------------------------------------------
-# メイン試合画面
+# The main game screen
 # ---------------------------------------------------------------------------
+def render_last_play(session):
+    """The Play Viewer card for the last fair ball (empty if the last pitch was not put in play).
+    It auto-plays once; later page loads (changing the shift, saving a note) show the end of the play."""
+    o = session.last_outcome
+    if not o or not o.get("batted_ball") or not o.get("fielding") or not o.get("play"):
+        return ""
+    key = len(session.state.pitch_log)
+    autoplay = session.play_shown != key
+    session.play_shown = key
+    try:
+        script = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=key)
+    except Exception:   # noqa: BLE001 -- a drawing problem must never stop the game
+        traceback.print_exc()
+        return ""
+    f = o["fielding"]
+    caption = f"{o['batted_ball'].describe()} · {f['position']} {f['fielder']} · {o['result']}"
+    return playview.render_play_viewer(script, caption, autoplay=autoplay)
+
+
 def render_game_page(session):
     state = session.state
     tactic_msg = begin_at_bat(state, session.rng)
     body = [render_scorebar(state)]
     if tactic_msg:
         body.append(f'<div class="tactic-alert">⚠ <b>{_e(tactic_msg)}</b>'
-                    f'　― ピッチアウトや高め速球で対抗できる</div>')
-    # 配球コールを一番上に（スクロールせず「返球のテンポ＋次の1球」に手が届くように）。
-    # その下に読む材料: 守備配置 ｜ 打者＋直前の1球 → 配球履歴 → 打球チャート → ベンチ。
+                    f' — counter with a pitchout or a high fastball</div>')
+    # Put the pitch call at the very top (so "return tempo + next pitch" is within reach without scrolling).
+    # Below it, the material to read: the defense | the batter + the last pitch -> pitch history -> spray chart -> bench.
+    body.append(render_last_play(session))
     body.append(render_pitch_call_form(state, session.reaction, session.last_outcome))
     body.append('<div class="grid2 gcols">')
     body.append('<div>' + render_field_diagram(session) + '</div>')
@@ -1745,9 +1850,15 @@ def render_game_page(session):
 # ---------------------------------------------------------------------------
 # Postgame Report(Catcher Report)
 # ---------------------------------------------------------------------------
-def render_postgame_report(state, log_path):
+def render_postgame_report(state, log_path, game_seed=None, difficulty="normal"):
     report = build_postgame_report(state)
     a = build_analysis(state.pitch_log)
+    rating = catcher_rating(state, report, a)
+    badges_html = "".join(
+        f'<span class="badge-chip" title="{_e(desc)}">{_e(name)}</span>' for name, desc in rating["badges"])
+    code_note = (f'<p class="dim" style="font-size:.85em;">Challenge Code <b>#{game_seed}</b></p>'
+                 if game_seed is not None else "")
+    again_seed = (f'<input type="hidden" name="seed" value="{game_seed}">' if game_seed is not None else "")
     reads = grade_reads(state.reads, state.lineup.batters)
     run_txt, status = state.result_summary()
 
@@ -1765,18 +1876,18 @@ def render_postgame_report(state, log_path):
 
     def fmt(items, limit=5, cls="calllist"):
         if not items:
-            return '<p class="dim">なし</p>'
+            return '<p class="dim">None</p>'
         rows = "".join(
-            f'<p><span class="num">{n}球目</span>　{_e(label)}'
+            f'<p><span class="num">Pitch {n}</span> &nbsp;{_e(label)}'
             + (f' → {_e(item[2])}' if len(item) > 2 else '') + '</p>'
             for item in items[:limit] for n, label in [(item[0], item[1])])
-        more = f'<p class="dim">…ほか{len(items) - limit}件</p>' if len(items) > limit else ""
+        more = f'<p class="dim">...and {len(items) - limit} more</p>' if len(items) > limit else ""
         return f'<div class="{cls}">{rows}{more}</div>'
 
     reads_html = ""
     if reads["rows"]:
-        reads_html = (f'<div class="card"><h3>捕手メモの採点</h3>'
-                     f'<p><b>{reads["correct"]} / {reads["graded"]}</b> 当たり</p>'
+        reads_html = (f'<div class="card"><h3>Your reads graded</h3>'
+                     f'<p><b>{reads["correct"]} / {reads["graded"]}</b> right</p>'
                      + "".join(f'<p class="dim" style="font-size:.85em;">{_e(r.strip())}</p>'
                                for r in reads["rows"])
                      + '</div>')
@@ -1784,9 +1895,9 @@ def render_postgame_report(state, log_path):
     pe = report["pitch_execution"]
     de = report["defense"]
     runc = "var(--good)" if report["runs_allowed"] == 0 else "var(--bad)"
-    dq_bad = "bad" if "甘い" in a["decision_quality_label"] else ""
-    dq_pct = {"良い（狙いを外し、崩せていた）": 92, "やや良い": 68,
-              "やや甘い": 40, "甘い（読まれ・置きにいく球が多かった）": 18}.get(
+    dq_bad = "bad" if "loose" in a["decision_quality_label"].lower() else ""
+    dq_pct = {"Good (kept batters off balance)": 92, "Slightly good": 68,
+              "Slightly loose": 40, "Loose (too many predictable, get-it-over pitches)": 18}.get(
                   a["decision_quality_label"], 50)
     q_pct = int(pe["avg_quality"] * 100)
     m_pct = int(pe["missed_rate"] * 100)
@@ -1794,50 +1905,65 @@ def render_postgame_report(state, log_path):
     return f"""
 <div class="card report-hero">
   <h2 style="letter-spacing:.14em; color:var(--muted); font-size:.8em;">CATCHER REPORT</h2>
-  <p class="headline" style="color:{runc};">{_e(run_txt)} ／ {_e(status)}</p>
-  <p class="score">自軍 <b>{state.our_score}</b> – <b>{state.opp_score}</b> 相手
-     <span class="dim">（開始 {state.start_our}–{state.start_opp}）</span></p>
+  <p class="headline" style="color:{runc};">{_e(run_txt)} / {_e(status)}</p>
+  <p class="score">Us <b>{state.our_score}</b> – <b>{state.opp_score}</b> Them
+     <span class="dim">(started {state.start_our}–{state.start_opp})</span></p>
+</div>
+<div class="card rating-card">
+  <div class="grade g-{rating['grade']}">{rating['grade']}</div>
+  <div>
+    <p class="eyebrow" style="margin:0;">CATCHER RATING · {rating['score']} / 100</p>
+    <p style="font-size:1.25em; font-weight:800; margin:.1em 0 .4em;">{_e(rating['title'])}</p>
+    <div>{badges_html or '<span class="dim">No badges this time. Win the next one.</span>'}</div>
+    {code_note}
+  </div>
 </div>
 
-<div class="card"><h3>Line — 内容</h3><div class="report-stats">{stats_html}</div></div>
+<div class="card"><h3>The Numbers</h3><div class="report-stats">{stats_html}</div></div>
 
 <div class="grid2">
-  <div class="card"><h3>Decision Quality — 配球判断</h3>
-    <div class="kv"><span>平均</span><b>{_e(a['decision_quality_label'])}</b></div>
+  <div class="card"><h3>Decision Quality</h3>
+    <div class="kv"><span>Average</span><b>{_e(a['decision_quality_label'])}</b></div>
     <div class="meter {dq_bad}"><span style="width:{dq_pct}%;"></span></div>
-    <p class="dim" style="font-size:.82em; margin:.5em 0 .7em;">結果と判断は別もの。下は「結果 ≠ 判断」だった球。</p>
+    <p class="dim" style="font-size:.82em; margin:.5em 0 .7em;">Result and decision are different things. Below are the pitches where "result ≠ decision".</p>
     <div class="split2">
-      <div class="box unlucky"><div class="cap">GOOD CALL / 悪結果（不運）</div>{fmt(a['unlucky'], 3)}</div>
-      <div class="box lucky"><div class="cap">BAD CALL / 好結果（幸運）</div>{fmt(a['lucky'], 3)}</div>
+      <div class="box unlucky"><div class="cap">GOOD CALL / bad result (unlucky)</div>{fmt(a['unlucky'], 3)}</div>
+      <div class="box lucky"><div class="cap">BAD CALL / good result (lucky)</div>{fmt(a['lucky'], 3)}</div>
     </div>
   </div>
   <div>
-    <div class="card"><h3>Pitch Execution — 投手の実行力</h3>
-      <div class="kv"><span>失投率</span><b>{pe['missed_pitches']} / {report['pitches']}（{m_pct}%）</b></div>
+    <div class="card"><h3>Pitch Execution</h3>
+      <div class="kv"><span>Miss rate</span><b>{pe['missed_pitches']} / {report['pitches']} ({m_pct}%)</b></div>
       <div class="meter bad"><span style="width:{m_pct}%;"></span></div>
-      <div class="kv" style="margin-top:.5em;"><span>平均 quality</span><b>{pe['avg_quality']:.2f}</b></div>
+      <div class="kv" style="margin-top:.5em;"><span>Average quality</span><b>{pe['avg_quality']:.2f}</b></div>
       <div class="meter"><span style="width:{q_pct}%;"></span></div>
-      <p class="kv" style="margin-top:.5em;"><span>フレーミングで奪ったストライク</span>
-         <b style="color:var(--accent);">{report['framed_strikes']} 球</b></p>
+      <p class="kv" style="margin-top:.5em;"><span>Strikes stolen by framing</span>
+         <b style="color:var(--accent);">{report['framed_strikes']}</b></p>
     </div>
-    <div class="card"><h3>Defense — 守備</h3>
-      <p class="kv"><span>シフトが噛み合った場面</span><b>{de['alignment_helped']} 球</b></p>
-      <p class="kv"><span>エラー</span><b>{de['errors']} 件</b></p>
-      <p class="kv"><span>最終 EDE（参考値）</span><b>{de['final_ede']} / 100</b></p>
+    <div class="card"><h3>Defense</h3>
+      <p class="kv"><span>Shift fit moments</span><b>{de['alignment_helped']}</b></p>
+      <p class="kv"><span>Errors</span><b>{de['errors']}</b></p>
+      <p class="kv"><span>Final EDE (reference)</span><b>{de['final_ede']} / 100</b></p>
       <div class="meter"><span style="width:{de['final_ede']:.0f}%;"></span></div>
     </div>
   </div>
 </div>
 
 <div class="grid2">
-  <div class="card"><h3>◎ 良かった配球</h3>{fmt(a['good_calls'])}</div>
-  <div class="card"><h3>△ 危険だった配球</h3>{fmt(a['risky_calls'])}</div>
+  <div class="card"><h3>◎ Good calls</h3>{fmt(a['good_calls'])}</div>
+  <div class="card"><h3>△ Risky calls</h3>{fmt(a['risky_calls'])}</div>
 </div>
-<div class="card"><h3>◇ 浴びた長打</h3>{fmt(a['extra_base'])}</div>
+<div class="card"><h3>◇ Extra-base hits allowed</h3>{fmt(a['extra_base'])}</div>
 {reads_html}
-<div class="card dim" style="font-size:.85em;">{'ログ: ' + _e(log_path) if log_path else ''}
-  <p style="margin-top:.4em;">※プレイ中に正解は表示していません。これは3アウト後だけの振り返りです。</p></div>
-<form method="post" action="/newgame"><button class="primary big" type="submit">もう一度プレイ</button></form>"""
+<div class="card dim" style="font-size:.85em;">{'Log: ' + _e(log_path) if log_path else ''}
+  <p style="margin-top:.4em;">* No answers were shown during play. This review is shown only after three outs.</p></div>
+<div class="again">
+  <form method="post" action="/newgame"><input type="hidden" name="difficulty" value="{difficulty}">
+    <button class="primary big" type="submit">Play again</button></form>
+  <form method="post" action="/newgame"><input type="hidden" name="difficulty" value="{difficulty}">{again_seed}
+    <button type="submit">Replay this situation</button></form>
+  <form method="post" action="/menu"><button type="submit">Menu</button></form>
+</div>"""
 
 
 def render_page(session):
@@ -1850,15 +1976,16 @@ def render_page(session):
     state = session.state
     session.finish_if_over()
     if state.is_over():
-        return render_postgame_report(state, session.log_path)
+        return render_last_play(session) + render_postgame_report(
+            state, session.log_path, session.game_seed, session.difficulty)
     if session.pending_qte is not None:
         return render_scorebar(state) + render_qte(session)
     return render_game_page(session)
 
 
 def _advance_pitch_gen(answer):
-    """進行中の resolve_pitch_flow ジェネレータを 1 手進める。
-    次の QTE が来たら pending_qte に積む。終わったら結果を SESSION へ。"""
+    """Advance the in-progress resolve_pitch_flow generator by one step.
+    If the next QTE arrives, push it to pending_qte. When it finishes, store the result in SESSION."""
     gen = SESSION.pitch_gen
     if gen is None:
         return
@@ -1870,8 +1997,8 @@ def _advance_pitch_gen(answer):
         outcome, messages = stop.value
         SESSION.messages = messages
         SESSION.reaction = outcome.get("reaction")
-        # 打席の締め(三振/四球/安打/アウト)は engine が pitch_log の最後の 1 件に
-        # 付けるので、直前の 1 球の結果を見る _catcher_line 用に outcome へも移す。
+        # The end of an at-bat (strikeout/walk/hit/out) is attached by the engine to the last entry of pitch_log,
+        # so copy it onto outcome too, for _catcher_line, which looks at the result of the last pitch.
         if SESSION.state is not None and SESSION.state.pitch_log:
             outcome.setdefault("at_bat_end",
                                SESSION.state.pitch_log[-1].get("at_bat_end"))
@@ -1879,9 +2006,21 @@ def _advance_pitch_gen(answer):
 
 
 # ---------------------------------------------------------------------------
-# HTTP サーバ(標準ライブラリのみ)
+# HTTP server (standard library only)
 # ---------------------------------------------------------------------------
+_ERROR_BODY = """
+<div class="card center" style="padding:2em 1.2em;">
+  <p style="font-size:1.2em; font-weight:800;">Something went wrong on our side.</p>
+  <p class="dim">Sorry about that. Your game could not continue, but you can start another one.</p>
+  <form method="post" action="/menu"><button class="primary big" type="submit">Back to the menu</button></form>
+</div>"""
+
+_LOCK = threading.Lock()   # the game is one shared SESSION, so handle one request at a time
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
+    timeout = 20   # drop idle / half-open connections (browsers open speculative ones) instead of waiting forever
+
     def log_message(self, fmt, *args):
         pass
 
@@ -1905,16 +2044,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {k: v[0] for k, v in parsed.items()}
 
     def do_GET(self):
+        self._guarded(self._handle_get)
+
+    def do_POST(self):
+        self._guarded(self._handle_post)
+
+    def _guarded(self, handler):
+        """One request at a time. If anything unexpected happens, show a recovery page instead of a dead connection."""
+        with _LOCK:
+            try:
+                handler()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:   # noqa: BLE001 -- the game must never leave the player on a blank page
+                traceback.print_exc()
+                SESSION.pitch_gen = SESSION.pending_qte = None
+                try:
+                    self._send_html(_page(_ERROR_BODY), status=500)
+                except OSError:
+                    pass
+
+    def _handle_get(self):
         if self.path not in ("/", ""):
             self._send_html("not found", status=404)
             return
         self._send_html(_page(render_page(SESSION)))
 
-    def do_POST(self):
+    def _handle_post(self):
         form = self._read_form()
 
         if self.path == "/start":
-            SESSION.start_new_game()
+            SESSION.start_new_game(**_start_options(form))
             self._redirect()
             return
 
@@ -1940,7 +2100,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path == "/newgame":
-            SESSION.start_new_game()
+            SESSION.start_new_game(**_start_options(form))
+            self._redirect()
+            return
+
+        if self.path == "/menu":
+            SESSION.started = False
+            SESSION.pitch_gen = SESSION.pending_qte = None
             self._redirect()
             return
 
@@ -1949,7 +2115,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._redirect()
             return
 
-        # リズムゲーム進行中は /qte と新規開始以外を受け付けない(操作の取り違え防止)
+        # While a rhythm game is running, accept nothing except /qte and new game (prevents mixed-up actions)
         if SESSION.pending_qte is not None and self.path not in ("/qte", "/newgame", "/start"):
             self._redirect()
             return
@@ -1958,14 +2124,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pitch_type = form.get("pitch_type")
             course = form.get("course", "mid_mid")
             intent = form.get("intent", "strike")
-            # フォーム以外(手打ちの POST 等)で不正な値が来ても 500 にせず弾く
+            # Reject invalid values (e.g. a hand-typed POST) instead of returning a 500
             if (pitch_type not in repertoire_options(state.pitcher)
                     or course not in COURSE_SHORT or intent not in PITCH_INTENTS):
                 self._redirect()
                 return
             SESSION.last_batter_bats = state.batter.bats
             SESSION.last_call = {"pitch_type": pitch_type, "target_course": course, "intent": intent}
-            # 1 球の判定を engine のジェネレータで開始。QTE が要れば pending_qte に積まれる。
+            # Start judging one pitch with the engine generator. If a QTE is needed, it is pushed to pending_qte.
             SESSION.pitch_gen = resolve_pitch_flow(state, pitch_type, course, intent, SESSION.rng,
                                                    tempo=_tempo_bonus(form))
             _advance_pitch_gen(None)
@@ -1983,7 +2149,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/walk":
             state.intentional_walk()
-            SESSION.messages, SESSION.reaction, SESSION.last_call = [">>> 申告敬遠。打者を歩かせた。"], None, None
+            SESSION.messages, SESSION.reaction, SESSION.last_call = [">>> Intentional walk. Putting the batter on."], None, None
             self._redirect()
             return
 
@@ -1995,8 +2161,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 index = 0
             new_pitcher = state.change_pitcher(index)
             if new_pitcher:
-                SESSION.messages = [f">>> 継投。マウンドに {new_pitcher.name}。"
-                                   "球数はリセット。持ち球・調子は投げてみるまで分からない。"]
+                SESSION.messages = [f">>> Pitching change. {new_pitcher.name} takes the mound. "
+                                   "The pitch count resets. His pitches and form are unknown until he throws."]
             self._redirect()
             return
 
@@ -2028,7 +2194,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/memo":
             wait = form.get("wait")
             weak = form.get("weak") or None
-            state.record_read(wait=None if wait in (None, "unknown") else wait, weak=weak)
+            # Ignore anything that is not a real option (e.g. a hand-typed POST) so the review can never crash on it
+            if wait not in ("fastball", "offspeed"):
+                wait = None
+            if weak not in COURSE_SHORT:
+                weak = None
+            state.record_read(wait=wait, weak=weak)
             self._redirect()
             return
 
@@ -2036,24 +2207,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="配球判断シミュレーター（Web版）")
+    p = argparse.ArgumentParser(description="Behind the Plate -- a catcher's game (Web version)")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true", help="do not open the game in your browser automatically")
     p.add_argument("--host", default="127.0.0.1",
-                   help="0.0.0.0 にすると同じネットワーク上の他端末(スマホ等)からも"
-                       "アクセス可能になる。信頼できるネットワークでのみ使うこと")
-    p.add_argument("--lineup", help=".json / .csv の相手打線ファイル")
+                   help="Setting 0.0.0.0 makes it reachable from other devices on the same network (phones, etc.). "
+                       "Use it only on a network you trust")
+    p.add_argument("--lineup", help="opposing lineup file (.json / .csv)")
     p.add_argument("--seed", type=int, default=None,
-                   help="乱数シード。指定すると場面生成・投球判定が再現可能になる")
+                   help="random seed. Makes scene generation and pitch judging reproducible")
     p.add_argument("--difficulty", choices=("beginner", "normal", "expert"),
                    default=os.environ.get("PITCHSIM_DIFFICULTY", "normal"))
     p.add_argument("--mlb-demo", action="store_true",
-                   help="実在選手のサンプル打線を使う(mlb_data_adapter 経由)")
+                   help="use a sample lineup of real players (via mlb_data_adapter)")
     p.add_argument("--mlb-live", action="store_true",
-                   help="--mlb-demo と併用。MLB Stats API から実際に取得を試みる"
-                       "(失敗したら自動でサンプルデータにフォールバック)")
+                   help="use with --mlb-demo. Try to fetch from the MLB Stats API "
+                       "(falls back to sample data automatically on failure)")
     p.add_argument("--scenario", choices=_SCENARIOS,
-                   help="動作確認用に開始場面を仕込む: steal(盗塁の送球) / block(ブロッキング) / "
-                       "dropped3(振り逃げ) / bunt(バント処理) / signs(サイン交換)")
+                   help="set up the opening scene for testing: steal (steal throw) / block (blocking) / "
+                       "dropped3 (dropped third strike) / bunt (bunt fielding) / signs (change signs)")
     return p.parse_args()
 
 
@@ -2064,29 +2236,44 @@ def main():
         from mlb_data_adapter import build_demo_lineup
         lineup, source = build_demo_lineup(prefer_live=args.mlb_live)
         batters = lineup.batters
-        print(f"MLBサンプル打線を読み込みました（{'MLB Stats API' if source == 'live' else 'サンプルデータ'}）")
+        print(f"Loaded the MLB sample lineup ({'MLB Stats API' if source == 'live' else 'sample data'})")
     elif args.lineup:
         batters = load_lineup_file(args.lineup).batters
     global SESSION
     SESSION = GameSession(lineup_batters=batters, seed=args.seed, difficulty=args.difficulty,
                           scenario=args.scenario)
     if args.scenario:
-        print(f"シナリオ「{args.scenario}」で開始します（開始場面を仕込みます）")
+        print(f"Starting scenario '{args.scenario}' (setting up the opening scene)")
 
-    with socketserver.TCPServer((args.host, args.port), Handler) as httpd:
-        print(f"http://{args.host}:{args.port} で起動しました（Ctrl+C で終了）")
+    httpd, port = _bind_server(args.host, args.port)
+    with httpd:
+        url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{port}"
+        print(f"Behind the Plate is running at {url} (press Ctrl+C to quit)")
         if args.host == "0.0.0.0":
             import socket
             try:
                 lan_ip = socket.gethostbyname(socket.gethostname())
-                print(f"同じ Wi-Fi のスマホからは http://{lan_ip}:{args.port} でアクセスできます"
-                     "（うまく繋がらない場合は ipconfig / ifconfig で調べた IP を使ってください）")
+                print(f"From a phone on the same Wi-Fi, open http://{lan_ip}:{port}"
+                      " (if it does not connect, use the IP shown by ipconfig / ifconfig)")
             except OSError:
                 pass
+        if not args.no_browser:
+            threading.Timer(0.6, webbrowser.open, args=(url,)).start()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
             pass
+
+
+def _bind_server(host, port, tries=10):
+    """Bind to `port`, or the next free one if it is taken (so a second copy or a stale run never blocks the game)."""
+    last_err = None
+    for p in range(port, port + tries):
+        try:
+            return _Server((host, p), Handler), p
+        except OSError as err:
+            last_err = err
+    raise SystemExit(f"Could not open a port from {port} to {port + tries - 1}: {last_err}")
 
 
 if __name__ == "__main__":
