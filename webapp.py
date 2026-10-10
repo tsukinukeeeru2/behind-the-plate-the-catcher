@@ -258,6 +258,7 @@ class GameSession:
 SESSION = GameSession()
 ROOMS = rooms.Registry()          # online rooms (see rooms.py); every room has its own GameSession
 ROOM_TIMERS = (0, 10, 15, 20, 30)
+_FRAMED_MARK = '<span class="framed-mark"> ⌂→</span>'      # (kept out of the f-string: Python 3.11 does not allow a backslash inside one)
 _JOIN_FAILS = []                  # when the last wrong invite codes were tried
 
 
@@ -768,9 +769,13 @@ def render_start_screen(session):
 <div class="card center" style="padding:2.2em 1.2em;">
   <p class="eyebrow center" style="margin-bottom:.6em;">Late-inning · Defensive half · 3 outs to survive</p>
   <p style="font-size:1.25em; font-weight:800;">Late in the game, you are the catcher. Hold the inning.</p>
-  <p class="dim" style="max-width:34em; margin:.6em auto 0;">
-    Pick the pitch type, the target location (3×3), and your intent. One game = get three outs.
-    No answers are shown during play. Read the batter's reactions, the pitch history, and the batter info yourself.</p>
+  <div class="howto">
+    <div><b>1</b><span>Choose the pitch</span><i>type, target, intent, then Enter</i></div>
+    <div><b>2</b><span>Watch it come in</span><i>the batter swings or takes</i></div>
+    <div><b>3</b><span>Press Space to catch</span><i>once, as the ball reaches the mitt</i></div>
+  </div>
+  <p class="dim" style="max-width:36em; margin:.4em auto 0;">
+    One game is three outs. Read the batter after every pitch to plan the next one. A short practice pitch comes first, and you can skip it.</p>
   {seed_note}
   <form method="post" action="/start" style="margin-top:1.4em;">
     <div class="modepick" role="radiogroup" aria-label="Players">
@@ -1638,7 +1643,7 @@ def render_pitch_history(state, limit=8):
             f"<td>{_e(COURSE_SHORT[e['actual_course']])}</td>"
             f"<td>{_e(intent_label(e['intent']))}</td>"
             f"<td class=\"{_RESULT_CSS.get(e['result'], '')}\"><span class=\"rdot\"></span>{_e(e['result'])}"
-            f"{'<span class=\"framed-mark\"> ⌂→</span>' if e.get('framed') else ''}</td></tr>"
+            f"{_FRAMED_MARK if e.get('framed') else ''}</td></tr>"
             for e in entries)
     return f"""
 <div class="card">

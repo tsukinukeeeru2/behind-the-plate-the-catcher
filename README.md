@@ -6,7 +6,7 @@ Nobody tells you the right answer. Get three outs and hold the inning.
 
 Pure Python, **zero dependencies** (standard library only). Play it in your browser (`webapp.py`) or in a terminal (`main.py`).
 
-![Behind the plate: a swing and a miss](screenshots/stadium_curve.png)
+![Behind the plate: the ball coming in](screenshots/stadium_pitch.png)
 
 ---
 
@@ -49,7 +49,7 @@ Keys: **1-9** pitch type, **arrows** move the target, **Enter** call, **Space** 
 - **How to host it.** Run `python webapp.py --host 0.0.0.0` on one PC, and both players open `http://<that PC's address>:8765` (the same address, on the same network, or through a tunnel you trust). The traffic is plain HTTP and the room code is the only key, so use a network you trust. The browser-only build on GitHub Pages has no server, so online play is available only when you run the Python server; one-player mode works everywhere. Honest limits: a batter who inspects the network traffic could read the pitch type shortly before the release (the page needs it to fly the ball), and there is no account system or matchmaking.
 The old page-style layout is still available at `/classic`. Terminal version: `python main.py` (Enter = pitch, `d` = defense, `m` = note a read, `w` = intentional walk, `p` = pitching change, `q` = quit).
 
-Run the tests: `python tests.py` (231 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
+Run the tests: `python tests.py` (232 tests, including 1000 simulated games). Developers: start the server with `BTP_DEV=1` to reload the files in `web/` on every refresh and to get the screenshot helpers in `web/dev_tools.js`.
 
 ![The start screen](screenshots/stadium_start.png)
 
@@ -67,14 +67,17 @@ The main screen is a first-person view from a crouch behind the plate, in perspe
 - **It gets big fast.** The ball keeps its real size: tiny far away, then rapidly bigger because of the perspective, with a short afterimage. It meets your mitt at a catch point behind the plate, with a sharp pop, a short jolt of the picture and a recoil of the mitt, all synthesized in the browser.
 - **Catch it with one press.** The mitt goes to the ball by itself; you only press Space at the moment the ball reaches it (one press per pitch, so holding or mashing does nothing). Timing alone is judged: clean, barely caught, or missed (too early or too late; a passed ball if runners are on). A ring closes on the mitt and turns gold at the right moment: always shown for your first few catches, then hidden on Expert. A clean catch can steal a strike on a ball just off the edge. Your call and your catch are graded separately.
 - **Read the batter after every pitch.** A panel at the top shows his mood as a Japanese emoticon (kaomoji) with a short English label (Confident, Nervous, Surprised, Frustrated...), where the ball and his bat crossed the zone, whether he was early, on time or late, and facts from his last swings (only what was actually seen, never a claim about his plan). It shrinks while the next pitch is thrown.
-- **Click the zone.** The 3x3 strike zone is overlaid on the 3D scene. Click a cell to call the location. After the pitch it shows where you asked (dashed) and where it really went (orange dot).
+- **Click the zone.** The 3x3 strike zone is overlaid on the 3D scene. Click a cell to call the location. After the pitch it shows where you asked (dashed) and where it really went (orange dot). The result panel has an **X** and shrinks by itself; nothing in the game can be skipped.
 - **Short result, then your grade.** "STRIKE", "SWING & MISS", "FALLS IN!", then a line like *Good call: first-pitch off-speed threw off a fastball-sitter*.
 - **Balls in play are replayed** with the fielder running it down, the throw and the runners. The camera then **rises to a slightly high oblique view** of the infield and the needed outfield, follows the ball, the fielders and every runner, shows **OUT / SAFE** at the base where it happens and **RUN n** at home, and returns to the catcher's view. Players are drawn as very simple legless characters (big round head, small body, cap and glove show the role).
 - **No scrolling.** Score, count, outs and runners are in the top bar; pitch buttons are at the bottom; the batter's card is on the left; history, defense, notes and help open as side panels over the picture.
 
 ![The ball coming in](screenshots/stadium_pitch.png)
-![The catch, the result, and your grade with the reason](screenshots/stadium_result.png)
-![Playing a ball in play with the field view](screenshots/stadium_play.png)
+![The catch, the result, and the recap (with its X button)](screenshots/stadium_result.png)
+![A ball in play: the camera follows it, with the landing mark and trail](screenshots/stadium_play.png)
+![Online: the lobby (match, timing guide, ready)](screenshots/online_lobby.png)
+![Online: the batter's timing rings](screenshots/online_batter_rings.png)
+![Online: the catcher's recap after a pitch](screenshots/online_recap.png)
 
 ### Music
 
@@ -156,7 +159,7 @@ I wanted that feeling in a game: **deciding by your own read, with the answer hi
 4. **Reproducible.** The engine takes a `random.Random(seed)` end to end, so a Challenge Code (or `--seed N`) reproduces the opening scene and the batter's reactions.
 5. **Swappable data.** Add a pitch by adding one entry to `pitch_data.py`. Swap the opposing lineup with `--lineup team.json` (JSON or CSV), or try `--mlb-demo` for a sample lineup of real players (`--mlb-live` tries the MLB Stats API and falls back to sample data on any failure). Real data goes through `mlb_data_adapter.py` so an API format change touches one file.
 
-![The end-of-game report](screenshots/stadium_report.png)
+![The end of an online match: result and rematch](screenshots/online_final.png)
 
 ### Project layout
 
@@ -176,6 +179,7 @@ opponent.py        the opposing bench (bunts, hit-and-run)
 qte.py             the catcher's rhythm mini-games (terminal)
 main.py            terminal version                      webapp.py        web version (http.server)
 playview.py        the Play Viewer (classic page) and the replay script the 3D page also uses
+recap.py           the one-pitch recap (facts from the judged data, the catch, tips kept apart)
 swing.py           a human batter's swing (two-player mode): timing (+ where the ball was) -> miss / foul / batted ball
 rooms.py           online rooms: invite codes, who is connected, the pause, the pitch clock (the request code is in webapp.py)
 stadium.py         the 3D catcher's-eye page; its canvas code is in web/ (camera and ball physics, stadium, the pitcher's delivery, players, game loop)

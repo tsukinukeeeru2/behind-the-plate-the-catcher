@@ -23,11 +23,13 @@ Pure Python standard library, no dependencies. A single engine (`engine.resolve_
 
 ## Built before vs. during the hackathon (honest disclosure)
 - **Before:** a Japanese-language catcher simulator I wrote as a personal project: engine, models, judging, CLI and web versions, the six rhythm games, music, tests. The organizers confirmed that rebuilding on it was fine. It is the first commit of the repo ("Base snapshot"), so `git log` shows exactly what came after.
-- **During the hackathon:** full English conversion of the whole game; the catcher's-eye 3D view with its JSON API and a music player that never restarts; the animated Play Viewer; Catcher Rating and badges; drills; Challenge Codes; difficulty select; a threaded, crash-resistant server with a recovery page and port fallback; auto-opening browser; a fuzz pass that found and fixed a real crash; new tests; README and docs.
+- **During the hackathon:** full English conversion of the whole game; the catcher's-eye 3D view with its JSON API; a pitch flown by gravity, drag and spin; the Space-only catch; a camera that follows a ball in play with simple legless characters and SAFE / OUT / RUN labels drawn from the same play data that decided the result; a music player that never restarts; the call timer, step guide, practice pitch and a recap after every pitch; **online two-player matches** (invite codes, hidden call, shared pitch clock, a one-inning-each match with a side switch, rematch); a browser-only build that runs the Python game through Pyodide; Catcher Rating and badges; drills; Challenge Codes; and a larger automated test suite (232 tests plus end-to-end runs with two real browsers).
 - **AI use:** Claude Code (Anthropic) helped with the translation and the new features, and with the original project. I directed it, tested it, and made the design calls. Co-authored commits are marked.
 
 ## Challenges
 Keeping the answer hidden while still being fair (a hidden decision-quality score that never appears during play). Making timing mini-games feel good without letting them override the baseball. Translating a whole game, including tests and internal keys, without breaking anything.
+
+Online fairness: the batter's press is timed on a shared clock at the instant of the key press, so network delay does not cost them, and the rings, the result and the score come from one server-side game, so both screens always agree (checked with two real browsers, including 250 ms of added delay).
 
 ## Accomplishments we're proud of
 A catcher game that feels like catching: the reads, the framing, the throw down. And a review screen that tells you whether you were right or just lucky.
@@ -36,10 +38,10 @@ A catcher game that feels like catching: the reads, the framing, the throw down.
 Single sources of truth (one engine, one RNG, one place for hidden state) made the translation, the new modes, and the fuzzing cheap.
 
 ## What's next
-More pitchers and lineups (real-data adapter is already in place), a full game instead of one half inning, and a daily challenge code.
+An advanced batting mode (aim the bat yourself), real internet play without hosting your own server, more pitchers and lineups (the real-data adapter is already in place), and a daily challenge code.
 
 ## Built with
-Python, http.server, HTML/CSS/JavaScript, Web Audio API, unittest, GitHub Actions
+Python (standard library only), http.server, plain HTML/CSS/JavaScript canvas, Web Audio API, Pyodide (browser-only build), unittest, GitHub Actions
 
 ## Try it
 ```
@@ -54,13 +56,11 @@ python webapp.py
 | Time | On screen | Say |
 |---|---|---|
 | 0:00 | Start screen | "Most baseball games make you the batter or the pitcher. This one makes you the catcher. It's Behind the Plate." |
-| 0:10 | START GAME, situation card | "Late innings, a one-run lead, runner on first. Three outs to hold it." |
-| 0:20 | Pitch call: pick pitch, click the zone, pick intent | "Every pitch I pick the pitch, click the spot in the 3D zone, and choose my intent. The mitt moves to my target." |
-| 0:35 | Batter reaction face + history table | "I read his reaction, the pitch history, his weak zone. Faces can lie." |
-| 0:45 | Framing mini-game | "Now I'm the catcher: stop the line in the green band to frame a borderline pitch into a strike." |
-| 1:00 | Steal, throw-down game | "He's going! Transfer, mash, throw to second." |
-| 1:10 | Block in the dirt / sign change | "Ball in the dirt: get my body over, then block. Runner peeking at my signs: change them in time." |
-| 1:20 | Ball in play: the Play Viewer replay | "Every ball in play is replayed on a little board: the arc, the fielder running it down, the throw, the runners. Slow-mo too." |
-| 1:30 | Third out, report with rating | "Three outs. I get a Catcher Rating, badges, and a review that separates my decisions from my luck." |
-| 1:40 | Start screen drills + Challenge Code | "Drill the skills you want, or type a friend's Challenge Code to play the exact same situation." |
-| 1:50 | Terminal `python webapp.py`, README | "Pure Python, no dependencies, one command. It started from my earlier Japanese prototype; the English version and these features were built this weekend. Thanks!" |
+| 0:10 | START GAME, the practice pitch | "A short practice pitch teaches the three steps: choose the pitch, watch it, press Space once to catch." |
+| 0:22 | Call a pitch: pitch, zone click, intent | "I pick the pitch, click the spot in the 3D zone, and choose my intent. The mitt moves to my target." |
+| 0:35 | The pitch, the catch, the recap panel | "I catch it with one press of Space. Afterwards the recap shows where I aimed, where it went, his swing, and my catch, with a tip kept apart from the facts. The X closes it." |
+| 0:50 | A ball in play, the chase camera | "On a hit the camera follows the ball, shows where it will land, and rises to show the fielders and every runner, with SAFE and OUT at the base. Then it returns behind the plate." |
+| 1:05 | Online lobby: create room, code, join on a second window | "Two players can play online with an invite code: one catches, one bats. The batter never sees my call." |
+| 1:20 | Batter screen: wait-for choice, rings, Space | "The batter picks fastball, off-speed or either, then presses Space when two rings overlap. The rings follow the real pitch speed and location, and a slow connection never costs the batter." |
+| 1:40 | Half-time card, final result, rematch | "It is one inning each. The sides switch, the runs are counted per player, and then it is rematch or swap roles." |
+| 1:50 | README, `python webapp.py` | "Pure Python, no dependencies. It started from my earlier Japanese prototype; the English version and everything shown here were built during the hackathon. Thanks!" |

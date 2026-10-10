@@ -722,6 +722,14 @@ html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#0407
 #readpanel.compact .rp-more { display:inline-block; }
 #banner .big { font-size:clamp(22px, 4.2vh, 42px); }
 #banner { top:66px; }
+
+/* the start dialog's three steps */
+.howto { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:.7em auto 0; max-width:38em; }
+.howto div { background:#0f1b2b; border:1px solid #243750; border-radius:12px; padding:8px 6px; text-align:center; }
+.howto b { display:inline-grid; place-items:center; width:24px; height:24px; border-radius:50%; background:#52b7ff; color:#04121f; font-size:14px; }
+.howto span { display:block; font-weight:900; margin:4px 0 1px; color:#eaf2ff; font-size:13.5px; } .howto i { font-style:normal; font-size:11.5px; color:#9fb2cc; display:block; line-height:1.3; }
+@media (max-height:660px) { .howto i { display:none; } }
+.rp-zone .rp-cap { white-space:nowrap; font-size:9px; letter-spacing:.1em; }
 </style>
 </head><body>
 
@@ -3088,7 +3096,7 @@ function onRoomGone() { toast('That room is no longer there.', true); onLeftRoom
 function settle(ns) {
   shown = ns;
   if (ns.mode === 'duel' && !ns.plan) { duelPh = (duelPh === 'locked') ? duelPh : null; }
-  if (!practice && !practiceDone() && ns.mode === 'solo' && ns.phase === 'play' && !ns.last && !modalOpen()) startPractice();
+  if (!practice && !practiceDone() && ns.mode === 'solo' && ns.phase === 'play' && !ns.last && !net.room) startPractice();     // (the intro dialog is still closing at this moment: that is fine)
   if (ns.messages && ns.messages.length && ns.phase !== 'start') {
     var msg = ns.messages.map(function (m) { return m.replace(/^>>>\s*/, ''); }).slice(0, 2).join(' ');
     if (msg !== lastMsg) { lastMsg = msg; toast(msg, /(hit|Passed|error|Walk|dropped|gave up|Stolen|stole)/i.test(msg)); }
@@ -3113,6 +3121,10 @@ function openModal(name) {
   md.dataset.name = name;
   rfetch('/api/panel/' + name, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
     mb.innerHTML = html + (name === 'start' && !window.BTP_STATIC ? '<p style="text-align:center;margin:6px 0 0"><a id="back-classic" href="/classic">Use the classic page layout instead</a></p>' : '');
+    if (window.BTP_STATIC && name === 'start') {                                    // the browser-only build has no server to host a room
+      var onl = mb.querySelector('input[value=online]');
+      if (onl) { onl.disabled = true; onl.parentNode.style.opacity = '.5'; onl.parentNode.title = 'Online play needs the Python server: python webapp.py --host 0.0.0.0'; var sp = onl.parentNode.querySelector('.dim'); if (sp) sp.textContent = 'needs the Python server (see the README)'; }
+    }
     if (net.room && name === 'report') {                                          // online: there is no "play again" button, only leaving the room
       Array.prototype.forEach.call(mb.querySelectorAll('form'), function (f) { f.remove(); });
       mb.insertAdjacentHTML('beforeend', '<div style="text-align:center;margin-top:8px"><button type="button" class="ho-ready" id="leave-room" style="width:auto;padding:10px 28px">LEAVE THE ROOM</button></div>');

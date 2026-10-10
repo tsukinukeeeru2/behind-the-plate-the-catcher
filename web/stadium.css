@@ -336,3 +336,11 @@ html, body { height:100%; margin:0; padding:0; overflow:hidden; background:#0407
 #readpanel.compact .rp-more { display:inline-block; }
 #banner .big { font-size:clamp(22px, 4.2vh, 42px); }
 #banner { top:66px; }
+
+/* the start dialog's three steps */
+.howto { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:.7em auto 0; max-width:38em; }
+.howto div { background:#0f1b2b; border:1px solid #243750; border-radius:12px; padding:8px 6px; text-align:center; }
+.howto b { display:inline-grid; place-items:center; width:24px; height:24px; border-radius:50%; background:#52b7ff; color:#04121f; font-size:14px; }
+.howto span { display:block; font-weight:900; margin:4px 0 1px; color:#eaf2ff; font-size:13.5px; } .howto i { font-style:normal; font-size:11.5px; color:#9fb2cc; display:block; line-height:1.3; }
+@media (max-height:660px) { .howto i { display:none; } }
+.rp-zone .rp-cap { white-space:nowrap; font-size:9px; letter-spacing:.1em; }
