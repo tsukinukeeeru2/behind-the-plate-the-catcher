@@ -1422,6 +1422,180 @@ BTP.releasePoint = function (lefty) {
 })();
 
 /* ===================================================================================
+   Part 3b: the play view. When a ball is put in play the picture swings up to a high camera behind home plate that shows the whole
+   infield and as much of the outfield as the play needs, so you can follow the ball, the fielders and every runner.
+   The players here are deliberately simple (a big round head, a small body, no legs; the cap, the colour, the glove or the helmet say who they are).
+   Nothing in this file decides anything: it draws the plan the game already worked out (playview.py), including every SAFE / OUT / RUN label.
+   =================================================================================== */
+(function () {
+'use strict';
+var BTP = window.BTP, V = BTP.V, CAM = BTP.CAM, P = BTP.P, clamp = BTP.clamp, lerp = BTP.lerp, ease = BTP.ease;
+var D2R = Math.PI / 180, R = BTP.FENCE_R;
+
+/* ---------- swapping cameras (the catcher's camera and the high one share the same projection code) ---------- */
+BTP.camGet = function () { return { x: CAM.x, y: CAM.y, z: CAM.z, pitch: CAM.pitch, F: V.F, cx: V.cx, cy: V.cy, cp: V.cp, sp: V.sp, hy: V.hy }; };
+BTP.camSet = function (c) { CAM.x = c.x; CAM.y = c.y; CAM.z = c.z; CAM.pitch = c.pitch; V.F = c.F; V.cx = c.cx; V.cy = c.cy; V.cp = c.cp; V.sp = c.sp; V.hy = c.hy; };
+// a camera high above and behind home plate, looking at the ground point (lx, lz); `cover` = metres of field to fit across the screen
+BTP.aerialCam = function (W, H, lx, lz, cover) {
+  var eye = { x: lx * 0.35, y: 46, z: -26 };
+  var dz = lz - eye.z, pitch = Math.atan2(eye.y, dz), dist = Math.hypot(eye.y, dz);
+  var F = (W / 2) * dist / (cover / 2);
+  return { x: eye.x, y: eye.y, z: eye.z, pitch: pitch, F: F, cx: W / 2, cy: H * 0.54, cp: Math.cos(pitch), sp: Math.sin(pitch), hy: 0 };
+};
+
+// the same camera, nudged so home plate (where runs score) always stays on screen
+BTP.aerialCamFit = function (W, H, lx, lz, cover) {
+  var save = BTP.camGet(), cam = BTP.aerialCam(W, H, lx, lz, cover);
+  for (var i = 0; i < 10; i++) {
+    cam = BTP.aerialCam(W, H, lx, lz, cover); BTP.camSet(cam);
+    var p = BTP.P(0, 0, -3.5);
+    if (p && p.y < H * 0.93) break;
+    lz -= 3;
+  }
+  BTP.camSet(save);
+  return cam;
+};
+
+/* ---------- the field, simplified ---------- */
+function ringQuad(r0, y0, r1, y1, t0, t1) {
+  var a = t0 * D2R, b = t1 * D2R;
+  return [[r0 * Math.sin(a), y0, r0 * Math.cos(a)], [r0 * Math.sin(b), y0, r0 * Math.cos(b)], [r1 * Math.sin(b), y1, r1 * Math.cos(b)], [r1 * Math.sin(a), y1, r1 * Math.cos(a)]];
+}
+function fillPoly(ctx, pts, color, seam) {
+  if (!BTP.polyPath(ctx, pts)) return;
+  ctx.fillStyle = color; ctx.fill();
+  if (seam) { ctx.lineWidth = 0.8; ctx.strokeStyle = color; ctx.stroke(); }
+}
+function circle(cx, cz, r, n, y) { var pts = []; for (var i = 0; i < n; i++) { var a = i / n * Math.PI * 2; pts.push([cx + r * Math.cos(a), y || 0, cz + r * Math.sin(a)]); } return pts; }
+function line(ctx, x0, z0, x1, z1, w, color) {
+  var dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz) || 1, nx = -dz / L * w / 2, nz = dx / L * w / 2;
+  fillPoly(ctx, [[x0 + nx, 0.02, z0 + nz], [x1 + nx, 0.02, z1 + nz], [x1 - nx, 0.02, z1 - nz], [x0 - nx, 0.02, z0 - nz]], color, true);
+}
+function drawField(ctx, W, H) {
+  ctx.fillStyle = '#0b1a12'; ctx.fillRect(0, 0, W, H);
+  var t;
+  fillPoly(ctx, [[-260, 0, -60], [260, 0, -60], [260, 0, 260], [-260, 0, 260]], '#21653a');                 // foul ground
+  var bands = ['#2c8446', '#359650'];
+  for (var k = 0, r0 = 0; r0 < R; r0 += 11, k++) for (t = -52; t < 52; t += 4) fillPoly(ctx, ringQuad(r0, 0.01, Math.min(R, r0 + 11), 0.01, t, t + 4), bands[k % 2], true);
+  for (t = -52; t < 52; t += 4) fillPoly(ctx, ringQuad(R - 6, 0.03, R, 0.03, t, t + 4), '#a9784a', true);     // warning track
+  var dirt = '#b88049';
+  ctx.save();
+  if (BTP.polyPath(ctx, [[-8, 0.04, -8], [8, 0.04, -8], [8, 0.04, 0], [68, 0.04, 60], [-68, 0.04, 60], [-8, 0.04, 0]])) {
+    ctx.clip();
+    fillPoly(ctx, circle(0, 18.44, 29, 48, 0.05), dirt, true);
+    fillPoly(ctx, circle(0, 0, 8.4, 32, 0.05), dirt, true);
+    fillPoly(ctx, [[0, 0.06, 3.4], [16, 0.06, 19.4], [0, 0.06, 35.4], [-16, 0.06, 19.4]], '#348f4d', true);
+  }
+  ctx.restore();
+  BTP.BASES.slice(1).forEach(function (b) { fillPoly(ctx, circle(b.x, b.z, 2.7, 16, 0.07), dirt, true); });
+  fillPoly(ctx, circle(0, 18.44, 2.6, 20, 0.08), '#c8915a', true);
+  line(ctx, 0, 0, R * Math.sin(45 * D2R), R * Math.cos(45 * D2R), 0.35, '#f6f2e6');
+  line(ctx, 0, 0, -R * Math.sin(45 * D2R), R * Math.cos(45 * D2R), 0.35, '#f6f2e6');
+  line(ctx, 0, 0, 19.4, 19.4, 0.25, 'rgba(246,242,230,.45)'); line(ctx, 19.4, 19.4, 0, 38.8, 0.25, 'rgba(246,242,230,.45)');
+  line(ctx, 0, 38.8, -19.4, 19.4, 0.25, 'rgba(246,242,230,.45)'); line(ctx, -19.4, 19.4, 0, 0, 0.25, 'rgba(246,242,230,.45)');
+  fillPoly(ctx, [[-0.5, 0.09, 0], [0.5, 0.09, 0], [0.5, 0.09, 0.5], [0, 0.09, 1.0], [-0.5, 0.09, 0.5]], '#fbf8ee');
+  BTP.BASES.slice(1).forEach(function (b) { fillPoly(ctx, [[b.x - 0.9, 0.09, b.z], [b.x, 0.09, b.z - 0.9], [b.x + 0.9, 0.09, b.z], [b.x, 0.09, b.z + 0.9]], '#fbf8ee'); });
+  for (t = -75; t < 75; t += 5) {                                                                              // the wall, and the stands behind it
+    fillPoly(ctx, ringQuad(R, 0, R, 3.2, t, t + 5), '#1b4a2e', true);
+    fillPoly(ctx, ringQuad(R, 3.2, R, 3.6, t, t + 5), '#f2c230', true);
+    fillPoly(ctx, ringQuad(R + 0.5, 0.0, R + 34, 0.0, t, t + 5), '#1d2a4a', true);
+  }
+}
+
+/* ---------- the little characters ---------- */
+var COL = { us: { body: '#2358c2', cap: '#17306e', trim: '#f3f3f3' }, them: { body: '#c7352d', cap: '#7a1a17', trim: '#f3f3f3' } };
+// c = {x, z, team, role: 'fielder' | 'runner' | 'pitcher' | 'catcher', moving, vx, vz, phase, catching, label, out, scale}
+BTP.drawChibi = function (ctx, c) {
+  var base = P(c.x, 0, c.z); if (!base) return;
+  var u = base.s * (c.scale || 1.3), col = COL[c.team] || COL.us;
+  var bob = c.moving ? Math.abs(Math.sin(c.phase)) * 0.20 : 0.012 * Math.sin(c.phase);
+  var lean = 0;
+  if (c.moving && (c.vx || c.vz)) { var q = P(c.x + (c.vx || 0) * 4, 0, c.z + (c.vz || 0) * 4); if (q) lean = clamp((q.x - base.x) / (Math.abs(q.y - base.y) + Math.abs(q.x - base.x) + 1) * 0.55, -0.32, 0.32); }
+  ctx.fillStyle = 'rgba(0,15,5,.30)'; ctx.beginPath(); ctx.ellipse(base.x, base.y, 0.42 * u, 0.16 * u, 0, 0, 7); ctx.fill();
+  ctx.save(); ctx.translate(base.x, base.y - bob * u); ctx.rotate(lean);
+  var fade = c.out ? 0.5 : 1; ctx.globalAlpha = fade;
+  var body = ctx.createLinearGradient(-0.3 * u, -0.6 * u, 0.3 * u, -0.1 * u); body.addColorStop(0, col.body); body.addColorStop(1, 'rgba(0,0,0,.55)');
+  ctx.fillStyle = col.body; ctx.beginPath(); ctx.ellipse(0, -0.30 * u, 0.30 * u, 0.28 * u, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = body; ctx.globalAlpha = fade * 0.35; ctx.beginPath(); ctx.ellipse(0, -0.30 * u, 0.30 * u, 0.28 * u, 0, 0, 7); ctx.fill(); ctx.globalAlpha = fade;
+  ctx.fillStyle = col.trim; ctx.fillRect(-0.30 * u, -0.34 * u, 0.60 * u, 0.06 * u);
+  ctx.fillStyle = '#f2cda4'; ctx.beginPath(); ctx.arc(0, -0.84 * u, 0.36 * u, 0, 7); ctx.fill();                                  // the big round head
+  ctx.fillStyle = col.cap; ctx.beginPath(); ctx.arc(0, -0.86 * u, 0.375 * u, Math.PI * 1.02, Math.PI * 1.98); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(0, -0.86 * u, 0.42 * u, 0.09 * u, 0, 0, 7); ctx.fill();                                              // the brim
+  ctx.fillStyle = '#2a1d16'; ctx.beginPath(); ctx.arc(-0.12 * u, -0.78 * u, 0.04 * u, 0, 7); ctx.arc(0.12 * u, -0.78 * u, 0.04 * u, 0, 7); ctx.fill();   // two dots for eyes
+  if (c.role === 'fielder' || c.role === 'pitcher' || c.role === 'catcher') {                                                         // the glove
+    var gx = c.catching ? 0.26 : -0.36, gy = c.catching ? -1.28 : -0.30;
+    ctx.fillStyle = '#7b4a24'; ctx.beginPath(); ctx.arc(gx * u, gy * u, 0.17 * u, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#d8b27a'; ctx.lineWidth = Math.max(1, 0.03 * u); ctx.stroke();
+  }
+  if (c.role === 'runner') {                                                                                                          // the helmet's flap, so a runner reads as a runner
+    ctx.fillStyle = col.cap; ctx.beginPath(); ctx.ellipse(-0.34 * u, -0.80 * u, 0.09 * u, 0.15 * u, 0, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+  if (c.label) {                                                                                                                      // a small marker above the head (who the runner is, or the fielder's position)
+    var ly = base.y - (1.45 + bob) * u, rr = Math.max(7, 0.2 * u);
+    ctx.fillStyle = c.role === 'runner' ? 'rgba(255,214,90,.95)' : 'rgba(8,16,28,.75)';
+    ctx.beginPath(); ctx.arc(base.x, ly, rr, 0, 7); ctx.fill();
+    ctx.fillStyle = c.role === 'runner' ? '#1a1200' : '#dbe7f7'; ctx.font = '800 ' + Math.max(8, Math.round(rr * 1.05)) + 'px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(c.label, base.x, ly + 0.5);
+  }
+  return base;
+};
+
+/* ---------- SAFE / OUT / RUN pills at the moment they happen ---------- */
+function drawPop(ctx, p) {
+  var q = P(p.x, 3.4, p.z); if (!q) return;
+  var k = p.age < 0.15 ? ease(p.age / 0.15) : 1, fade = p.age > 1.0 ? clamp(1 - (p.age - 1.0) / 0.3, 0, 1) : 1;
+  var text = p.text, size = Math.max(15, Math.min(34, q.s * 0.9)) * (0.7 + 0.3 * k);
+  ctx.save(); ctx.globalAlpha = fade; ctx.font = '900 ' + size + 'px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  var w = ctx.measureText(text).width + size * 0.9, h = size * 1.5, y = q.y - (1 - k) * 12 - p.age * 8;
+  var col = text === 'OUT' ? '#ff5a5a' : (text === 'SAFE' ? '#46e6a0' : '#ffd65a');
+  ctx.fillStyle = 'rgba(6,12,20,.9)'; ctx.strokeStyle = col; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(q.x - w / 2, y - h / 2, w, h, h / 2) : ctx.rect(q.x - w / 2, y - h / 2, w, h); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = col; ctx.fillText(text, q.x, y + 1);
+  ctx.restore();
+}
+
+/* ---------- one frame of the play view ----------
+   m = { cam, fielders: {pos: {x,z,moving,vx,vz,catching}}, runners: [{id,label,x,z,moving,vx,vz,out}], ball, pops: [{x,z,text,age}], t } */
+var POSNAMES = ['3B', 'SS', '2B', '1B', 'LF', 'CF', 'RF'];
+BTP.renderAerial = function (ctx, W, H, m) {
+  var save = BTP.camGet();
+  BTP.camSet(m.cam);
+  drawField(ctx, W, H);
+  var items = [], t = m.t || 0;
+  POSNAMES.forEach(function (pos) {
+    var f = m.fielders && m.fielders[pos] ? m.fielders[pos] : BTP.standWorld(pos, m.alignment, m.bats);
+    items.push({ d: -f.z, c: { x: f.x, z: f.z, team: 'us', role: 'fielder', moving: !!f.moving, vx: f.vx, vz: f.vz, phase: t * 0.02 + pos.charCodeAt(0), catching: !!f.catching, label: pos, scale: 1.3 } });
+  });
+  items.push({ d: -18.44, c: { x: 0, z: 18.44, team: 'us', role: 'pitcher', phase: t * 0.004, scale: 1.3 } });
+  items.push({ d: 1.5, c: { x: 0, z: -1.2, team: 'us', role: 'catcher', phase: t * 0.004, scale: 1.3 } });
+  (m.runners || []).forEach(function (r) {
+    items.push({ d: -r.z + 0.01, c: { x: r.x, z: r.z, team: 'them', role: 'runner', moving: !!r.moving, vx: r.vx, vz: r.vz, phase: t * 0.024 + r.id * 2, label: r.label, out: r.out, scale: 1.3 } });
+  });
+  items.sort(function (a, b) { return a.d - b.d; });
+  items.forEach(function (it) { BTP.drawChibi(ctx, it.c); });
+  if (m.ball && m.ball.visible) {
+    var b = m.ball, sp = P(b.x, 0.02, b.z), bp = P(b.x, b.y, b.z);
+    if (sp) { ctx.fillStyle = 'rgba(0,15,5,.4)'; ctx.beginPath(); ctx.ellipse(sp.x, sp.y, 7, 3, 0, 0, 7); ctx.fill(); }
+    if (m.trail) {
+      ctx.lineCap = 'round'; var prev = null;
+      for (var i = 0; i < m.trail.length; i++) {
+        var q = P(m.trail[i][0], m.trail[i][1], m.trail[i][2]);
+        if (q && prev) { ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 * i / m.trail.length).toFixed(3) + ')'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(q.x, q.y); ctx.stroke(); }
+        prev = q;
+      }
+    }
+    if (bp) {
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(bp.x, bp.y, 7, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#c63c3c'; ctx.beginPath(); ctx.arc(bp.x - 3, bp.y, 5, -0.9, 0.9); ctx.stroke();
+    }
+  }
+  (m.pops || []).forEach(function (p) { drawPop(ctx, p); });
+  BTP.camSet(save);
+};
+})();
+
+/* ===================================================================================
    Part 3: the things that move. Players are built from a skeleton (joints in 3D, solved with a tiny two-bone IK) and drawn as
    rounded limbs that get smaller with distance. Plus the ball, its shadow, the catcher's mitt, and the strike-zone overlay.
    =================================================================================== */
@@ -1770,18 +1944,13 @@ BTP.renderFrame = function (ctx, scene, m) {
   var items = [];                                           // everything drawn as a player, sorted far to near
   var t = m.t || 0;
 
-  // fielders
+  // fielders (the simple characters: a big round head, a small body, no legs)
   var restW = BTP.standWorld;
   ['3B', 'SS', '2B', '1B', 'LF', 'CF', 'RF'].forEach(function (pos) {
     var f = m.fielders && m.fielders[pos];
     var w = f ? f : restW(pos, m.alignment, m.bats);
-    var moving = f && f.moving, J;
-    if (f && f.catching) J = POSE.catchUp();
-    else if (moving) J = POSE.run(t * 0.017 + pos.charCodeAt(0));
-    else J = POSE.ready(0.012 * Math.sin(t * 0.004 + pos.charCodeAt(1)));
-    // face home plate (or the way he is running)
-    var yaw = moving ? Math.atan2(f.vx || 0, f.vz || -1) : Math.atan2(-w.x, -w.z);
-    items.push({ x: w.x, z: w.z, y: 0, yaw: yaw, J: J, team: TEAM.us, opts: { glove: true }, d: w.z });
+    items.push({ chibi: { x: w.x, z: w.z, team: 'us', role: 'fielder', moving: !!(f && f.moving), vx: f && f.vx, vz: f && f.vz,
+                          phase: t * 0.02 + pos.charCodeAt(0), catching: !!(f && f.catching), scale: 1.3 }, d: w.z });
   });
   // the pitcher
   var pJ = m.pitcherT == null ? BTP.deliver(0, m.lefty, t * 0.001) : BTP.deliver(Math.min(m.pitcherT, BTP.DELIVERY.end), m.lefty, 0);
@@ -1789,9 +1958,8 @@ BTP.renderFrame = function (ctx, scene, m) {
   // runners
   var base = BTP.BASES;
   (m.runners || []).forEach(function (r) {
-    var J = r.moving ? POSE.run(t * 0.018 + r.id * 2) : POSE.ready(0.01 * Math.sin(t * 0.004 + r.id));
-    var yaw = r.moving ? Math.atan2(r.vx || 0, r.vz || 1) : Math.atan2(-r.x, 8 - r.z);
-    items.push({ x: r.x, z: r.z, y: 0, yaw: yaw, J: r.out ? POSE.stand() : J, team: TEAM.them, opts: { helmet: true }, d: r.z });
+    items.push({ chibi: { x: r.x, z: r.z, team: 'them', role: 'runner', moving: !!r.moving, vx: r.vx, vz: r.vz, phase: t * 0.024 + r.id * 2,
+                          label: r.label, out: r.out, scale: 1.3 }, d: r.z });
   });
   // the batter (big, close to the camera); once he has hit the ball he is a runner, drawn from the replay
   var bx = (m.bats === 'R' ? -1 : 1) * 0.80;
@@ -1806,7 +1974,8 @@ BTP.renderFrame = function (ctx, scene, m) {
     if (it.ball) {
       if (m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.55, 0.075);
       drawBall(ctx, it.ball, { spin: it.ball.spin, radius: it.ball.radius, minPx: it.ball.minPx });
-    } else drawPlayer(ctx, it);
+    } else if (it.chibi) BTP.drawChibi(ctx, it.chibi);
+    else drawPlayer(ctx, it);
   });
   if (!ball && m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.35 * (m.trailFade == null ? 1 : m.trailFade), 0.075);
 
@@ -2070,7 +2239,7 @@ var pendingState = null;
 var qteRun = null;
 var busy = false;
 var drawerName = null;
-var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1;
+var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1, aerialCv = null, aCtx = null;
 var markers = { T: null, A: null };
 var catchG = null;          // the catch game for the pitch being thrown (your mitt, your press), or null
 var catchCount = 0;         // how many catches you have played this session (the first few get a bigger timing guide)
@@ -2525,13 +2694,24 @@ function scriptBall(sc, t) {
   return { p: p, z: z };
 }
 
+function aerialFraming(sc) {                          // where the high camera looks: the infield plus wherever the ball goes
+  var pts = [[0, 0], [19.4, 19.4], [-19.4, 19.4], [0, 38.8]], i;
+  for (i = 0; i <= 14; i++) {
+    var sb = scriptBall(sc, 0.2 + sc.duration * 0.85 * i / 14), w = BTP.fieldToWorld(sb.p[0], sb.p[1]);
+    pts.push([clamp(w.x, -95, 95), Math.min(w.z, 105)]);
+  }
+  var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9;
+  pts.forEach(function (p) { minx = Math.min(minx, p[0]); maxx = Math.max(maxx, p[0]); minz = Math.min(minz, p[1]); maxz = Math.max(maxz, p[1]); });
+  var halfW = (maxx - minx) / 2 + 14, halfZ = (maxz - minz) / 2 + 10;
+  return { lx: (minx + maxx) / 2, lz: (minz + maxz) / 2 + 3, cover: Math.min(175, Math.max(2 * halfW, 2 * halfZ * 1.4, 84)) };
+}
 function buildModel(now) {
   var st = shown, m = { t: now, zone: null, alignment: 'standard', bats: 'R' };
   if (!st || !st.situation) return m;
   m.alignment = st.alignment || 'standard'; m.bats = st.batter.bats; m.lefty = st.pitcher.throws === 'L';
   var B = BTP.BASES, rs = st.situation.runners, i;
   m.runners = [];
-  for (i = 0; i < 3; i++) if (rs[i]) m.runners.push({ id: i + 1, x: B[i + 1].x * 0.94 + (i === 1 ? 0 : (i === 0 ? -0.6 : 0.6)), z: B[i + 1].z * 0.94 - 0.5 });
+  for (i = 0; i < 3; i++) if (rs[i]) m.runners.push({ id: i + 1, label: String(i + 1), x: B[i + 1].x * 0.94 + (i === 1 ? 0 : (i === 0 ? -0.6 : 0.6)), z: B[i + 1].z * 0.94 - 0.5 });
   var enabled = canPlay();
   var selCell = sel.cell;
   m.zone = { enabled: enabled, sel: enabled ? selCell : null, hover: enabled ? hover : null, markT: markers.T, markA: markers.A };
@@ -2654,13 +2834,25 @@ function buildModel(now) {
       });
       var boxX = (a.bats === 'R' ? -1 : 1) * 0.8;
       m.runners = a.script.runners.map(function (rn, ix) {
-        var r = scriptSeg(rn, st2), rw = BTP.fieldToWorld(r.p[0], r.p[1]), o = { id: ix + 1, x: rw.x, z: rw.z, moving: r.moving, out: false };
+        var r = scriptSeg(rn, st2), rw = BTP.fieldToWorld(r.p[0], r.p[1]), o = { id: ix + 1, label: rn.label, x: rw.x, z: rw.z, moving: r.moving, out: false };
         if (rn.id === 'b') o.x += boxX * Math.max(0, 1 - Math.hypot(rw.x, rw.z) / 7);      // he starts in the batter's box, not on the plate
         if (r.moving) { var v3 = BTP.fieldToWorld(r.p[0] + r.v[0] * 0.05, r.p[1] + r.v[1] * 0.05); o.vx = v3.x - rw.x; o.vz = v3.z - rw.z; }
         if (rn.fate === 'out' && !r.moving && rn.segs.length && st2 > rn.segs[rn.segs.length - 1][1] + 0.1) o.out = true;
         return o;
       });
-      m.batterHidden = true; m.miniOn = true; drawMini(a, st2);
+      m.batterHidden = true;
+      // the high camera: framed once from where the ball goes, blended in right after contact and out again before the panel
+      if (!a.fr) a.fr = aerialFraming(a.script);
+      var aT0 = a.tContact + 0.20, aT1 = a.tAfter - 1.25;
+      var bl = clamp((t - aT0) / 0.6, 0, 1) * (1 - clamp((t - aT1) / 0.6, 0, 1)), eb = ease(bl);
+      m.aerial = eb;
+      var pops = [];
+      (a.script.marks || []).forEach(function (mk) {                                      // SAFE / OUT / RUN n, at the moment the plan says it happens
+        var age = st2 - mk[0];
+        if (age >= 0 && age < 1.3) { var wp = BTP.fieldToWorld(mk[2], mk[3]); pops.push({ x: wp.x, z: wp.z, text: mk[1], age: age }); }
+      });
+      m.aerialM = { cam: BTP.aerialCamFit(W, H, a.fr.lx, a.fr.lz, a.fr.cover * (1.14 - 0.14 * eb)), fielders: m.fielders, runners: m.runners, ball: ball,
+                    trail: a.trail, pops: pops, alignment: m.alignment, bats: m.bats, t: now };
       m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
     } else if (a.foul) {
       var ft = t - a.tContact;
@@ -2725,8 +2917,16 @@ function loop(now) {
   if (!ctx) return;
   if (anim && anim.skip) { /* jump to the end */ }
   var m = buildModel(now);
-  BTP.renderFrame(ctx, scene, m);
-  var mini = $('mini'); if (mini) mini.style.opacity = m.miniOn ? '1' : '0';
+  var ab = m.aerialM ? (m.aerial || 0) : 0;
+  if (ab >= 0.995) { ctx.clearRect(0, 0, W, H); BTP.renderAerial(ctx, W, H, m.aerialM); }
+  else {
+    BTP.renderFrame(ctx, scene, m);
+    if (ab > 0.002 && aCtx) {                                                         // blend the high camera over the catcher's view
+      aCtx.clearRect(0, 0, W, H); BTP.renderAerial(aCtx, W, H, m.aerialM);
+      ctx.save(); ctx.globalAlpha = ab; ctx.drawImage(aerialCv, 0, 0, W, H); ctx.restore();
+    }
+  }
+  $('mask').style.opacity = String(1 - 0.92 * ab);              // the mask fades while you watch the play from above
   if (anim && anim.done && !anim.catchPending) finishAnim();
 }
 function skipAnim() { if (anim && !catchActive()) { anim.done = true; } }
@@ -2742,6 +2942,8 @@ function resize() {
   maskCv = BTP.buildMask(W, H, dpr);
   var mc = $('mask').getContext('2d'); mc.setTransform(1, 0, 0, 1, 0, 0); mc.clearRect(0, 0, $('mask').width, $('mask').height); mc.drawImage(maskCv, 0, 0);
   ctx = $('view').getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  aerialCv = document.createElement('canvas'); aerialCv.width = Math.round(W * dpr); aerialCv.height = Math.round(H * dpr);
+  aCtx = aerialCv.getContext('2d'); aCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 function init() {
   resize();

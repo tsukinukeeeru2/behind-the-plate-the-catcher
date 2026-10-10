@@ -2376,6 +2376,33 @@ class PlayViewerTests(unittest.TestCase):
                 batter = next(r for r in sc["runners"] if r["id"] == "b")
                 self.assertNotEqual(batter["fate"], "out")
 
+    def test_labels_shown_on_the_field_agree_with_the_play_result(self):
+        """The OUT / RUN pop-ups come from the same play data as the score: counts must match the game's."""
+        kinds = set()
+        for i, o in enumerate(_fair_ball_plays(250, 11)):
+            sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=i)
+            marks = sc["marks"]
+            self.assertEqual([m[1] for m in marks].count("OUT"), o["play"]["outs_added"])
+            self.assertEqual([m[1] for m in marks].count("RUN 1") + sum(1 for m in marks if m[1].startswith("RUN") and m[1] != "RUN 1"),
+                             o["play"]["runs"])
+            self.assertEqual(sc["runs"], o["play"]["runs"])
+            self.assertEqual([m[1] for m in marks if m[1].startswith("RUN")],
+                             ["RUN %d" % n for n in range(1, o["play"]["runs"] + 1)])
+            self.assertEqual(marks, sorted(marks, key=lambda m: m[0]))
+            kinds.add(o["result"])
+            for m in marks:
+                self.assertTrue(0 <= m[0] < sc["duration"] + 1e-6)
+        self.assertTrue({"Out", "Single", "Home run"} <= kinds)
+
+    def test_a_runner_never_jumps_between_bases(self):
+        """Every runner moves continuously (a walk/run segment per leg), so nobody teleports."""
+        for i, o in enumerate(_fair_ball_plays(120, 12)):
+            sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=i)
+            for r in sc["runners"]:
+                for a, b in zip(r["segs"], r["segs"][1:]):
+                    gap = ((b[2] - a[4]) ** 2 + (b[3] - a[5]) ** 2) ** 0.5     # next leg starts where this one ended
+                    self.assertLess(gap, 0.5)
+
     def test_viewer_html_embeds_the_script_safely(self):
         o = next(iter(_fair_ball_plays(20, 3)))
         sc = playview.build_play_script(o["batted_ball"], o["fielding"], o["play"], seed_key=1)

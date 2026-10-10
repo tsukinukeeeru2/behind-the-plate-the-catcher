@@ -347,18 +347,13 @@ BTP.renderFrame = function (ctx, scene, m) {
   var items = [];                                           // everything drawn as a player, sorted far to near
   var t = m.t || 0;
 
-  // fielders
+  // fielders (the simple characters: a big round head, a small body, no legs)
   var restW = BTP.standWorld;
   ['3B', 'SS', '2B', '1B', 'LF', 'CF', 'RF'].forEach(function (pos) {
     var f = m.fielders && m.fielders[pos];
     var w = f ? f : restW(pos, m.alignment, m.bats);
-    var moving = f && f.moving, J;
-    if (f && f.catching) J = POSE.catchUp();
-    else if (moving) J = POSE.run(t * 0.017 + pos.charCodeAt(0));
-    else J = POSE.ready(0.012 * Math.sin(t * 0.004 + pos.charCodeAt(1)));
-    // face home plate (or the way he is running)
-    var yaw = moving ? Math.atan2(f.vx || 0, f.vz || -1) : Math.atan2(-w.x, -w.z);
-    items.push({ x: w.x, z: w.z, y: 0, yaw: yaw, J: J, team: TEAM.us, opts: { glove: true }, d: w.z });
+    items.push({ chibi: { x: w.x, z: w.z, team: 'us', role: 'fielder', moving: !!(f && f.moving), vx: f && f.vx, vz: f && f.vz,
+                          phase: t * 0.02 + pos.charCodeAt(0), catching: !!(f && f.catching), scale: 1.3 }, d: w.z });
   });
   // the pitcher
   var pJ = m.pitcherT == null ? BTP.deliver(0, m.lefty, t * 0.001) : BTP.deliver(Math.min(m.pitcherT, BTP.DELIVERY.end), m.lefty, 0);
@@ -366,9 +361,8 @@ BTP.renderFrame = function (ctx, scene, m) {
   // runners
   var base = BTP.BASES;
   (m.runners || []).forEach(function (r) {
-    var J = r.moving ? POSE.run(t * 0.018 + r.id * 2) : POSE.ready(0.01 * Math.sin(t * 0.004 + r.id));
-    var yaw = r.moving ? Math.atan2(r.vx || 0, r.vz || 1) : Math.atan2(-r.x, 8 - r.z);
-    items.push({ x: r.x, z: r.z, y: 0, yaw: yaw, J: r.out ? POSE.stand() : J, team: TEAM.them, opts: { helmet: true }, d: r.z });
+    items.push({ chibi: { x: r.x, z: r.z, team: 'them', role: 'runner', moving: !!r.moving, vx: r.vx, vz: r.vz, phase: t * 0.024 + r.id * 2,
+                          label: r.label, out: r.out, scale: 1.3 }, d: r.z });
   });
   // the batter (big, close to the camera); once he has hit the ball he is a runner, drawn from the replay
   var bx = (m.bats === 'R' ? -1 : 1) * 0.80;
@@ -383,7 +377,8 @@ BTP.renderFrame = function (ctx, scene, m) {
     if (it.ball) {
       if (m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.55, 0.075);
       drawBall(ctx, it.ball, { spin: it.ball.spin, radius: it.ball.radius, minPx: it.ball.minPx });
-    } else drawPlayer(ctx, it);
+    } else if (it.chibi) BTP.drawChibi(ctx, it.chibi);
+    else drawPlayer(ctx, it);
   });
   if (!ball && m.pathTrail) drawTrail(ctx, m.pathTrail, m.trailColor || '255,255,255', 0.35 * (m.trailFade == null ? 1 : m.trailFade), 0.075);
 

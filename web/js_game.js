@@ -17,7 +17,7 @@ var pendingState = null;
 var qteRun = null;
 var busy = false;
 var drawerName = null;
-var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1;
+var scene = null, maskCv = null, ctx = null, W = 0, H = 0, dpr = 1, aerialCv = null, aCtx = null;
 var markers = { T: null, A: null };
 var catchG = null;          // the catch game for the pitch being thrown (your mitt, your press), or null
 var catchCount = 0;         // how many catches you have played this session (the first few get a bigger timing guide)
@@ -472,13 +472,24 @@ function scriptBall(sc, t) {
   return { p: p, z: z };
 }
 
+function aerialFraming(sc) {                          // where the high camera looks: the infield plus wherever the ball goes
+  var pts = [[0, 0], [19.4, 19.4], [-19.4, 19.4], [0, 38.8]], i;
+  for (i = 0; i <= 14; i++) {
+    var sb = scriptBall(sc, 0.2 + sc.duration * 0.85 * i / 14), w = BTP.fieldToWorld(sb.p[0], sb.p[1]);
+    pts.push([clamp(w.x, -95, 95), Math.min(w.z, 105)]);
+  }
+  var minx = 1e9, maxx = -1e9, minz = 1e9, maxz = -1e9;
+  pts.forEach(function (p) { minx = Math.min(minx, p[0]); maxx = Math.max(maxx, p[0]); minz = Math.min(minz, p[1]); maxz = Math.max(maxz, p[1]); });
+  var halfW = (maxx - minx) / 2 + 14, halfZ = (maxz - minz) / 2 + 10;
+  return { lx: (minx + maxx) / 2, lz: (minz + maxz) / 2 + 3, cover: Math.min(175, Math.max(2 * halfW, 2 * halfZ * 1.4, 84)) };
+}
 function buildModel(now) {
   var st = shown, m = { t: now, zone: null, alignment: 'standard', bats: 'R' };
   if (!st || !st.situation) return m;
   m.alignment = st.alignment || 'standard'; m.bats = st.batter.bats; m.lefty = st.pitcher.throws === 'L';
   var B = BTP.BASES, rs = st.situation.runners, i;
   m.runners = [];
-  for (i = 0; i < 3; i++) if (rs[i]) m.runners.push({ id: i + 1, x: B[i + 1].x * 0.94 + (i === 1 ? 0 : (i === 0 ? -0.6 : 0.6)), z: B[i + 1].z * 0.94 - 0.5 });
+  for (i = 0; i < 3; i++) if (rs[i]) m.runners.push({ id: i + 1, label: String(i + 1), x: B[i + 1].x * 0.94 + (i === 1 ? 0 : (i === 0 ? -0.6 : 0.6)), z: B[i + 1].z * 0.94 - 0.5 });
   var enabled = canPlay();
   var selCell = sel.cell;
   m.zone = { enabled: enabled, sel: enabled ? selCell : null, hover: enabled ? hover : null, markT: markers.T, markA: markers.A };
@@ -601,13 +612,25 @@ function buildModel(now) {
       });
       var boxX = (a.bats === 'R' ? -1 : 1) * 0.8;
       m.runners = a.script.runners.map(function (rn, ix) {
-        var r = scriptSeg(rn, st2), rw = BTP.fieldToWorld(r.p[0], r.p[1]), o = { id: ix + 1, x: rw.x, z: rw.z, moving: r.moving, out: false };
+        var r = scriptSeg(rn, st2), rw = BTP.fieldToWorld(r.p[0], r.p[1]), o = { id: ix + 1, label: rn.label, x: rw.x, z: rw.z, moving: r.moving, out: false };
         if (rn.id === 'b') o.x += boxX * Math.max(0, 1 - Math.hypot(rw.x, rw.z) / 7);      // he starts in the batter's box, not on the plate
         if (r.moving) { var v3 = BTP.fieldToWorld(r.p[0] + r.v[0] * 0.05, r.p[1] + r.v[1] * 0.05); o.vx = v3.x - rw.x; o.vz = v3.z - rw.z; }
         if (rn.fate === 'out' && !r.moving && rn.segs.length && st2 > rn.segs[rn.segs.length - 1][1] + 0.1) o.out = true;
         return o;
       });
-      m.batterHidden = true; m.miniOn = true; drawMini(a, st2);
+      m.batterHidden = true;
+      // the high camera: framed once from where the ball goes, blended in right after contact and out again before the panel
+      if (!a.fr) a.fr = aerialFraming(a.script);
+      var aT0 = a.tContact + 0.20, aT1 = a.tAfter - 1.25;
+      var bl = clamp((t - aT0) / 0.6, 0, 1) * (1 - clamp((t - aT1) / 0.6, 0, 1)), eb = ease(bl);
+      m.aerial = eb;
+      var pops = [];
+      (a.script.marks || []).forEach(function (mk) {                                      // SAFE / OUT / RUN n, at the moment the plan says it happens
+        var age = st2 - mk[0];
+        if (age >= 0 && age < 1.3) { var wp = BTP.fieldToWorld(mk[2], mk[3]); pops.push({ x: wp.x, z: wp.z, text: mk[1], age: age }); }
+      });
+      m.aerialM = { cam: BTP.aerialCamFit(W, H, a.fr.lx, a.fr.lz, a.fr.cover * (1.14 - 0.14 * eb)), fielders: m.fielders, runners: m.runners, ball: ball,
+                    trail: a.trail, pops: pops, alignment: m.alignment, bats: m.bats, t: now };
       m.pathTrail = a.trail.slice(); m.trailColor = '255,255,255'; m.trailFade = 1;
     } else if (a.foul) {
       var ft = t - a.tContact;
@@ -672,8 +695,16 @@ function loop(now) {
   if (!ctx) return;
   if (anim && anim.skip) { /* jump to the end */ }
   var m = buildModel(now);
-  BTP.renderFrame(ctx, scene, m);
-  var mini = $('mini'); if (mini) mini.style.opacity = m.miniOn ? '1' : '0';
+  var ab = m.aerialM ? (m.aerial || 0) : 0;
+  if (ab >= 0.995) { ctx.clearRect(0, 0, W, H); BTP.renderAerial(ctx, W, H, m.aerialM); }
+  else {
+    BTP.renderFrame(ctx, scene, m);
+    if (ab > 0.002 && aCtx) {                                                         // blend the high camera over the catcher's view
+      aCtx.clearRect(0, 0, W, H); BTP.renderAerial(aCtx, W, H, m.aerialM);
+      ctx.save(); ctx.globalAlpha = ab; ctx.drawImage(aerialCv, 0, 0, W, H); ctx.restore();
+    }
+  }
+  $('mask').style.opacity = String(1 - 0.92 * ab);              // the mask fades while you watch the play from above
   if (anim && anim.done && !anim.catchPending) finishAnim();
 }
 function skipAnim() { if (anim && !catchActive()) { anim.done = true; } }
@@ -689,6 +720,8 @@ function resize() {
   maskCv = BTP.buildMask(W, H, dpr);
   var mc = $('mask').getContext('2d'); mc.setTransform(1, 0, 0, 1, 0, 0); mc.clearRect(0, 0, $('mask').width, $('mask').height); mc.drawImage(maskCv, 0, 0);
   ctx = $('view').getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  aerialCv = document.createElement('canvas'); aerialCv.width = Math.round(W * dpr); aerialCv.height = Math.round(H * dpr);
+  aCtx = aerialCv.getContext('2d'); aCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 function init() {
   resize();

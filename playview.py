@@ -155,10 +155,22 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
     runner_end = {}          # ident -> (t0, t1) overrides for the run
     last_t = 1.0
 
+    out_t, out_pos = {}, {}          # ident -> when / where he is put out (for the OUT marks)
+
+    def runner_arrival(e):
+        """When this runner reaches his final base (his own timing, set above or the default pace)."""
+        t0, t1 = runner_end.get(e["id"], (0.3, 0.3 + 0.62 * max(0, e["dest"] - e["origin"])))
+        return t1
+
     def throw(t0, frm, to, who, arc=18):
-        """The fielder `who` throws from `frm` to `to`. Returns the arrival time."""
+        """The fielder `who` throws from `frm` to `to`. Returns the arrival time.
+        If a runner is safe at home on this play, the ball is held back so it cannot arrive before him (no picture of an out on a safe run)."""
         d = _dist(frm, to)
-        arrive = t0 + 0.12 + d / 440.0
+        dur = 0.12 + d / 440.0
+        if to == HOME:
+            need = max([runner_arrival(e) for e in ents if e["fate"] == "scored"] or [0.0]) + 0.2
+            t0 = max(t0, need - dur)
+        arrive = t0 + dur
         ball.fly(t0, arrive, to, arc if d > 40 else 6)
         return arrive
 
@@ -194,6 +206,7 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
         ball.fly(0.2, tc, land, height)
         fielders[pos].go(0.35, tc - 0.05, land)
         add_event(tc, "CAUGHT!", "good")
+        out_t["b"], out_pos["b"] = tc, land
         for e in ents:
             if e["id"] == "b":
                 runner_end[e["id"]] = (0.28, tc)          # he stops running when the ball is caught
@@ -229,9 +242,11 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
             t2 = throw(t1 + 0.15, second, first, cover)
             add_event(t2, "DOUBLE PLAY!", "good")
             arrive_first = t2
+            out_t["b"] = t2
             for e in ents:
                 if e["fate"] == "out" and e["id"] != "b":
                     runner_end[e["id"]] = (0.3, t1 + 0.08)
+                    out_t[e["id"]] = t1
         else:
             if pos == "1B":
                 fielders[pos].go(tf, tf + 0.45, (BASES[1][0] - 6, BASES[1][1] + 4))
@@ -241,6 +256,7 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
                 first = (BASES[1][0] - 6, BASES[1][1] + 4)
                 arrive_first = throw(tf + 0.1, spot, first, pos)
             add_event(arrive_first, "OUT!", "good")
+            out_t["b"] = arrive_first
         if pos != "1B":
             fielders["1B"].go(0.3, arrive_first - 0.15, (BASES[1][0] - 6, BASES[1][1] + 4))
         batter_end = max(arrive_first + 0.12, 0.28 + 1.3)
@@ -349,6 +365,7 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
 
     # ---- runners: any run not overridden above uses the default pace ----
     runners = []
+    arrive_t = {}
     t_end_all = last_t
     for e in ents:
         t0, t1 = runner_end.get(e["id"], (0.3, 0.3 + 0.62 * max(0, e["dest"] - e["origin"])))
@@ -361,8 +378,22 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
             for k in range(n):
                 tr.go(t0 + k * step, t0 + (k + 1) * step, BASES[e["origin"] + k + 1])
         runners.append({"id": e["id"], "label": _runner_label(e["id"]), "start": list(tr.start),
-                        "segs": tr.segs, "fate": e["fate"]})
+                        "segs": tr.segs, "fate": e["fate"], "origin": e["origin"], "dest": e["dest"]})
+        arrive_t[e["id"]] = tr.end_time() if tr.segs else t1
         t_end_all = max(t_end_all, tr.end_time())
+
+    marks = []
+    for e in ents:
+        arrive = arrive_t.get(e["id"], 0.0)
+        if e["fate"] == "out":
+            where = out_pos.get(e["id"]) or BASES[min(e["dest"], 4)]
+            marks.append([_r2(out_t.get(e["id"], arrive)), "OUT", _r2(where[0]), _r2(where[1])])
+        elif e["id"] == "b" and e["fate"] == "safe" and res != "Home run":
+            marks.append([_r2(arrive), "SAFE", BASES[e["dest"]][0], BASES[e["dest"]][1]])
+    scorers = sorted((arrive_t.get(e["id"], 0.0), e["id"]) for e in ents if e["fate"] == "scored")
+    for n, (ta, _ident) in enumerate(scorers, 1):
+        marks.append([_r2(ta), f"RUN {n}", HOME[0], HOME[1]])
+    marks.sort(key=lambda m: m[0])
 
     label = play["label"].upper()
     if play["runs"]:
@@ -380,6 +411,8 @@ def build_play_script(batted_ball, fielding, play, bats=None, alignment=None, se
         "fielders": {p: {"start": list(fielders[p].start), "segs": fielders[p].segs} for p in POSITIONS},
         "runners": runners,
         "events": events,
+        "marks": marks,
+        "runs": play["runs"],
     }
 
 
