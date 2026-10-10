@@ -2601,6 +2601,122 @@ class StadiumPieceTests(unittest.TestCase):
         self.assertIn("your current pick is thrown", js)
         self.assertIn("none picked: ", js)
 
+class BatterAdaptsTests(unittest.TestCase):
+    """The game's batter reads the last few pitches: a repeated pitch (or spot) gets timed and hit hard, a change takes that away."""
+
+    def _run(self, seq_fn, games=70):
+        c = collections.Counter()
+        swings = hard = 0
+        for g in range(games):
+            rng = random.Random(g)
+            st = generate_random_situation(rng)
+            st.runners, st.outs = [False, False, False], 0
+            i = 0
+            while not st.is_over() and i < 40:
+                pt, course = seq_fn(i)
+                o, _m = resolve_one_pitch(st, pt, course, "strike", rng)
+                if o["swung"]:
+                    swings += 1
+                    c[o["timing"]] += 1
+                    hard += bool(o["batted_ball"] is not None and o["batted_ball"].hardness == "hard")
+                i += 1
+        return c["on_time"] / swings, hard / swings
+
+    def test_same_pitch_and_spot_is_timed_and_hit_hard_changing_it_is_not(self):
+        same = self._run(lambda i: ("four_seam", "mid_mid"))
+        vary_spot = self._run(lambda i: ("four_seam", ("in_hi", "out_lo", "mid_mid", "out_mid", "in_lo")[i % 5]))
+        vary_type = self._run(lambda i: (("four_seam", "slider", "changeup", "curveball")[i % 4], "mid_mid"))
+        self.assertGreater(same[0], vary_type[0] + 0.2)            # a changed pitch type costs him his timing
+        self.assertGreater(same[1], vary_spot[1] + 0.08)           # a changed spot costs him solid contact
+        self.assertGreater(same[1], vary_type[1] + 0.2)
+
+    def test_he_starts_waiting_for_a_spot_that_is_repeated(self):
+        st = generate_random_situation(random.Random(3))
+        st.balls = st.strikes = 0
+        for i in range(3):
+            st.history.add("four_seam", "out_lo", "Ball", "on_time", False, actual_course="out_lo", intent="strike", velocity=95,
+                           family="fastball", in_zone=False)
+        g = st.batter.predict_guess(st.history, st, st.pitcher)
+        self.assertEqual(g["location"], "out_lo")
+        self.assertGreaterEqual(g["loc_strength"], 0.5)
+        st.history.add("four_seam", "in_hi", "Ball", "on_time", False, actual_course="in_hi", intent="strike", velocity=95, family="fastball", in_zone=False)
+        self.assertNotEqual(st.batter.predict_guess(st.history, st, st.pitcher)["location"], "in_hi")
+
+
+
+class RecapTests(unittest.TestCase):
+    """The recap after a pitch: facts come from the judged data, tips are kept apart, the catch has its own line."""
+
+    def _session_with_pitch(self, human=None, call=("four_seam", "out_lo", "strike"), seed=4):
+        sess = webapp.GameSession(seed=seed)
+        sess.start_new_game(challenge_seed=seed)
+        sess.showing_intro = False
+        st = sess.state
+        st.runners = [False, False, False]
+        rng = random.Random(seed)
+        pre = prepare_pitch(st, call[0], call[1], rng, call[2])
+        o = judge_pitch(st, call[0], call[1], rng, call[2], prepared=pre, human=human)
+        from engine import log_pitch
+        log_pitch(st, o)
+        st.history.add(call[0], call[1], o["result"], o["timing"], o["swung"], actual_course=o["actual_course"], intent=call[2], velocity=95, family="fastball", in_zone=o["in_zone"])
+        sess.last_outcome, sess.last_call = o, {"pitch_type": call[0], "target_course": call[1], "intent": call[2]}
+        sess.event_seq = 1
+        return sess, o
+
+    def test_facts_are_the_judged_numbers_and_a_human_guess_is_shown_only_as_what_he_chose(self):
+        h = swing_module.judge_swing(0.0, 0.0, 0.05, "auto", generate_random_situation(random.Random(1)).batter, random.Random(1), fit="wrong")
+        h.update(swung=True, guess="offspeed")
+        sess, o = self._session_with_pitch(human=h)
+        out = api_module._outcome_json(sess)
+        facts = {f["k"]: f["v"] for f in out["recap"]["facts"]}
+        self.assertIn("Aimed Low-Out", facts["LOCATION"])
+        self.assertIn("50 ms late", facts["SWING"])                                     # the real offset of the human swing
+        self.assertIn("Looking for off-speed", facts["LOOKING FOR"])
+        self.assertIn("guessed wrong", facts["LOOKING FOR"])
+        self.assertIn(o["result"].split()[0], " ".join(facts.values()) + o["result"])   # the result is in there too (as a fact)
+        self.assertNotIn("TIP", facts)                                                  # advice is never mixed into the facts
+
+    def test_the_game_batter_gets_only_the_category_the_game_judged_never_made_up_milliseconds_or_thoughts(self):
+        sess, o = self._session_with_pitch()
+        out = api_module._outcome_json(sess)
+        for f in out["recap"]["facts"]:
+            self.assertNotIn(" ms", f["v"] if f["k"] == "SWING" else "")
+            self.assertNotIn("LOOKING FOR", f["k"])
+            self.assertNotIn("thinking", f["v"])
+        swing = [f["v"] for f in out["recap"]["facts"] if f["k"] == "SWING"][0]
+        self.assertTrue(swing == "He took it" or swing.startswith("He swung"))
+
+    def test_the_catch_is_its_own_line_apart_from_the_call(self):
+        sess, o = self._session_with_pitch(human={"swung": False, "guess": "either", "guess_fit": "either"})
+        sess.last_catch = {"quality": "barely", "dt_ms": 140, "stolen": False, "passed": False, "message": ""}
+        out = api_module._outcome_json(sess)
+        catch = [f for f in out["recap"]["facts"] if f["k"] == "CATCH"]
+        self.assertEqual(len(catch), 1)
+        self.assertIn("Barely caught", catch[0]["v"])
+        self.assertIn("+140 ms", catch[0]["v"])
+        self.assertIn("grade", out["eval"])                                             # the call's own grade is a separate thing
+        self.assertTrue(all(f["k"] != "CALL" for f in out["recap"]["facts"]))
+
+    def test_tips_rest_on_facts_and_a_repeated_pitch_gets_a_change_it_up_tip(self):
+        sess = webapp.GameSession(seed=6)
+        sess.start_new_game(challenge_seed=6)
+        sess.showing_intro = False
+        st = sess.state
+        rng = random.Random(6)
+        o = None
+        for _ in range(4):
+            pre = prepare_pitch(st, "four_seam", "mid_mid", rng, "strike")
+            o = judge_pitch(st, "four_seam", "mid_mid", rng, "strike", prepared=pre, human={"swung": True, "contact": "foul", "batted": None, "timing": "on_time", "timing_label": "GOOD", "grade": "good", "off": 0.0, "dx": 0.0, "dy": 0.0, "centre": 0.5, "mode": "auto"})
+            from engine import log_pitch
+            log_pitch(st, o)
+            st.history.add("four_seam", "mid_mid", o["result"], o["timing"], True, actual_course="mid_mid", intent="strike", velocity=95, family="fastball", in_zone=True)
+        sess.last_outcome, sess.last_call, sess.event_seq = o, {"pitch_type": "four_seam", "target_course": "mid_mid", "intent": "strike"}, 4
+        out = api_module._outcome_json(sess)
+        self.assertTrue(any("in a row" in f["v"] for f in out["recap"]["facts"] if f["k"] == "SEQUENCE"))
+        self.assertTrue(any("Change the speed or the spot" in t for t in out["recap"]["tips"]))
+        self.assertLessEqual(len(out["recap"]["tips"]), 2)
+
+
 
 # ---------- two players: a human batter with the mouse (swing.py, /pitch2p, /swing) ----------
 import swing as swing_module
@@ -2996,6 +3112,121 @@ class RoomTests(unittest.TestCase):
         finally:
             webapp._JOIN_FAILS[:] = []
         self.assertTrue(self.call("POST", "/room/join", {"code": a["code"]})["ok"])
+
+    # ---- a match: two halves, the sides switch, a result, a rematch ----
+    def play_half(self, ca, cb, swing="take", limit=400):
+        """Play pitches through the real routes until the half is over. Returns the room's phase at the end."""
+        room = self.room(ca)
+        for _ in range(limit):
+            if room.phase not in ("call", "pitch", "resolve"):
+                break
+            cat, bat = (ca, cb) if room.tokens.get("catcher") == ca["token"] else (cb, ca)
+            v = self.call("GET", "/api/state", who=cat)
+            if v["phase"] == "qte":
+                self.call("POST", "/qte", {"verdicts": "miss,miss,miss", "dir": "mid"}, cat)
+                continue
+            if room.phase == "call":
+                key = v["repertoire"][0]["key"]
+                self.call("POST", "/pitch2p", {"pitch_type": key, "course": "mid_mid", "intent": "strike"}, cat)
+            if room.phase == "pitch" and room.resolved_seq is None:
+                data = {"swung": "0"} if swing == "take" else {"swung": "1", "dx": "0", "dy": "0", "off": "0.0", "mode": "auto"}
+                self.call("POST", "/swing", data, bat)
+            v = self.call("GET", "/api/state", who=cat)
+            if room.phase == "pitch" and room.resolved_seq is not None and v["last"] and v["last"]["catchable"]:
+                self.call("POST", "/catch", {"quality": "clean"}, cat)
+            if room.phase in ("pitch", "resolve") and room.pitch_seq is not None:
+                self.call("POST", "/room/ack", {"seq": str(room.pitch_seq)}, ca)
+                self.call("POST", "/room/ack", {"seq": str(room.pitch_seq)}, cb)
+        return room.phase
+
+    def test_a_match_is_two_halves_the_sides_switch_and_the_runs_are_counted_per_player(self):
+        old = rooms_module.HALFTIME_MS
+        rooms_module.HALFTIME_MS = 400
+        try:
+            ca, cb = self.make_room()
+            self.start(ca, cb)
+            room = self.room(ca)
+            a_pid = room.pids[ca["token"]]
+            v = self.call("GET", "/api/state", who=ca)
+            self.assertEqual((v["situation"]["outs"], v["situation"]["runners"], v["situation"]["our"], v["situation"]["opp"]), (0, [False, False, False], 0, 0))
+            self.assertEqual((v["match"]["half"], v["match"]["you"], v["match"]["opp"]), (1, 0, 0))
+            self.assertEqual(self.play_half(ca, cb, swing="take"), "halftime")
+            self.assertTrue(room.session.state.outs >= 3 or room.session.state.runs_this_inning >= rooms_module.RUN_CAP)
+            half1_runs = room.runs[room.pid_of_role("batter")]
+            self.assertEqual(half1_runs, room.session.state.runs_this_inning)
+            time.sleep(0.9)
+            with webapp._LOCK:
+                webapp.room_tick()
+            self.assertEqual((room.phase, room.half), ("call", 2))
+            va, vb = self.call("GET", "/api/state", who=ca), self.call("GET", "/api/state", who=cb)
+            self.assertEqual((va["room"]["role"], vb["room"]["role"]), ("batter", "catcher"))      # the creator, who caught, now bats
+            self.assertEqual((vb["situation"]["outs"], vb["situation"]["runners"], vb["situation"]["opp"]), (0, [False, False, False], 0))   # a fresh inning
+            self.assertEqual(va["situation"]["inning"], "Bottom 1")
+            self.assertEqual(va["batter"]["name"], vb["batter"]["name"])
+            self.assertEqual(self.play_half(ca, cb, swing="perfect"), "over")
+            va, vb = self.call("GET", "/api/state", who=ca), self.call("GET", "/api/state", who=cb)
+            self.assertEqual((va["match"]["you"], va["match"]["opp"]), (vb["match"]["opp"], vb["match"]["you"]))   # both screens agree on the result
+            self.assertEqual(va["match"]["opp"], half1_runs)                                                      # the creator only batted in half 2
+            self.assertEqual(va["match"]["you"], room.runs[a_pid])
+            # a rematch needs both to pick the same thing
+            self.call("POST", "/room/rematch", {"v": "swap"}, ca)
+            v = self.call("POST", "/room/rematch", {"v": "same"}, cb)
+            self.assertEqual(v["room"]["phase"], "over")
+            self.assertEqual((v["match"]["votes"]["you"], v["match"]["votes"]["opp"]), ("same", "swap"))
+            roles_before = (room.pid_of_role("catcher"), room.pid_of_role("batter"))
+            v = self.call("POST", "/room/rematch", {"v": "swap"}, cb)
+            self.assertEqual(v["room"]["phase"], "call")
+            self.assertEqual((room.pid_of_role("batter"), room.pid_of_role("catcher")), roles_before)         # swapped
+            self.assertEqual((v["match"]["half"], v["match"]["you"], v["match"]["opp"]), (1, 0, 0))
+        finally:
+            rooms_module.HALFTIME_MS = old
+
+    def test_what_the_batter_is_looking_for_is_hidden_from_the_catcher_until_the_pitch_is_over(self):
+        ca, cb = self.make_room()
+        self.start(ca, cb)
+        self.call("POST", "/room/guess", {"g": "fastball"}, ca)                           # the catcher cannot set it
+        self.assertEqual(self.call("GET", "/api/state", who=cb)["guess"], "either")
+        self.call("POST", "/room/guess", {"g": "offspeed"}, cb)
+        self.assertEqual(self.call("GET", "/api/state", who=cb)["guess"], "offspeed")
+        vc = self.call("GET", "/api/state", who=ca)
+        self.assertIsNone(vc["guess"])
+        self.assertNotIn("offspeed", json.dumps(vc["room"]))
+        key = vc["repertoire"][0]["key"]
+        self.call("POST", "/pitch2p", {"pitch_type": key, "course": "mid_mid", "intent": "strike"}, ca)
+        self.assertIsNone(self.call("GET", "/api/state", who=ca)["guess"])
+        done = self.call("POST", "/swing", {"swung": "1", "dx": "0", "dy": "0", "off": "0", "mode": "auto"}, cb)
+        self.assertEqual(done["last"]["guess"]["choice"], "offspeed")                       # revealed with the result
+        pc = "fastball" if key in ("four_seam", "two_seam", "sinker", "cutter") else "offspeed"
+        self.assertEqual(done["last"]["guess"]["fit"], "right" if pc == "offspeed" else "wrong")
+        facts = {f["k"]: f["v"] for f in done["last"]["recap"]["facts"]}
+        self.assertIn("LOOKING FOR", facts)
+
+    def test_the_timing_guide_setting_must_be_agreed_before_the_start(self):
+        ca, cb = self.make_room()
+        self.call("POST", "/room/ready", {"ready": "1"}, ca)
+        v = self.call("POST", "/room/guide", {"v": "subtle"}, cb)                         # the other player changes it
+        self.assertEqual(v["room"]["guide"], "subtle")
+        self.assertEqual(v["room"]["ready"], {"catcher": False, "batter": False})          # so everyone has to agree again
+        self.call("POST", "/room/ready", {"ready": "1"}, ca)
+        v = self.call("POST", "/room/ready", {"ready": "1"}, cb)
+        self.assertEqual((v["room"]["phase"], v["room"]["guide"]), ("call", "subtle"))
+        self.assertEqual(self.call("POST", "/room/guide", {"v": "normal"}, ca)["room"]["guide"], "subtle")   # no changes once it has started
+
+    def test_a_poll_that_waits_through_the_half_time_switch_answers_with_the_new_side(self):
+        ca, cb = self.make_room()
+        self.start(ca, cb)
+        room = self.room(ca)
+        ver = self.call("GET", "/room/poll?since=0", who=ca)["room"]["ver"]
+        got = {}
+        th = threading.Thread(target=lambda: got.update(v=self.call("GET", "/room/poll?since=%d" % ver, who=ca)))
+        th.start()
+        time.sleep(0.4)
+        with webapp._LOCK:
+            room.swap_roles()                                                           # the sides switch while he is waiting
+            room.bump()
+        th.join(5)
+        self.assertEqual(got["v"]["room"]["role"], "batter")
+        self.assertEqual(got["v"]["room"]["pid"], room.pids[ca["token"]])
 
     def test_leaving_empties_the_room(self):
         ca, cb = self.make_room()

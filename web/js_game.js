@@ -35,6 +35,8 @@ function clk() { var n = performance.now(); return n - pausedTotal - (paused ? n
 function evClk(e) { var n = performance.now(), ts = e && e.timeStamp; if (!(ts > 0) || Math.abs(ts - n) > 2000) ts = n; return Math.min(ts, n) - pausedTotal; }
 // online play (two PCs, an invite code): see rooms.py and js_online.js
 var net = BTP.net, roomInfo = null, roomRecv = 0, autoFired = false, rvKey = '', netLost = false, onlineStarted = null;
+var catchPractice = false;  // the catcher's practice in the online lobby (the same practice pitch as the one-player game, played on this PC alone)
+var matchKey = '', panelShownAt = 0;
 var batPractice = null;     // the batter's practice swings, played on this PC alone before the online game starts: { n: how many pitches so far }
 function online() { return !!(net.room && roomInfo); }
 function myRole() { return net.room ? net.room.role : null; }
@@ -116,8 +118,10 @@ function renderTop() {
 function roomChip() {
   if (!net.room || !roomInfo) return '';
   var me = roomInfo.role, op = me === 'catcher' ? 'batter' : 'catcher', c = roomInfo.connected;
+  var mt = S && S.match ? S.match : null;
   return '<span class="t-sep"></span><span class="t-grp t-room"><b>' + esc(roomInfo.code) + '</b> You: <b>' + me.toUpperCase() + '</b><i class="lb-dot ' + (c[me] && !netLost ? 'on' : '') + '"></i>' +
-    ' ' + op + '<i class="lb-dot ' + (c[op] ? 'on' : '') + '"></i></span>';
+    ' ' + op + '<i class="lb-dot ' + (c[op] ? 'on' : '') + '"></i></span>' +
+    (mt && roomInfo.phase !== 'lobby' && roomInfo.phase !== 'ready' ? '<span class="t-sep"></span><span class="t-grp t-match">Inning half <b>' + mt.half + '/2</b> &middot; runs <b class="m-you">You ' + mt.you + '</b> &ndash; <b class="m-opp">' + mt.opp + ' Opp</b></span>' : '');
 }
 function audioControls() {
   var muted = BTP.bgm.isMuted();
@@ -145,6 +149,14 @@ function renderSide() {
   }).join('');
   $('mapbox').innerHTML = '<div class="cap">Pitches to him</div>' + BTP.hud.pitchMap(items, b.bats) + '<div class="recent">' + (recent || 'No pitches yet') + '</div>';
 }
+var GUESSES = [['fastball', 'Fastball', 'Looking fastball'], ['offspeed', 'Off-speed', 'Looking off-speed'], ['either', 'Either', 'Ready for both']];
+function canGuess() { return !!(online() && roomInfo.role === 'batter' && roomInfo.phase === 'call' && !roomInfo.paused && !anim && !batPractice); }
+function setGuess(g) {
+  if (!canGuess() || (S && S.guess === g)) return;
+  if (S) S.guess = g;
+  renderBottom();
+  net.post('/room/guess', { g: g }).then(function (v) { if (v && v.room) { net.view = v; net.ver = v.room.ver; if (S && S.guess !== v.guess) S.guess = v.guess; renderBottom(); } }, function () {});
+}
 function renderBatterBottom() {
   var st = shown, l = st && st.last, h = '';
   if (l && l.duel && !batPractice) {
@@ -153,6 +165,10 @@ function renderBatterBottom() {
   } else h = '<span class="bt-dim">No swings yet.</span>';
   $('bottom').innerHTML = '<div class="b-row"><span class="b-label">You</span><span class="rolechip">BATTER</span>' +
     '<span class="bt-help">Press <b>Space</b> the moment the two rings overlap. No press = you take the pitch. One swing per pitch.</span><span class="modebadge ' + (anim ? 'catch' : 'call') + '">' + (anim ? '\u25CF SWING' : '\u25CF WAIT') + '</span></div>' +
+    (batPractice ? '' : '<div class="b-row"><span class="b-label">Wait for</span>' + GUESSES.map(function (g, i) {
+      var on = (st && st.guess ? st.guess : 'either') === g[0];
+      return '<button class="ibtn' + (on ? ' sel' : '') + '" data-guess="' + g[0] + '"' + (canGuess() ? '' : ' disabled') + '>' + g[1] + ' <span class="k">' + (i + 1) + '</span></button>';
+    }).join('') + '<span class="bt-dim">' + (canGuess() ? 'Hidden from the catcher until the pitch is over. Right: harder contact. Wrong: a slightly tighter timing window.' : 'Locked for this pitch.') + '</span></div>') +
     '<div class="b-row"><span class="b-label">Last</span><span class="bt-last">' + h + '</span><span class="bt-dim" style="margin-left:auto">PERFECT &bull; GOOD &bull; EARLY &bull; LATE</span></div>';
 }
 function renderBottom() {
@@ -183,7 +199,7 @@ function catchActive() { return !!(anim && anim.interactive && catchG && !catchG
 function renderAll() { renderTop(); renderSide(); renderBottom(); }
 function canPlay() {
   return !!(shown && S && S.phase === 'play' && !anim && !qteRun && !busy && !modalOpen() && !duelPh && !paused && !batPractice &&
-            (!net.room || (roomInfo && roomInfo.role === 'catcher' && roomInfo.phase === 'call' && !roomInfo.paused)));
+            (!net.room || catchPractice || (roomInfo && roomInfo.role === 'catcher' && roomInfo.phase === 'call' && !roomInfo.paused)));
 }
 function canPause() { return !!(shown && S && S.phase === 'play' && !qteRun && !modalOpen() && !batPractice && (!net.room || (roomInfo && roomInfo.phase !== 'lobby' && roomInfo.phase !== 'ready'))); }
 function modalOpen() { return $('modal').classList.contains('open'); }
@@ -220,19 +236,28 @@ function onState(ns) {
   if (ns.last && ns.last.seq !== lastSeq) { lastSeq = ns.last.seq; startPitchAnim(ns); return; }
   settle(ns);
 }
+function newHalf() {                                                               // a new half or a new match: nothing of the last one carries over on this screen
+  anim = null; catchG = null; pendingState = null; shown = null; lastSeq = null; onlineStarted = null; panelOpen = false; lastMsg = ''; markers.T = markers.A = null;
+  $('readpanel').className = 'ov'; $('banner').className = 'ov'; $('catchhint').className = 'ov'; closeQTE(); closeModal(); sel.cell = { row: 1, col: 1 };
+}
 function onRoomView(v, changed) {
   var r = v.room;
   if (!r) return;
   var first = !roomInfo;
+  if (net.room && r.role !== net.room.role) { net.setRoom({ code: net.room.code, token: net.room.token, role: r.role }); lastGuide = ''; }     // the sides switched
+  var mk = v.match ? v.match.id + ':' + v.match.half : '';
+  if (mk !== matchKey && r.phase === 'call') { matchKey = mk; newHalf(); }
   roomInfo = r; roomRecv = performance.now();
   if (first) { pausedTotal = 0; closeModal(); }
   if (r.phase !== 'call') autoFired = false;
   var key = [r.phase, r.joined.catcher, r.joined.batter, r.connected.catcher, r.connected.batter, netLost].join('|');
   if (key !== rvKey) { rvKey = key; renderTop(); }
   applyOnlinePause(r);
-  if (r.phase === 'lobby' || r.phase === 'ready') { if (!batPractice) { S = v; net.showRoom(v); } return; }
-  net.hideLobby();
+  if (r.phase === 'lobby' || r.phase === 'ready') { if (!batPractice && !catchPractice) { S = v; net.showRoom(v); } return; }
+  if (r.phase === 'halftime' || r.phase === 'over') { if (!anim) net.showMatch(v); else if (changed) { pendingState = v; S = v; } }
+  else net.hideLobby();
   if (!changed) return;                                                              // only the clock moved
+  if (r.phase === 'halftime' || r.phase === 'over') { if (!anim) { S = v; if (shown) shown = v; renderTop(); } else onState(v); return; }
   onState(v);
 }
 function onConn(ok) { netLost = !ok; applyOnlinePause(roomInfo); renderTop(); }
@@ -259,6 +284,7 @@ function settle(ns) {
 }
 var lastMsg = '';
 function handlePhase(ns) {
+  if (net.room) { closeModal(); return; }                                          // online: the match overlay does the talking, not the classic dialogs
   if (ns.phase === 'start') { openModal('start'); }
   else if (ns.phase === 'intro') { openModal('intro'); }
   else if (ns.phase === 'over') { openModal('report'); }
@@ -667,7 +693,27 @@ function lockCall(course) {
 
 /* ---------------- the practice pitch (no timer, not counted, nothing is sent to the server) ---------------- */
 function practiceDone() { return BTP.store.get('btp_practiced', '0') === '1'; }
-function startPractice() { practice = true; lastGuide = ''; }
+function practiceBar(back) {
+  $('pbar').innerHTML = '<span>PRACTICE \u00B7 no timer \u00B7 counts for nothing</span><button type="button" id="pb-skip">' + (back ? 'Back to the lobby' : 'Skip practice') + '</button>';
+  $('pbar').className = 'ov show';
+  $('pb-skip').onclick = back ? endCatchPractice : skipPractice;
+}
+function skipPractice() {
+  practice = false; BTP.store.set('btp_practiced', '1'); $('pbar').className = 'ov';
+  if (anim && anim.practice) { anim = null; catchG = null; $('banner').className = 'ov'; $('catchhint').className = 'ov'; $('readpanel').className = 'ov'; panelOpen = false; }
+  lastGuide = ''; renderAll(); toast('Practice skipped. Pick your first pitch.', false);
+}
+function startCatchPractice() {                                                    // online catcher: try the call and the catch before the match
+  catchPractice = true; practice = true; net.hideLobby();
+  shown = practiceShown(); shown.intents = [{ key: 'strike', label: 'Get ahead', desc: '' }, { key: 'chase', label: 'Chase', desc: '' }, { key: 'freeze', label: 'Freeze him', desc: '' }];
+  S = shown; sel.pitch = shown.repertoire[0].key; sel.cell = { row: 1, col: 1 }; sel.intent = 'strike';
+  practiceBar(true); lastGuide = ''; renderAll();
+}
+function endCatchPractice() {
+  catchPractice = false; practice = false; anim = null; catchG = null; pendingState = null; $('pbar').className = 'ov'; $('banner').className = 'ov'; $('catchhint').className = 'ov';
+  shown = null; S = net.view; lastGuide = ''; renderAll(); net.lobbyKey = ''; if (net.view) net.showRoom(net.view);
+}
+function startPractice() { practice = true; lastGuide = ''; practiceBar(false); }
 function practiceNow() { if (S && S.mode === 'solo' && S.phase === 'play' && !anim && !qteRun) { practice = true; lastGuide = ''; renderAll(); } }
 function runPractice(course) {
   var l = { seq: -1, pitch_type: sel.pitch, actual_course: course, in_zone: true, framed: false, swung: false, result: 'Strike', batted: null,
@@ -691,7 +737,7 @@ function resolveCatch(a, cg, t, dt) {
   if (a.practice) a.catchPending = false;
   else {
     a.catchPending = true;
-    post('/catch', { quality: q }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
+    post('/catch', { quality: q, dt_ms: dt == null ? '' : String(Math.round(dt * 1000)) }).then(function (ns2) { a.catchPending = false; a.ns = ns2; S = ns2; pendingState = ns2; },
                                         function () { a.catchPending = false; });
   }
   renderBottom();
@@ -732,13 +778,16 @@ function showPanel(a) {
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data);
   $('readpanel').className = 'ov show';
   $('banner').className = 'ov';
-  a.panelShown = true; panelOpen = true;
+  a.panelShown = true; panelOpen = true; panelShownAt = performance.now();
 }
 function restorePanel(ns) {                                                        // after a reload: the last pitch, compact
   if (!ns.last || panelOpen) return;
   var l = ns.last, bats = ns.batter.bats, cell = BTP.courseCell(l.actual_course, bats), c = BTP.cellCenter(cell.row, cell.col);
   var data = { l: l, reaction: ns.reaction, reads: ns.reads, bats: bats, Pt: { x: c.x, y: c.y }, markT: cell, headline: plainLabel(l), difficulty: ns.difficulty, catchLabel: null, duel: !!l.duel };
   $('readpanel').innerHTML = BTP.catchlib.panelHTML(data); $('readpanel').className = 'ov show compact'; panelOpen = true;
+}
+function afterAnimMatch() {                                                        // an animation just ended: if the half or the match is over, say so
+  if (online() && roomInfo && (roomInfo.phase === 'halftime' || roomInfo.phase === 'over') && net.view) net.showMatch(net.view);
 }
 function finishAnim() {
   var a1 = anim, ns = pendingState || S, wasPractice = anim && anim.practice; pendingState = null; anim = null; catchG = null; duelPh = null;
@@ -747,8 +796,10 @@ function finishAnim() {
     if (batPractice) setTimeout(nextBatPractice, 900);
     return;
   }
+  setTimeout(afterAnimMatch, 60);
   if (a1 && a1.online && a1.l && a1.l.seq != null) post('/room/ack', { seq: a1.l.seq }).then(function (v) { if (v && v.room) { net.view = v; net.ver = v.room.ver; onRoomView(v, true); } }, function () {});   // this screen has finished showing the pitch
-  if (wasPractice) { practice = false; BTP.store.set('btp_practiced', '1'); toast('Practice done. The real game starts now: pick your first pitch.', false); }
+  if (wasPractice && catchPractice) { $('banner').className = 'ov'; $('catchhint').className = 'ov'; practice = true; lastGuide = ''; toast('Nice. Pick another pitch to try again, or go back to the lobby.', false); renderAll(); return; }
+  if (wasPractice) { practice = false; BTP.store.set('btp_practiced', '1'); $('pbar').className = 'ov'; toast('Practice done. The real game starts now: pick your first pitch.', false); }
   $('catchhint').className = 'ov';
   $('banner').className = 'ov';
   onState(ns);
@@ -980,7 +1031,7 @@ function buildModel(now) {
       var u = clamp((tOv - t) / (tOv - tSt), 0, 1), rt = Math.max(30, ru * 0.05), R0 = rt + ru * 0.25, near = Math.abs(t - tOv);
       m.rings = { x: V.W / 2, y: ringY, rt: rt, r: t <= tOv ? rt + (R0 - rt) * u : rt * (1 - 0.5 * clamp((t - tOv) / 0.3, 0, 1)),
                   alpha: t <= tOv ? clamp((t - tSt) / 0.15, 0, 1) : clamp(1 - (t - tOv) / 0.3, 0, 1), band: near <= A.perfect ? 'perfect' : (near <= A.good ? 'good' : 'far'),
-                  label: a.practice ? 'Press Space when the rings overlap' : '' };
+                  label: a.practice ? 'Press Space when the rings overlap' : '', subtle: !!(roomInfo && roomInfo.guide === 'subtle') };
     }
     if (dsw) {
       var ct2 = t - dsw.t, miss = Math.abs(dsw.off) > A.max, gg = BTP.duel.gradeOf(dsw.off);
@@ -1153,7 +1204,7 @@ function guideInfo() {
   var st = shown;
   if (batPractice && st) return practiceGuide();
   if (!st || !st.situation || st.phase === 'start' || st.phase === 'intro' || st.phase === 'over' || modalOpen()) return null;
-  if (online()) return onlineGuide(st);
+  if (online() && !catchPractice) return onlineGuide(st);
   var duel = st.mode === 'duel', a = anim, limit = BTP.settings.timer(), cur = 1, title = '', sub = '', tone = '', pre = practice || (a && a.practice) ? 'PRACTICE \u00B7 ' : '';
   var rule = limit > 0 ? 'Time up \u2192 your current pick is thrown (none picked: ' + BTP.duel.STANDARD + ')' : 'No timer. Pick the pitch, target and intent, then press Enter';
   if (paused) return { cur: a ? 2 : 1, title: 'Paused', sub: 'Press P or RESUME to continue', tone: '' };
@@ -1185,7 +1236,7 @@ function updateGuide() {
   var key = [g.cur, g.title, g.sub, g.tone].join('|');
   if (key !== lastGuide) {
     lastGuide = key; el.className = '';
-    var stepNames = (batPractice || (online() && roomInfo.role === 'batter')) ? STEPS_BAT : STEPS;
+    var stepNames = (batPractice || (online() && !catchPractice && roomInfo.role === 'batter')) ? STEPS_BAT : STEPS;
     $('g-steps').innerHTML = stepNames.map(function (n, i) { return '<span class="g-step' + (g.cur === i + 1 ? ' on' : (g.cur > i + 1 ? ' done' : '')) + '"><b>' + (i + 1) + '</b><span>' + n + '</span></span>'; }).join('');
     var ti = $('g-title'); ti.textContent = g.title; ti.className = g.tone; $('g-sub').textContent = g.sub;
   }
@@ -1233,6 +1284,7 @@ function loop(rawNow) {
   requestAnimationFrame(loop);
   if (!ctx) return;
   timerTick(performance.now()); updateGuide();
+  if (panelOpen && !anim && performance.now() - panelShownAt > 5000 && $('readpanel').className.indexOf('compact') < 0 && (canPlay() || (online() && roomInfo.phase === 'call'))) setPanelCompact(true);   // out of the way of the next call
   var now = clk();
   var m = buildModel(now);
   var ab = m.aerialM ? (m.aerial || 0) : 0;
@@ -1296,6 +1348,7 @@ function init() {
     if (b.disabled) return;
     if (b.dataset.pitch) { sel.pitch = b.dataset.pitch; renderBottom(); }
     else if (b.dataset.intent) { sel.intent = b.dataset.intent; renderBottom(); }
+    else if (b.dataset.guess) setGuess(b.dataset.guess);
     else if (b.id === 'callbtn') callPitch();
   });
   $('top').addEventListener('click', function (e) {
@@ -1318,6 +1371,8 @@ function init() {
     if ((online() && roomInfo.role === 'batter') || batPractice) {                // the batter's one key: Space swings (one press per pitch; holding it does nothing)
       if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) batterSwing(evClk(e)); return; }
       if (e.code === 'Enter') { e.preventDefault(); return; }
+      var gi = { Digit1: 0, Digit2: 1, Digit3: 2, Numpad1: 0, Numpad2: 1, Numpad3: 2 }[e.code];
+      if (gi != null && !e.repeat) { setGuess(GUESSES[gi][0]); return; }
     }
     if (catchActive()) {                                                          // during the pitch the only thing asked of you is Space
       if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) catchPress(evClk(e)); return; }
@@ -1340,7 +1395,7 @@ function init() {
     if (d) { e.preventDefault(); sel.cell = { row: clamp(sel.cell.row + d[0], 0, 2), col: clamp(sel.cell.col + d[1], 0, 2) }; updateTargetRead(); }
   });
   net.onView = onRoomView; net.onConn = onConn;
-  net.hooks = { practice: startBatPractice, left: onLeftRoom, gone: onRoomGone, back: function () { getState().then(onState, function () {}); } };
+  net.hooks = { practice: startBatPractice, catchPractice: startCatchPractice, left: onLeftRoom, gone: onRoomGone, back: function () { getState().then(onState, function () {}); } };
   renderTop();
   if (window.ResizeObserver) { var ro = new ResizeObserver(function () { clearTimeout(rt); rt = setTimeout(resize, 60); }); ro.observe($('stage')); }   // the guide strip comes and goes
   if (!window.BTP_STATIC && net.restore()) {                                         // this tab was in an online room: go back to it

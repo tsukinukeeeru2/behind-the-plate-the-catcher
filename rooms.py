@@ -17,6 +17,8 @@ ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"        # no 0/O, 1/I/L: easy to rea
 CODE_LEN = 6
 LEAD_MS = 1600                  # a thrown pitch starts this long after the server stamps it, so both screens have it before it begins
 DISCONNECT_MS = 6000            # no word from a player for this long = disconnected
+HALFTIME_MS = 6000              # the pause between the two halves of a match (the sides switch)
+RUN_CAP = 5                     # a half ends at three outs or this many runs, whichever comes first (keeps a match short)
 ACK_TIMEOUT_MS = 15000          # how long the room waits for both screens to finish showing a pitch
 SWING_TIMEOUT_MS = 9000         # a batter who never answers is taken to have let the pitch go by
 CATCH_TIMEOUT_MS = 10000        # a catcher who never answers is taken to have missed it (not pressing = a miss)
@@ -68,16 +70,57 @@ class Room:
         self.acks = {}
         self.resolved_at = None
         self.pitch_seq = None
+        # the match: two halves, the sides switch in between. Players keep their identity (A = the one who made the room, B = the one who
+        # joined) while their role (catcher / batter) changes, so the runs are counted per player.
+        self.pids = {}                  # token -> "A" | "B"
+        self.guide = "normal"           # the batter's timing guide, "normal" | "subtle" (both players agree to it before the start)
+        self.guess = "either"           # what the batter is looking for on the next pitch (hidden from the catcher until it has been thrown)
+        self.half = 1
+        self.match_id = 0
+        self.seed = 0
+        self.runs = {"A": 0, "B": 0}
+        self.halftime_at = None
+        self.votes = {}                 # after a match: pid -> "same" | "swap"
 
     # ---------------------------------------------------------------- who is here
     def join(self, role):
         token = secrets.token_hex(8)
         self.tokens[role] = token
+        used = set(self.pids.values())
+        self.pids[token] = "A" if "A" not in used else "B"
         self.last_seen[role] = now_ms()
         if len(self.tokens) == 2 and self.phase == "lobby":
             self.phase = "ready"
         self.bump()
         return token
+
+    def pid_of_role(self, role):
+        return self.pids.get(self.tokens.get(role))
+
+    def pid_of_token(self, token):
+        return self.pids.get(token)
+
+    def swap_roles(self):
+        """The two players trade sides (catcher <-> batter). Tokens, heartbeats and ready flags move with the player."""
+        self.tokens["catcher"], self.tokens["batter"] = self.tokens.get("batter"), self.tokens.get("catcher")
+        self.tokens = {r: t for r, t in self.tokens.items() if t}
+        ls = dict(self.last_seen)
+        self.last_seen = {}
+        if "batter" in ls:
+            self.last_seen["catcher"] = ls["batter"]
+        if "catcher" in ls:
+            self.last_seen["batter"] = ls["catcher"]
+        self.ready = {"catcher": self.ready["batter"], "batter": self.ready["catcher"]}
+
+    def set_guide(self, value):
+        """Either player may change the timing guide before the match; the other has to agree again (ready flags reset)."""
+        if self.phase not in ("lobby", "ready") or value not in ("normal", "subtle"):
+            return False
+        if value != self.guide:
+            self.guide = value
+            self.ready = {"catcher": False, "batter": False}
+            self.bump()
+        return True
 
     def role_of(self, token):
         for role, tok in self.tokens.items():
@@ -129,6 +172,8 @@ class Room:
             self.start_at += gone                    # the pitch picks up exactly where it stood
         if self.resolved_at is not None:
             self.resolved_at += gone
+        if self.halftime_at is not None:
+            self.halftime_at += gone
         self.bump()
 
     def set_manual_pause(self, role, on):
@@ -148,6 +193,7 @@ class Room:
         self.catch_done = False
         self.acks = {}
         self.resolved_at = None
+        self.guess = "either"
         self.bump()
 
     def call_left(self, now=None):

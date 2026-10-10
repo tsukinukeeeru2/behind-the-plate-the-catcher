@@ -67,7 +67,7 @@ BTP.drawHudRing = function (ctx, g) {
 };
 
 /* ---------- the strike-zone picture for a human swing: the ball, and the cursor where it really was ---------- */
-D.picture = function (ball, sw) {
+D.picture = function (ball, sw, target) {
   var ZV = { x0: -0.5, x1: 0.5, y0: 0.25, y1: 1.35, w: 200, h: 220 };
   function zx(x) { return (x - ZV.x0) / (ZV.x1 - ZV.x0) * ZV.w; }
   function zy(y) { return (ZV.y1 - y) / (ZV.y1 - ZV.y0) * ZV.h; }
@@ -79,6 +79,10 @@ D.picture = function (ball, sw) {
     h += '<line x1="' + bx0 + '" y1="' + (by0 + (by1 - by0) * i / 3) + '" x2="' + bx1 + '" y2="' + (by0 + (by1 - by0) * i / 3) + '" stroke="rgba(255,255,255,.28)"/>';
   }
   h += '<rect x="' + bx0 + '" y="' + by0 + '" width="' + (bx1 - bx0) + '" height="' + (by1 - by0) + '" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2"/>';
+  if (target) {
+    var cw = (bx1 - bx0) / 3, ch = (by1 - by0) / 3;
+    h += '<rect x="' + (bx0 + cw * target.col + 2) + '" y="' + (by0 + ch * target.row + 2) + '" width="' + (cw - 4) + '" height="' + (ch - 4) + '" fill="none" stroke="#50e6c8" stroke-width="1.6" stroke-dasharray="4 3"/>';
+  }
   var bxp = zx(ball.x), byp = zy(ball.y);
   if (sw && sw.swung) {
     var m = D.MODES[sw.mode] || D.MODES.normal, cx = zx(ball.x + sw.dx), cy = zy(ball.y + sw.dy), r = m.radius * ZV.w;
@@ -111,7 +115,7 @@ D.helpHTML = function (mode) {
     steps = '<div class="hp-steps"><div><b>1</b><span>Wait for the call</span><i>the catcher chooses; you cannot see it</i></div>' +
       '<div><b>2</b><span>The pitch</span><i>two rings appear and start closing</i></div>' +
       '<div><b>3</b><span>Swing</span><i>press <kbd>Space</kbd> the moment they overlap</i></div></div>';
-    keys = '<div class="hp-keys"><span><kbd>Space</kbd> swing (one per pitch)</span><span><kbd>P</kbd> pause</span></div>';
+    keys = '<div class="hp-keys"><span><kbd>Space</kbd> swing (one per pitch)</span><span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> what to wait for</span><span><kbd>P</kbd> pause</span></div>';
   } else {
     steps = '<div class="hp-steps"><div><b>1</b><span>Choose the pitch</span><i>pitch &middot; target &middot; intent, then <kbd>Enter</kbd></i></div>' +
       '<div><b>2</b><span>The pitch</span><i>watch the ball come in</i></div>' +
@@ -119,7 +123,8 @@ D.helpHTML = function (mode) {
     keys = '<div class="hp-keys"><span><kbd>1</kbd>-<kbd>9</kbd> pitch</span><span><kbd>&larr;&uarr;&darr;&rarr;</kbd> target</span><span><kbd>Enter</kbd> call</span><span><kbd>Space</kbd> catch</span><span><kbd>P</kbd> pause</span></div>';
   }
   var extra;
-  if (role === 'batter') extra = '<div class="hp-box"><b>Timing</b><p>The rings close on a fixed mark at the speed of the real pitch: quick for a fastball, slower for a changeup. Inside pitches are met earlier and outside ones later, and the rings already account for that. <b>PERFECT</b> is the centre, <b>GOOD</b> is close, <b>EARLY</b> / <b>LATE</b> are weak or foul, and far off is a miss. The page aims the bat for you.</p></div>' +
+  if (role === 'batter') extra = '<div class="hp-box"><b>Wait for a pitch (optional)</b><p>Before each pitch you can say <b>Fastball</b>, <b>Off-speed</b> or <b>Either</b>. The catcher does not see it until the pitch is over. Guess right and the contact is a little harder; guess wrong and your timing window is a little tighter (never an automatic miss). <b>Either</b> keeps both small.</p></div>' +
+    '<div class="hp-box"><b>Timing</b><p>The rings close on a fixed mark at the speed of the real pitch: quick for a fastball, slower for a changeup. Inside pitches are met earlier and outside ones later, and the rings already account for that. <b>PERFECT</b> is the centre, <b>GOOD</b> is close, <b>EARLY</b> / <b>LATE</b> are weak or foul, and far off is a miss. The page aims the bat for you.</p></div>' +
     '<div class="hp-box"><b>Online</b><p>Your press is timed on the shared game clock, so a slow connection does not cost you. If either player drops out, the game pauses.</p></div>';
   else if (role === 'catcher') extra = '<div class="hp-box"><b>Calling for a human batter</b><p>Your call is hidden from the batter until the pitch is thrown, then it is revealed. The batter times a swing with Space, so a fastball on the inside and a changeup on the outside really are different problems for him.</p></div>' +
     '<div class="hp-box"><b>Timer</b><p>The room\u2019s call timer starts when both players are ready. When it runs out your current pick is thrown (none picked: the standard call). It stops while the game is paused or someone is disconnected.</p></div>';

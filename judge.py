@@ -31,9 +31,11 @@ from strategy import (
 )
 
 
-def _decide_timing(guess_class, guess_strength, actual_class, seq, history, pitch_type, rng):
-    """Decide the timing from the batter's guess and the actual pitch class."""
-    shift = seq["timing_shift"]        # negative if the setup threw him off (= more likely to mistime)
+def _decide_timing(guess_class, guess_strength, actual_class, seq, history, pitch_type, rng, loc_adj=0.0):
+    """Decide the timing from the batter's guess and the actual pitch class.
+
+    loc_adj: when he is also waiting for a spot, a pitch there is easier to time and a pitch elsewhere a little harder."""
+    shift = seq["timing_shift"] + loc_adj        # negative if the setup threw him off (= more likely to mistime)
 
     if guess_class == actual_class:
         on_time_chance = 0.5 + 0.4 * guess_strength + shift
@@ -161,8 +163,11 @@ def prepare_pitch(state, pitch_type, target_course="middle", rng=None, intent="s
     intent_adj, intent_dq = intent_effects(intent, state.balls, state.strikes, batter, family)
 
     # 4. TIMING
+    loc_adj = 0.0
+    if guess["location"] != "any":
+        loc_adj = 0.32 * guess["loc_strength"] * (2 * zone_overlap(guess["location"], actual_course) - 1)
     timing = _decide_timing(guess["class"], guess["class_strength"], guess_class2,
-                            seq, history, pitch_type, rng)
+                            seq, history, pitch_type, rng, loc_adj=loc_adj)
 
     # 5. IN-ZONE (the actual location's strike rate x quality x intent)
     zone_chance = course_p["strike_rate"]

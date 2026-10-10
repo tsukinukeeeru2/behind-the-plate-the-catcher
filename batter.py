@@ -176,6 +176,11 @@ class Batter:
             location, loc_strength = self.hot_course, round(0.4 + 0.4 * class_strength, 2)
         else:
             location, loc_strength = "any", 0.15
+        # 6. The same spot again and again: he starts to wait for it there (any count except two strikes).
+        #    Changing the spot (or the pitch) takes that away again.
+        if state.strikes < 2 and last is not None and history.same_course_streak() >= 2:
+            location = last["actual_course"]
+            loc_strength = round(min(0.8, 0.40 + 0.20 * (history.same_course_streak() - 2)), 2)
 
         return {"class": guess_class, "class_strength": round(class_strength, 2),
                 "location": location, "loc_strength": loc_strength}

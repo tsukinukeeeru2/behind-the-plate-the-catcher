@@ -58,6 +58,8 @@ class MatchState:
         self.batters_faced = 1           # for the Postgame Report. The first batter counts as one
         self.opp_tactic = None           # the opposing bench's tactic: None / "bunt" / "hit_and_run" (#C small ball)
         self.tactic_decided = False       # whether this at-bat's tactic is decided (makes begin_at_bat idempotent)
+        self.walkoffs = True              # False in an online match (both halves start 0-0 and only count the runs)
+        self.run_cap = None               # an online match ends a half at this many runs (keeps it short); None = three outs only
         self.framed_strikes = 0          # how many times framing made a "ball" look like a "strike" (#catcher's craft)
         self.good_call_streak = 0        # how many "good calls" in a row (a lenient test; the number itself is never shown)
         self.catch_stats = {"clean": 0, "barely": 0, "miss": 0}   # the catcher's own mitt work (the 3D page's catch game)
@@ -485,12 +487,12 @@ class MatchState:
         goes ahead, the game ends right there without waiting for three outs. It does not apply
         to a scene that already started behind (there is no "before" to be overtaken).
         """
-        return (self.half == "bottom"
+        return (self.walkoffs and self.half == "bottom"
                 and (self.start_our - self.start_opp) >= 0
                 and self.opp_score > self.our_score)
 
     def is_over(self):
-        return self.outs >= 3 or self.is_walkoff()
+        return self.outs >= 3 or self.is_walkoff() or bool(self.run_cap and self.runs_this_inning >= self.run_cap)
 
     def game_over(self):
         return self.is_over()

@@ -55,6 +55,7 @@ from lineup import load_lineup_file
 from match_state import generate_random_situation
 import playview
 from api import PITCH_MOVE, build_state, is_catchable
+from pitch_data import guess_class_of
 from stadium import render_stadium_page
 from pitch_data import pitch_name, repertoire_options, velocity_of
 from strategy import (PITCH_INTENTS, build_analysis, build_postgame_report, catcher_rating, grade_reads,
@@ -230,6 +231,21 @@ class GameSession:
         self.tutorial_skipped = False
         self.log_path = None
         self.play_shown = None
+
+    def start_match_half(self, seed, half, run_cap):
+        """One half of an online match: a fresh inning, 0-0, nobody on, nobody out. Both halves use the same seed, so the lineup, the
+        pitcher and the fielders are the same for both players (the pitches that follow are not)."""
+        self.start_new_game(challenge_seed=seed, scenario=None, mode="duel")
+        st = self.state
+        st.inning, st.is_extra, st.half = 1, False, ("top" if half == 1 else "bottom")
+        st.our_score = st.opp_score = st.start_our = st.start_opp = 0
+        st.outs, st.runners, st.runner_speeds = 0, [False, False, False], [None, None, None]
+        st.lineup.index = 0
+        st.walkoffs, st.run_cap = False, run_cap
+        st.opp_tactic, st.tactic_decided = None, True
+        self.rng = random.Random(seed * 31 + half)
+        self.showing_intro = False
+        self.tutorial_skipped = True
 
     def finish_if_over(self):
         if self.state is not None and self.state.is_over() and self.log_path is None:
@@ -1900,20 +1916,23 @@ def start_pitch2p(session, pitch_type, course, intent):
     return True
 
 
-def finish_swing(session, form):
-    """Judge the thrown pitch with the batter's swing (form: swung, dx, dy, off, mode). No swing = he took it."""
+def finish_swing(session, form, guess=None):
+    """Judge the thrown pitch with the batter's swing (form: swung, dx, dy, off, mode). No swing = he took it.
+    guess: what the batter said he was looking for before the pitch ("fastball" / "offspeed" / "either" / None)."""
     plan, state = session.plan, session.state
     if plan is None or session.pitch_gen is not None:
         return False
-    human = {"swung": False}
+    fit = swing_rules.guess_fit(guess, guess_class_of(plan["pitch_type"]))
+    human = {"swung": False, "guess": guess, "guess_fit": fit}
     if form.get("swung") == "1":
         try:
             dx, dy, off = (max(-1.0, min(1.0, float(form.get(k, "0")))) for k in ("dx", "dy", "off"))
         except ValueError:
             dx = dy = off = None
         if dx is not None and all(v == v for v in (dx, dy, off)):          # (NaN is not a number)
-            human = swing_rules.judge_swing(dx, dy, off, form.get("mode"), state.batter, session.rng)
+            human = swing_rules.judge_swing(dx, dy, off, form.get("mode"), state.batter, session.rng, fit=fit)
             human["swung"] = True
+            human["guess"] = guess
     session.plan = None
     session.pitch_qtes = []
     session.pitch_gen = resolve_pitch_flow(state, plan["pitch_type"], plan["course"], plan["intent"], session.rng,
@@ -1924,12 +1943,12 @@ def finish_swing(session, form):
     return True
 
 
-def apply_catch_result(session, quality):
+def apply_catch_result(session, quality, dt_ms=None):
     state = session.state
     if quality in ("clean", "barely", "miss") and session.last_catch is None and state.can_apply_catch():
         res = state.apply_catch(quality, session.rng)
         session.next_tempo = {"clean": 0.10, "barely": 0.02, "miss": -0.10}[quality]
-        session.last_catch = dict(res, quality=quality)
+        session.last_catch = dict(res, quality=quality, dt_ms=dt_ms)
         if res["message"]:
             session.messages = session.messages + [">>> " + res["message"]]
         return True
@@ -1958,6 +1977,14 @@ def room_view(room, role):
         if st.get("phase") == "qte":
             st["phase"] = "play"                           # the catcher's own rhythm game is none of his business
     pz = room.paused
+    pid, other_pid = room.pid_of_token(room.tokens.get(role)), room.pid_of_token(room.tokens.get(rooms.other(role)))
+    votes = {"you": room.votes.get(pid), "opp": room.votes.get(other_pid)}
+    st["match"] = {"half": room.half, "halves": 2, "id": room.match_id, "run_cap": rooms.RUN_CAP, "you": _room_runs(room, pid), "opp": _room_runs(room, other_pid),
+                   "halftime_left": (max(0.0, rooms.HALFTIME_MS - (now - room.halftime_at)) / 1000.0 if room.phase == "halftime" and room.halftime_at and not room.paused else None),
+                   "votes": votes if room.phase == "over" else None,
+                   "result": (("draw" if _room_runs(room, pid) == _room_runs(room, other_pid) else ("win" if _room_runs(room, pid) > _room_runs(room, other_pid) else "lose"))
+                              if room.phase == "over" else None)}
+    st["guess"] = room.guess if role == "batter" and room.phase in ("call", "pitch") else None     # the catcher is never told, before the pitch
     st["room"] = {
         "code": rooms.pretty(room.code), "role": role, "phase": room.phase, "creator": room.creator_role,
         "joined": {r: r in room.tokens for r in rooms.ROLES},
@@ -1965,7 +1992,7 @@ def room_view(room, role):
         "ready": dict(room.ready),
         "paused": ({"reason": pz["reason"], "role": pz["role"], "you": pz["role"] == role} if pz else None),
         "start_at": room.start_at, "server_now": now, "call_left": room.call_left(now), "call_limit": room.call_limit,
-        "ver": room.ver, "pitch_seq": room.pitch_seq, "resolved": room.resolved_seq is not None, "catch_done": room.catch_done,
+        "guide": room.guide, "pid": pid, "ver": room.ver, "pitch_seq": room.pitch_seq, "resolved": room.resolved_seq is not None, "catch_done": room.catch_done,
     }
     return st
 
@@ -1986,17 +2013,30 @@ def _room_check_resolved(room):
     sess = room.session
     if (room.phase == "pitch" and room.resolved_seq is None and sess.event_seq == room.pitch_seq
             and sess.pitch_gen is None and sess.pending_qte is None):
-        room.note_resolved(room.pitch_seq, needs_catch=is_catchable(sess))
+        room.note_resolved(room.pitch_seq, needs_catch=is_catchable(sess) and not sess.state.is_over())   # (the last out of a half has no catch to wait for)
 
 
 def _room_progress(room):
-    """When both screens have finished showing the pitch (or one has gone quiet for too long), the next call begins."""
+    """When both screens have finished showing the pitch (or one has gone quiet for too long), the next call begins.
+    When a half is over: after the first the sides switch, after the second the match is over."""
     if room.phase == "resolve" and not room.paused and (room.both_acked() or rooms.now_ms() > room.resolved_at + rooms.ACK_TIMEOUT_MS):
         if room.session.state.is_over():
-            room.phase = "over"
+            room.runs[room.pid_of_role("batter")] += room.session.state.runs_this_inning
+            if room.half == 1:
+                room.phase = "halftime"
+                room.halftime_at = rooms.now_ms()
+            else:
+                room.phase = "over"
+                room.votes = {}
             room.bump()
         else:
             room.begin_call(room.call_limit)
+
+
+def _room_next_half(room):
+    room.swap_roles()
+    room.half = 2
+    _room_start_half(room)
 
 
 def _room_after(room, role, path):
@@ -2009,12 +2049,28 @@ def _room_after(room, role, path):
         room.note_catch()
 
 
-def _room_start(room):
-    sess = room.session
-    sess.start_new_game(mode="duel")
-    sess.showing_intro = False
-    sess.tutorial_skipped = True
+def _room_start_half(room):
+    room.session.start_match_half(room.seed, room.half, rooms.RUN_CAP)
+    room.halftime_at = None
     room.begin_call(room.call_limit)
+
+
+def _room_start_match(room):
+    """A new match: both halves from the top, nothing carried over."""
+    room.match_id += 1
+    room.seed = random.randrange(1000, 1000000)
+    room.half = 1
+    room.runs = {"A": 0, "B": 0}
+    room.votes = {}
+    _room_start_half(room)
+
+
+def _room_runs(room, pid):
+    """Runs this player has scored in the match so far (the half in progress counts if he is the one batting)."""
+    n = room.runs.get(pid, 0)
+    if room.phase in ("call", "pitch", "resolve") and room.pid_of_role("batter") == pid and room.session.state is not None:
+        n += room.session.state.runs_this_inning
+    return n
 
 
 def room_tick():
@@ -2022,6 +2078,9 @@ def room_tick():
     now = rooms.now_ms()
     for room in list(ROOMS.rooms.values()):
         if room.phase in ("lobby", "ready", "over"):
+            continue
+        if room.phase == "halftime" and not room.paused and any(r not in room.tokens or not room.connected(r, now) for r in rooms.ROLES):
+            room.pause([r for r in rooms.ROLES if r not in room.tokens or not room.connected(r, now)][0], "disconnect")
             continue
         if not room.paused:
             gone = [r for r in rooms.ROLES if r not in room.tokens or not room.connected(r, now)]
@@ -2040,13 +2099,15 @@ def room_tick():
         elif room.phase == "pitch":
             if room.resolved_seq is None:
                 if sess.plan is not None and room.start_at and now > room.start_at + rooms.SWING_TIMEOUT_MS:
-                    finish_swing(sess, {"swung": "0"})                                    # the batter never answered: he let it go by
+                    finish_swing(sess, {"swung": "0"}, guess=room.guess)                  # the batter never answered: he let it go by
                     _room_check_resolved(room)
             elif not room.catch_done and now > room.resolved_at + rooms.CATCH_TIMEOUT_MS:
                 apply_catch_result(sess, "miss")                                          # the catcher never answered: not pressing is a miss
                 room.note_catch()
         elif room.phase == "resolve":
             _room_progress(room)
+        elif room.phase == "halftime" and room.halftime_at is not None and now > room.halftime_at + rooms.HALFTIME_MS:
+            _room_next_half(room)
 
 
 def _room_watch():
@@ -2177,6 +2238,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if room.ver == since:
             room.wait_for_change(since, 1.5)                    # (without the request lock: others keep being served)
         with _LOCK:
+            role = room.role_of(self.headers.get("X-Token")) or role      # (his side may have changed while he waited: the sides switch at half-time)
             room.touch(role)
             self._ctx = (room, role)
             try:
@@ -2248,7 +2310,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_swing(self, form, state):
         """Two-player mode, step two: the batter's swing (or no swing) arrives and the pitch is judged with it."""
-        finish_swing(SESSION, form)
+        ctx = getattr(self, "_ctx", None)
+        finish_swing(SESSION, form, guess=ctx[0].guess if ctx else None)
         self._redirect()
 
     def _handle_room_post(self, form):
@@ -2264,6 +2327,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except ValueError:
                 limit = 15
             room.call_limit = limit if limit in ROOM_TIMERS else 15
+            if form.get("guide") in ("normal", "subtle"):
+                room.guide = form["guide"]
             token = room.join(role)
             self._ctx = (room, role)
             self._send_json({"ok": True, "code": rooms.pretty(room.code), "token": token, "role": role, "view": room_view(room, role)})
@@ -2296,7 +2361,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         room, role = ctx
         if path == "/room/ready":
             if room.set_ready(role, form.get("ready", "1") == "1"):
-                _room_start(room)
+                _room_start_match(room)
+        elif path == "/room/guess":                      # the batter says what he is looking for (only before the pitch, only he can)
+            if role == "batter" and room.phase == "call" and not room.paused and form.get("g") in ("fastball", "offspeed", "either"):
+                room.guess = form["g"]
+                room.bump()
+        elif path == "/room/guide":                      # the timing guide setting, agreed in the lobby
+            room.set_guide(form.get("v", ""))
+        elif path == "/room/rematch":                    # after a match: "same" roles or "swap"; it starts when both pick the same
+            if room.phase == "over" and form.get("v") in ("same", "swap"):
+                room.votes[room.pid_of_token(room.tokens.get(role))] = form["v"]
+                if len(room.votes) == 2 and len(set(room.votes.values())) == 1:
+                    if form["v"] == "swap":
+                        room.swap_roles()
+                    _room_start_match(room)
+                room.bump()
         elif path == "/room/pause":
             room.set_manual_pause(role, form.get("on") == "1")
         elif path == "/room/ack":
@@ -2306,7 +2385,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pass
             _room_progress(room)
         elif path == "/room/leave":
-            room.tokens.pop(role, None)
+            room.pids.pop(room.tokens.pop(role, None), None)
             room.last_seen.pop(role, None)
             room.ready[role] = False
             if not room.tokens:
@@ -2419,7 +2498,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path == "/catch":
-            apply_catch_result(SESSION, form.get("quality"))
+            try:
+                dt_ms = max(-2000, min(2000, int(float(form.get("dt_ms", "")))))     # how far off the press was (shown in the recap)
+            except (ValueError, OverflowError):
+                dt_ms = None
+            apply_catch_result(SESSION, form.get("quality"), dt_ms)
             self._redirect()
             return
 

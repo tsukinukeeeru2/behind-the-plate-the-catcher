@@ -12,6 +12,7 @@ import playview
 from constants import COURSE_SHORT, zone_x, zone_y
 from pitch_data import family_of, pitch_name, repertoire_options, velocity_of
 import swing as swing_rules
+from recap import build_recap
 from strategy import PITCH_INTENTS, intent_label
 
 # A rough break for each pitch: (drop, sweep). drop 0 = none .. 1 = big drop; sweep: - slides toward third base,
@@ -69,7 +70,7 @@ def human_swing_info(h):
     dy = h["dy"]
     vert = "OVER THE TOP" if dy > 0.07 else ("UNDER IT" if dy < -0.07 else "")
     return {"swung": True, "timing": h["timing"], "label": h["timing_label"], "off": h["off"], "ahead": round(-h["off"] * 3.2, 3),
-            "dy": dy, "dx": h["dx"], "vert": vert, "human": True, "centre": h["centre"], "mode": h["mode"], "grade": h.get("grade"),
+            "dy": dy, "dx": h["dx"], "vert": vert, "human": True, "centre": h["centre"], "mode": h["mode"], "grade": h.get("grade"), "guess_fit": h.get("guess_fit"),
             "contact": h["contact"], "pos": swing_rules.position_words(h["dx"], dy)}
 
 
@@ -194,7 +195,9 @@ def _outcome_json(session):
         "duel": o.get("human") is not None,
         "qtes": list(session.pitch_qtes),
         "catch": session.last_catch,
+        "guess": ({"choice": o["human"].get("guess"), "fit": o["human"].get("guess_fit")} if o.get("human") else None),
     }
+    out["recap"] = build_recap(session, o, dict(call, intent_label=out["intent_label"]), out["swing"], session.last_catch)
     # the mitt game applies when the pitch ended in the mitt and no other catching game (a block, a throw) already covered it
     out["catchable"] = is_catchable(session)
     if bb is not None and fielding and play:

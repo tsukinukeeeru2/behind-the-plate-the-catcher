@@ -30,6 +30,21 @@ MODES = {
     # the standard swing of the online game: no cursor (the page aims for you), one press of Space, a wide window for the timing
     "auto": {"radius": 0.17, "window": 1.0, "power": 0.0, "label": "AUTO", "tmax": 0.20, "good": 0.09, "perfect": 0.04},
 }
+# What the batter was looking for (chosen before the pitch, hidden from the catcher until it has been thrown) against what came.
+# Right: a little more power and a slightly more forgiving window. Wrong: a slightly narrower window and a little less power
+# (never an automatic miss: the swing still has to be off by a lot). "Either": a small edge or a small penalty, never much of either.
+GUESS_FIT = {"right": {"window": 1.08, "score": 0.07}, "either": {"window": 1.0, "score": 0.02}, "wrong": {"window": 0.85, "score": -0.05}}
+
+
+def guess_fit(guess, pitch_class):
+    """right / wrong / either (None when he chose nothing), from his choice ("fastball" / "offspeed" / "either") and the pitch's class."""
+    if guess == "either":
+        return "either"
+    if guess in ("fastball", "offspeed"):
+        return "right" if guess == pitch_class else "wrong"
+    return None
+
+
 AUTO_AIM = 0.35                     # the automatic aim sits this fraction of the way from the zone's centre to the ball (the page applies it)
 
 
@@ -69,7 +84,7 @@ def position_words(dx, dy):
     return (v + " the ball") if v else (h + " of the ball")
 
 
-def judge_swing(dx, dy, off, mode, batter, rng=None):
+def judge_swing(dx, dy, off, mode, batter, rng=None, fit=None):
     """Decide one swing. Returns a dict:
 
         contact : "miss" | "foul" | "fair"
@@ -81,12 +96,13 @@ def judge_swing(dx, dy, off, mode, batter, rng=None):
     m = mode_of(mode)
     dist = math.hypot(dx, dy)
     reach = m["radius"] + BALL_R
-    te = abs(off) / (m.get("tmax", TIME_MAX) * m["window"])   # 0 = perfectly timed .. 1 = at the limit
+    g = GUESS_FIT.get(fit, {"window": 1.0, "score": 0.0})
+    te = abs(off) / (m.get("tmax", TIME_MAX) * m["window"] * g["window"])   # 0 = perfectly timed .. 1 = at the limit
     e = dist / reach                                       # 0 = dead centre .. 1 = on the rim
     timing, label, grade = timing_word(off, m)
     info = {"timing": timing, "timing_label": label, "grade": grade, "off": round(off, 3), "dx": round(dx, 3), "dy": round(dy, 3),
             "dist": round(dist, 3), "centre": round(_clamp(1.0 - e, 0.0, 1.0), 2), "mode": "power" if m is MODES["power"] else ("auto" if m is MODES["auto"] else "normal"),
-            "contact": "miss", "batted": None}
+            "contact": "miss", "batted": None, "guess_fit": fit}
     if te >= 1.0 or e > 1.0:
         return info
     # a mistimed or edge-of-the-cursor contact is a foul more often than not
@@ -95,7 +111,7 @@ def judge_swing(dx, dy, off, mode, batter, rng=None):
         info["contact"] = "foul"
         return info
     quality = _clamp(1.0 - 0.55 * e - 0.55 * te, 0.0, 1.0)
-    score = 0.08 + 0.85 * quality ** 1.5 + m["power"] + (getattr(batter, "power", 0.5) - 0.5) * 0.16 + rng.uniform(-0.03, 0.03)
+    score = 0.08 + 0.85 * quality ** 1.5 + g["score"] + m["power"] + (getattr(batter, "power", 0.5) - 0.5) * 0.16 + rng.uniform(-0.03, 0.03)
     score = _clamp(score, 0.0, 1.0)
     hardness = "hard" if score >= 0.62 else ("medium" if score >= 0.38 else "soft")
 

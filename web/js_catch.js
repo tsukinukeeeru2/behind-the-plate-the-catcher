@@ -40,24 +40,32 @@ L.pose = function (l) {
   return sw.timing === 'late' ? 'late' : (sw.timing === 'early' ? 'early' : 'contact');
 };
 // a = {l (the last pitch from the server), reaction, reads, bats, Pt ({x,y} where it crossed), markT ({row,col}), headline (text), difficulty, catchLabel}
+// The recap rows come from the judged data (server: recap.py). Facts first, then the catch (its own line: a catch is judged apart from the
+// call), then the tip, which is advice and says so.
+var FACT_TONE = { good: 'cq-clean', warn: 'cq-barely', bad: 'cq-miss', perfect: 'gr-perfect', early: 'gr-early', late: 'gr-late' };
+function factRows(l, skip) {
+  var r = l.recap; if (!r) return '';
+  return r.facts.filter(function (f) { return skip.indexOf(f.k) < 0; }).map(function (f) {
+    return '<div class="rp-line"><span class="rp-k">' + esc(f.k) + '</span><span class="rp-fact ' + (FACT_TONE[f.tone] || '') + '">' + esc(f.v) + '</span></div>';
+  }).join('');
+}
+function tipRow(l) {
+  var r = l.recap; if (!r || !r.tips || !r.tips.length) return '';
+  return '<div class="rp-tip"><span class="rp-tipk">TIP</span>' + r.tips.map(esc).join(' ') + '</div>';
+}
 // two players: the call is revealed, and the human swing is described by what he did (never by what he was thinking)
 function duelPanel(a) {
   var l = a.l, sw = l.swing, tone = TONE[l.result] || 'neutral', D = BTP.duel;
   var word = sw.swung ? sw.label : 'TOOK IT', wcls = !sw.swung ? 'took' : sw.timing;
   var ms = sw.swung ? (sw.off < 0 ? '' : '+') + Math.round(sw.off * 1000) + ' ms' : '';
-  var swingLine = sw.swung
-    ? '<div class="rp-line"><span class="rp-k">SWING</span><b>' + (sw.mode === 'power' ? 'POWER' : 'NORMAL') + '</b><span class="rp-why">' + esc(D.posWords(sw.dx, sw.dy)) + ' &middot; ' + esc(sw.label) + ' (' + ms + ')' +
-      (sw.contact === 'miss' ? ' &middot; no contact' : (sw.contact === 'foul' ? ' &middot; off the edge of the bat' : ' &middot; centred ' + Math.round(sw.centre * 100) + '%')) + '</span></div>'
-    : '<div class="rp-line"><span class="rp-k">SWING</span><b>Took it</b><span class="rp-why">' + (l.in_zone ? 'It was in the zone' : 'It was off the plate') + '</span></div>';
-  var c = a.catchLabel, catchLine = c ? '<div class="rp-line"><span class="rp-k">CATCH</span><b class="cq-' + c.cls + '">' + esc(c.text) + '</b><span class="rp-why">' + esc(c.detail || '') + '</span></div>' : '';
-  var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>'
-    : '<div class="rp-none">Not enough swings yet to read a pattern.</div>';
+  var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.slice(0, 2).map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>' : '';
   var callTxt = esc(l.pitch_name) + ' &middot; ' + esc(l.intent_label);
+  var c = a.catchLabel;
   return '<div class="rp-face"><div class="rp-cap">THE CALL, REVEALED</div><div class="rp-kao" style="font-size:24px">' + esc(l.pitch_name) + '</div><div class="rp-mood">' + esc(l.intent_label) + '</div>' +
     '<div class="rp-say">Aimed ' + esc(D.courseName(l.target_course)) + ' &middot; it went ' + esc(D.courseName(l.actual_course)) + '</div></div>' +
-    '<div class="rp-zone"><div class="rp-cap">HIS SWING</div>' + D.picture(a.Pt, sw) + '<div class="rp-vert">' + esc(sw.swung ? (sw.dy > 0.07 ? 'OVER THE TOP' : (sw.dy < -0.07 ? 'UNDER IT' : '')) : '') + '</div></div>' +
-    '<div class="rp-main"><div class="rp-head"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span></div>' +
-    swingLine + catchLine + '<div class="rp-sub">WHAT YOU HAVE SEEN</div>' + reads + '</div>' +
+    '<div class="rp-zone"><div class="rp-cap">AIMED (dashed) \u00B7 WENT \u00B7 BAT</div>' + D.picture(a.Pt, sw, a.markT) + '<div class="rp-vert">' + esc(sw.swung ? (sw.dy > 0.07 ? 'OVER THE TOP' : (sw.dy < -0.07 ? 'UNDER IT' : '')) : '') + '</div></div>' +
+    '<div class="rp-main"><div class="rp-head"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' + (ms ? '<span class="rp-ms">' + esc(ms) + '</span>' : '') + '</div>' +
+    factRows(l, ['PITCH', 'RESULT']) + tipRow(l) + reads + '</div>' +
     '<div class="rp-mini"><span class="rp-mood-s">' + callTxt + '</span><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' +
     (c ? '<span class="rp-chip cq-' + c.cls + '">' + esc(c.text) + '</span>' : '') + '</div>';
 }
@@ -68,16 +76,14 @@ L.panelHTML = function (a) {
   var wcls = !sw.swung ? 'took' : sw.timing;
   var rx = a.reaction || { category: 'neutral', text: '' };
   var callLine = a.difficulty === 'expert' ? '' :
-    '<div class="rp-line"><span class="rp-k">CALL</span><b class="tag-' + ev.grade + '">' + esc(ev.title) + '</b><span class="rp-why">' + esc(ev.reason) + '</span></div>';
-  var c = l.catch, catchLine = '';
-  if (a.catchLabel) catchLine = '<div class="rp-line"><span class="rp-k">CATCH</span><b class="cq-' + a.catchLabel.cls + '">' + esc(a.catchLabel.text) + '</b><span class="rp-why">' + esc(a.catchLabel.detail || '') + '</span></div>';
-  var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>'
+    '<div class="rp-line"><span class="rp-k">CALL GRADE</span><b class="tag-' + ev.grade + '">' + esc(ev.title) + '</b><span class="rp-why">' + esc(ev.reason) + '</span></div>';
+  var reads = a.reads && a.reads.length ? '<ul class="rp-reads">' + a.reads.slice(0, 2).map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>'
     : '<div class="rp-none">Not enough swings yet to read a pattern.</div>';
   var kao = BTP.hud.kaomoji(rx.category, l.seq);
   return '<div class="rp-face"><div class="rp-cap">HIS MOOD</div><div class="rp-kao" style="font-size:' + kao.size + 'px">' + esc(kao.text) + '</div><div class="rp-mood">' + esc(kao.label) + '</div><div class="rp-say">&ldquo;' + esc(rx.text || '') + '&rdquo;</div></div>' +
-    '<div class="rp-zone"><div class="rp-cap">HIS SWING</div>' + BTP.hud.zonePicture(a.Pt, sw, a.bats, a.markT) + '<div class="rp-vert">' + esc(sw.vert || '') + '</div></div>' +
+    '<div class="rp-zone"><div class="rp-cap">AIMED (dashed) \u00B7 WENT \u00B7 BAT</div>' + BTP.hud.zonePicture(a.Pt, sw, a.bats, a.markT) + '<div class="rp-vert">' + esc(sw.vert || '') + '</div></div>' +
     '<div class="rp-main"><div class="rp-head"><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span></div>' +
-    callLine + catchLine + '<div class="rp-sub">WHAT YOU HAVE SEEN</div>' + reads + '</div>' +
+    factRows(l, ['PITCH', 'RESULT']) + callLine + tipRow(l) + '<div class="rp-sub">WHAT YOU HAVE SEEN</div>' + reads + '</div>' +
     '<div class="rp-mini"><span class="rp-kao-s">' + esc(kao.text) + '</span><span class="rp-mood-s">' + esc(kao.label) + '</span><span class="rp-timing t-' + wcls + '">' + esc(word) + '</span><span class="rp-result r-' + tone + '">' + esc(a.headline) + '</span>' +
     (a.catchLabel ? '<span class="rp-chip cq-' + a.catchLabel.cls + '">' + esc(a.catchLabel.text) + '</span>' : '') +
     (a.difficulty === 'expert' ? '' : '<span class="rp-chip tag-' + ev.grade + '">' + esc(ev.title) + '</span>') + '</div>';

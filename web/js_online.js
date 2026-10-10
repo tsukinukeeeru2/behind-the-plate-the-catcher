@@ -86,6 +86,7 @@ N.openMenu = function (msg) {
     '<div class="lb-cols"><div class="lb-col"><b>Create a room</b><div class="lb-sides">' +
     '<label><input type="radio" name="lbside" value="catcher" checked> Catcher <i>picks the pitch, catches</i></label>' +
     '<label><input type="radio" name="lbside" value="batter"> Batter <i>swings with Space</i></label></div>' +
+    '<label class="lb-t">Timing guide <select id="lb-guide"><option value="normal" selected>Normal</option><option value="subtle">Subtle</option></select></label>' +
     '<label class="lb-t">Call timer <select id="lb-timer"><option value="0">Off</option><option value="10">10 s</option><option value="15" selected>15 s</option><option value="20">20 s</option><option value="30">30 s</option></select></label>' +
     '<button type="button" class="ho-ready" id="lb-create">CREATE ROOM</button></div>' +
     '<div class="lb-col"><b>Join with a code</b><input id="lb-code" maxlength="8" placeholder="K7Q-H2M" autocomplete="off" spellcheck="false">' +
@@ -95,7 +96,7 @@ N.openMenu = function (msg) {
   $('lb-create').onclick = function () {
     var side = document.querySelector('input[name=lbside]:checked').value;
     say('Creating the room...');
-    N.post('/room/create', { role: side, timer: $('lb-timer').value }).then(entered, function () { say('Could not reach the game server.', true); });
+    N.post('/room/create', { role: side, timer: $('lb-timer').value, guide: $('lb-guide').value }).then(entered, function () { say('Could not reach the game server.', true); });
   };
   var join = function () {
     say('Joining...');
@@ -115,7 +116,7 @@ function entered(res) {
 }
 // the lobby for a room that has not started yet (waiting for the other player, or both here and getting ready)
 N.showRoom = function (v) {
-  var r = v.room, key = [r.phase, r.joined.catcher, r.joined.batter, r.ready.catcher, r.ready.batter, r.connected.catcher, r.connected.batter].join('|');
+  var r = v.room, key = [r.phase, r.joined.catcher, r.joined.batter, r.ready.catcher, r.ready.batter, r.connected.catcher, r.connected.batter, r.guide].join('|');
   if (key === N.lobbyKey) return;
   N.lobbyKey = key;
   var me = r.role, you = r.ready[me], other = me === 'catcher' ? 'batter' : 'catcher';
@@ -129,14 +130,47 @@ N.showRoom = function (v) {
     show('<div class="ho-card lb"><div class="ho-lock">ROOM ' + esc(r.code) + '</div><div class="ho-big">' + (you ? 'Waiting for the other player' : 'Ready to start?') + '</div>' +
       '<div class="lb-who"><div>' + dot(r.connected[me]) + '<b>You</b> · ' + sideName(me) + ' · ' + (r.ready[me] ? '<em>ready</em>' : 'not ready') + '</div>' +
       '<div>' + dot(r.connected[other]) + '<b>Opponent</b> · ' + sideName(other) + ' · ' + (r.ready[other] ? '<em>ready</em>' : 'not ready') + '</div></div>' +
-      '<div class="ho-sub">The game starts, and the call timer starts, when both of you are ready.' + (me === 'batter' ? ' Batter: try the practice swings first.' : '') + '</div>' +
-      '<button type="button" class="ho-ready" id="lb-ready">' + (you ? 'NOT READY' : 'I’M READY') + '</button>' +
-      (me === 'batter' ? '<button type="button" class="lb-alt" id="lb-practice">Practice swings</button>' : '') +
+      '<div class="lb-set"><span>Match: <b>one inning each</b>, then the sides switch. A half ends at 3 outs or ' + (v.match ? v.match.run_cap : 5) + ' runs; most runs wins, equal is a draw.</span></div>' +
+      '<div class="lb-set"><span>Batter’s timing guide:</span> <button type="button" class="lb-opt ' + (r.guide === 'normal' ? 'on' : '') + '" data-guide="normal">Normal</button>' +
+      '<button type="button" class="lb-opt ' + (r.guide === 'subtle' ? 'on' : '') + '" data-guide="subtle">Subtle</button><i>Changing it asks both of you to agree again.</i></div>' +
+      '<div class="ho-sub">The match, and the call timer, start when both of you have agreed to these settings and are ready.</div>' +
+      '<button type="button" class="ho-ready" id="lb-ready">' + (you ? 'NOT READY' : 'I AGREE · I’M READY') + '</button>' +
+      '<button type="button" class="lb-alt" id="lb-practice">' + (me === 'batter' ? 'Practice swings' : 'Practice calling and catching') + '</button>' +
       '<button type="button" class="ho-back" id="lb-leave">Leave the room</button></div>');
     $('lb-ready').onclick = function () { N.post('/room/ready', { ready: you ? '0' : '1' }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
-    var pb = $('lb-practice'); if (pb) pb.onclick = function () { N.hideLobby(); if (N.hooks.practice) N.hooks.practice(); };
+    var pb = $('lb-practice'); if (pb) pb.onclick = function () { N.hideLobby(); if (me === 'batter') { if (N.hooks.practice) N.hooks.practice(); } else if (N.hooks.catchPractice) N.hooks.catchPractice(); };
+    Array.prototype.forEach.call(document.querySelectorAll('[data-guide]'), function (b) {
+      b.onclick = function () { N.post('/room/guide', { v: b.dataset.guide }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
+    });
   }
   var lv = $('lb-leave'); if (lv) lv.onclick = N.leave;
+};
+N.showMatch = function (v) {
+  var r = v.room, m = v.match; if (!m) return;
+  var key = [r.phase, m.id, m.half, m.you, m.opp, m.votes && m.votes.you, m.votes && m.votes.opp, r.paused ? 1 : 0, r.connected.catcher, r.connected.batter].join('|');
+  if (key === N.lobbyKey) return;
+  N.lobbyKey = key;
+  var nextRole = r.role === 'catcher' ? 'BATTER' : 'CATCHER';
+  if (r.phase === 'halftime') {
+    show('<div class="ho-card lb"><div class="ho-lock">END OF THE FIRST HALF</div><div class="ho-big">Switch sides!</div>' +
+      '<div class="lb-score"><div><span>You</span><b>' + m.you + '</b></div><div><span>Opponent</span><b>' + m.opp + '</b></div></div>' +
+      '<div class="ho-sub">Runs so far. In the second half <b>you will be the ' + nextRole + '</b>, and the other player takes the other side. The inning starts fresh: nobody on, nobody out.</div>' +
+      '<div class="lb-bar"><i style="animation-duration:' + (m.halftime_left != null ? m.halftime_left : 6) + 's"></i></div></div>');
+    return;
+  }
+  var res = m.result, title = { win: 'YOU WIN', lose: 'YOU LOSE', draw: 'DRAW' }[res] || 'MATCH OVER';
+  var v1 = m.votes ? m.votes.you : null, v2 = m.votes ? m.votes.opp : null;
+  var chip = function (x) { return x ? (x === 'swap' ? 'swap roles' : 'same roles') : 'not chosen yet'; };
+  show('<div class="ho-card lb"><div class="ho-lock">FINAL \u00B7 ONE INNING EACH</div><div class="ho-big lb-res ' + (res || '') + '">' + title + '</div>' +
+    '<div class="lb-score"><div><span>You</span><b>' + m.you + '</b></div><div><span>Opponent</span><b>' + m.opp + '</b></div></div>' +
+    '<div class="ho-sub">' + (res === 'draw' ? 'Equal runs: a draw.' : (res === 'win' ? 'You scored more runs.' : 'The opponent scored more runs.')) + ' Pick the same option as your opponent to play again.</div>' +
+    '<div class="lb-cols2"><button type="button" class="ho-ready" data-rm="same">REMATCH<i>same sides</i></button><button type="button" class="ho-ready alt" data-rm="swap">SWAP ROLES &amp; REMATCH<i>catcher \u21C4 batter</i></button></div>' +
+    '<div class="lb-votes">You: <b>' + chip(v1) + '</b> \u00B7 Opponent: <b>' + chip(v2) + '</b>' + (v1 && v2 && v1 !== v2 ? ' \u2014 pick the same one to start' : '') + '</div>' +
+    '<button type="button" class="ho-back" id="lb-leave">Leave the room</button></div>');
+  Array.prototype.forEach.call(document.querySelectorAll('[data-rm]'), function (b) {
+    b.onclick = function () { N.post('/room/rematch', { v: b.dataset.rm }).then(function (v3) { if (v3 && v3.room && N.onView) { N.view = v3; N.onView(v3, true); } }); };
+  });
+  $('lb-leave').onclick = N.leave;
 };
 N.leave = function () {
   var done = function () { N.stopPolling(); N.setRoom(null); N.view = null; N.hideLobby(); if (N.hooks.left) N.hooks.left(); };
@@ -160,6 +194,14 @@ BTP.duel.gradeAdvice = function (g, miss) {
 };
 // r = { x, y, r (the closing ring), rt (the mark), alpha, band: 'far'|'good'|'perfect', label }
 BTP.drawSwingRings = function (ctx, r) {
+  if (r.subtle) {                                                                   // the "subtle" setting: thin rings, no colour hint, no words
+    var sa = (r.alpha == null ? 1 : r.alpha) * 0.55;
+    ctx.save(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,214,90,' + sa.toFixed(3) + ')'; ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.rt * 0.85, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,' + sa.toFixed(3) + ')'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, 7); ctx.stroke();
+    if (r.label) { ctx.font = '800 14px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fillText(r.label, r.x, r.y - Math.max(r.r, r.rt) - 14); }
+    ctx.restore(); return;
+  }
   var col = r.band === 'perfect' ? '255,214,90' : (r.band === 'good' ? '110,235,160' : '255,255,255'), a = r.alpha == null ? 1 : r.alpha;
   ctx.save();
   ctx.fillStyle = 'rgba(8,16,28,' + (0.45 * a).toFixed(3) + ')'; ctx.beginPath(); ctx.arc(r.x, r.y, Math.max(r.r, r.rt) + 10, 0, 7); ctx.fill();
