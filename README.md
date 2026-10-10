@@ -81,7 +81,7 @@ The main screen is a first-person view from a crouch behind the plate, in perspe
 
 ### Music
 
-One original trumpet-and-drums loop (synthesized in the browser, no audio files). The catch pop, the swing and the bat crack use the same audio player and follow the same mute and volume. It never restarts while you play: the page does not reload between pitches, there is a single audio player, and the loop continues from the last bar back to the first. The top bar has a mute button and a volume slider, and both are remembered.
+One original trumpet-and-drums loop (synthesized in the browser, no audio files). The sound effects (the pop in the mitt and a bell for a clean catch, the umpire's strike call, the swing and the bat crack, the crowd on a hit and a roar on a home run, a fielder's glove or a scoop, throws, the out at a base, a slide for SAFE, a bell for each run, a chime for a PERFECT swing, and short jingles for the side switch and the final result) are all synthesized too, use the same audio player, and follow the same mute and volume. It never restarts while you play: the page does not reload between pitches, there is a single audio player, and the loop continues from the last bar back to the first. The top bar has a mute button and a volume slider, and both are remembered.
 
 ---
 

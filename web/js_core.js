@@ -106,6 +106,43 @@ BTP.bgm = (function () {
       sfxNoise(t, 0.12, 'lowpass', 380, 0.9 * k); sfxTone(t, 110, 45, 0.2, 0.8 * k, 'sine');
     } else if (name === 'dull') {               // a ball that only just stuck in the mitt: less snap, more thump
       sfxNoise(t, 0.08, 'lowpass', 900, 0.8 * k); sfxTone(t, 130, 60, 0.15, 0.7 * k, 'sine');
+    } else if (name === 'ping') {               // a clean catch: a small bright bell on top of the pop
+      sfxTone(t + 0.04, 1568, 1568, 0.22, 0.16 * k, 'sine'); sfxTone(t + 0.04, 2349, 2349, 0.16, 0.07 * k, 'sine');
+    } else if (name === 'strike') {             // the umpire's call: a sharp clap
+      sfxNoise(t, 0.04, 'highpass', 3200, 0.7 * k); sfxTone(t, 520, 300, 0.07, 0.35 * k, 'square');
+    } else if (name === 'fieldcatch') {         // a fielder takes the ball in the glove: softer than the catcher's mitt
+      sfxNoise(t, 0.05, 'bandpass', 1500, 0.55 * k); sfxTone(t, 190, 90, 0.1, 0.5 * k, 'sine');
+    } else if (name === 'scoop') {              // a grounder gathered up
+      sfxNoise(t, 0.09, 'bandpass', 1100, 0.45 * k); sfxTone(t, 240, 140, 0.07, 0.25 * k, 'triangle');
+    } else if (name === 'throw') {              // a throw on its way
+      var o2 = A.createOscillator(), f2 = A.createBiquadFilter(), g2 = A.createGain();
+      o2.type = 'sawtooth'; o2.frequency.value = 110; f2.type = 'bandpass'; f2.Q.value = 1.5;
+      f2.frequency.setValueAtTime(900, t); f2.frequency.exponentialRampToValueAtTime(2400, t + 0.12);
+      g2.gain.setValueAtTime(0.0001, t); g2.gain.exponentialRampToValueAtTime(0.09 * k, t + 0.05); g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+      o2.connect(f2); f2.connect(g2); g2.connect(sfxOut); o2.start(t); o2.stop(t + 0.17);
+    } else if (name === 'out') {                // an out at a base: the ball hits the glove, a short low note
+      sfxNoise(t, 0.05, 'bandpass', 1800, 0.6 * k); sfxTone(t, 160, 70, 0.14, 0.55 * k, 'sine'); sfxTone(t + 0.07, 330, 220, 0.18, 0.16 * k, 'triangle');
+    } else if (name === 'safe') {               // a slide: dirt
+      sfxNoise(t, 0.28, 'bandpass', 2200, 0.32 * k); sfxNoise(t + 0.05, 0.2, 'lowpass', 600, 0.25 * k);
+    } else if (name === 'run') {                // a run scores: a bell
+      sfxTone(t, 1175, 1175, 0.28, 0.2 * k, 'sine'); sfxTone(t + 0.1, 1568, 1568, 0.34, 0.18 * k, 'sine');
+    } else if (name === 'cheer') {              // the crowd likes a hit
+      var cn = 0.95; sfxNoise(t, cn, 'bandpass', 1000, 0.07 * k); sfxNoise(t + 0.15, cn, 'bandpass', 1800, 0.05 * k);
+    } else if (name === 'roar') {               // a home run: a long swell, then a bell
+      sfxNoise(t, 2.2, 'bandpass', 900, 0.11 * k); sfxNoise(t + 0.2, 2.0, 'bandpass', 2000, 0.07 * k); sfxNoise(t + 0.1, 1.8, 'lowpass', 500, 0.09 * k);
+      sfxTone(t + 0.3, 784, 784, 0.4, 0.12 * k, 'triangle'); sfxTone(t + 0.55, 1047, 1047, 0.5, 0.12 * k, 'triangle');
+    } else if (name === 'chime') {              // PERFECT timing: two rising notes
+      sfxTone(t, 880, 880, 0.18, 0.2 * k, 'triangle'); sfxTone(t + 0.09, 1320, 1320, 0.3, 0.2 * k, 'triangle');
+    } else if (name === 'good') {               // GOOD timing: one note
+      sfxTone(t, 660, 660, 0.22, 0.16 * k, 'triangle');
+    } else if (name === 'win') {                // a short rising jingle
+      [523, 659, 784, 1047].forEach(function (f, i) { sfxTone(t + i * 0.13, f, f, 0.32, 0.2 * k, 'triangle'); });
+    } else if (name === 'lose') {
+      [392, 330, 262].forEach(function (f, i) { sfxTone(t + i * 0.2, f, f * 0.98, 0.4, 0.17 * k, 'triangle'); });
+    } else if (name === 'switch') {             // the sides switch
+      sfxTone(t, 523, 523, 0.18, 0.16 * k, 'triangle'); sfxTone(t + 0.16, 392, 392, 0.26, 0.16 * k, 'triangle');
+    } else if (name === 'click') {              // a button
+      sfxTone(t, 1000, 700, 0.04, 0.12 * k, 'square');
     } else if (name === 'tick') {               // the call timer's last seconds: a light blip (higher and louder as time runs out)
       sfxTone(t, 1250 + 500 * Math.min(1, k), 1100 + 400 * Math.min(1, k), 0.07, 0.22 + 0.14 * Math.min(1, k), 'square');
     } else if (name === 'grunt') {

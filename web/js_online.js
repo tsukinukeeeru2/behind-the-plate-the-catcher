@@ -137,7 +137,7 @@ N.showRoom = function (v) {
       '<button type="button" class="ho-ready" id="lb-ready">' + (you ? 'NOT READY' : 'I AGREE · I’M READY') + '</button>' +
       '<button type="button" class="lb-alt" id="lb-practice">' + (me === 'batter' ? 'Practice swings' : 'Practice calling and catching') + '</button>' +
       '<button type="button" class="ho-back" id="lb-leave">Leave the room</button></div>');
-    $('lb-ready').onclick = function () { N.post('/room/ready', { ready: you ? '0' : '1' }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
+    $('lb-ready').onclick = function () { BTP.bgm.sfx('click', 1.0); N.post('/room/ready', { ready: you ? '0' : '1' }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
     var pb = $('lb-practice'); if (pb) pb.onclick = function () { N.hideLobby(); if (me === 'batter') { if (N.hooks.practice) N.hooks.practice(); } else if (N.hooks.catchPractice) N.hooks.catchPractice(); };
     Array.prototype.forEach.call(document.querySelectorAll('[data-guide]'), function (b) {
       b.onclick = function () { N.post('/room/guide', { v: b.dataset.guide }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
@@ -147,6 +147,7 @@ N.showRoom = function (v) {
 };
 N.showMatch = function (v) {
   var r = v.room, m = v.match; if (!m) return;
+  var sk = r.phase + m.id + m.half; if (N.sndKey !== sk) { N.sndKey = sk; BTP.bgm.sfx(r.phase === 'halftime' ? 'switch' : (m.result === 'win' ? 'win' : (m.result === 'lose' ? 'lose' : 'switch')), 1.0); }
   var key = [r.phase, m.id, m.half, m.you, m.opp, m.votes && m.votes.you, m.votes && m.votes.opp, r.paused ? 1 : 0, r.connected.catcher, r.connected.batter].join('|');
   if (key === N.lobbyKey) return;
   N.lobbyKey = key;

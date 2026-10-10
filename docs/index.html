@@ -1000,6 +1000,43 @@ BTP.bgm = (function () {
       sfxNoise(t, 0.12, 'lowpass', 380, 0.9 * k); sfxTone(t, 110, 45, 0.2, 0.8 * k, 'sine');
     } else if (name === 'dull') {               // a ball that only just stuck in the mitt: less snap, more thump
       sfxNoise(t, 0.08, 'lowpass', 900, 0.8 * k); sfxTone(t, 130, 60, 0.15, 0.7 * k, 'sine');
+    } else if (name === 'ping') {               // a clean catch: a small bright bell on top of the pop
+      sfxTone(t + 0.04, 1568, 1568, 0.22, 0.16 * k, 'sine'); sfxTone(t + 0.04, 2349, 2349, 0.16, 0.07 * k, 'sine');
+    } else if (name === 'strike') {             // the umpire's call: a sharp clap
+      sfxNoise(t, 0.04, 'highpass', 3200, 0.7 * k); sfxTone(t, 520, 300, 0.07, 0.35 * k, 'square');
+    } else if (name === 'fieldcatch') {         // a fielder takes the ball in the glove: softer than the catcher's mitt
+      sfxNoise(t, 0.05, 'bandpass', 1500, 0.55 * k); sfxTone(t, 190, 90, 0.1, 0.5 * k, 'sine');
+    } else if (name === 'scoop') {              // a grounder gathered up
+      sfxNoise(t, 0.09, 'bandpass', 1100, 0.45 * k); sfxTone(t, 240, 140, 0.07, 0.25 * k, 'triangle');
+    } else if (name === 'throw') {              // a throw on its way
+      var o2 = A.createOscillator(), f2 = A.createBiquadFilter(), g2 = A.createGain();
+      o2.type = 'sawtooth'; o2.frequency.value = 110; f2.type = 'bandpass'; f2.Q.value = 1.5;
+      f2.frequency.setValueAtTime(900, t); f2.frequency.exponentialRampToValueAtTime(2400, t + 0.12);
+      g2.gain.setValueAtTime(0.0001, t); g2.gain.exponentialRampToValueAtTime(0.09 * k, t + 0.05); g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+      o2.connect(f2); f2.connect(g2); g2.connect(sfxOut); o2.start(t); o2.stop(t + 0.17);
+    } else if (name === 'out') {                // an out at a base: the ball hits the glove, a short low note
+      sfxNoise(t, 0.05, 'bandpass', 1800, 0.6 * k); sfxTone(t, 160, 70, 0.14, 0.55 * k, 'sine'); sfxTone(t + 0.07, 330, 220, 0.18, 0.16 * k, 'triangle');
+    } else if (name === 'safe') {               // a slide: dirt
+      sfxNoise(t, 0.28, 'bandpass', 2200, 0.32 * k); sfxNoise(t + 0.05, 0.2, 'lowpass', 600, 0.25 * k);
+    } else if (name === 'run') {                // a run scores: a bell
+      sfxTone(t, 1175, 1175, 0.28, 0.2 * k, 'sine'); sfxTone(t + 0.1, 1568, 1568, 0.34, 0.18 * k, 'sine');
+    } else if (name === 'cheer') {              // the crowd likes a hit
+      var cn = 0.95; sfxNoise(t, cn, 'bandpass', 1000, 0.07 * k); sfxNoise(t + 0.15, cn, 'bandpass', 1800, 0.05 * k);
+    } else if (name === 'roar') {               // a home run: a long swell, then a bell
+      sfxNoise(t, 2.2, 'bandpass', 900, 0.11 * k); sfxNoise(t + 0.2, 2.0, 'bandpass', 2000, 0.07 * k); sfxNoise(t + 0.1, 1.8, 'lowpass', 500, 0.09 * k);
+      sfxTone(t + 0.3, 784, 784, 0.4, 0.12 * k, 'triangle'); sfxTone(t + 0.55, 1047, 1047, 0.5, 0.12 * k, 'triangle');
+    } else if (name === 'chime') {              // PERFECT timing: two rising notes
+      sfxTone(t, 880, 880, 0.18, 0.2 * k, 'triangle'); sfxTone(t + 0.09, 1320, 1320, 0.3, 0.2 * k, 'triangle');
+    } else if (name === 'good') {               // GOOD timing: one note
+      sfxTone(t, 660, 660, 0.22, 0.16 * k, 'triangle');
+    } else if (name === 'win') {                // a short rising jingle
+      [523, 659, 784, 1047].forEach(function (f, i) { sfxTone(t + i * 0.13, f, f, 0.32, 0.2 * k, 'triangle'); });
+    } else if (name === 'lose') {
+      [392, 330, 262].forEach(function (f, i) { sfxTone(t + i * 0.2, f, f * 0.98, 0.4, 0.17 * k, 'triangle'); });
+    } else if (name === 'switch') {             // the sides switch
+      sfxTone(t, 523, 523, 0.18, 0.16 * k, 'triangle'); sfxTone(t + 0.16, 392, 392, 0.26, 0.16 * k, 'triangle');
+    } else if (name === 'click') {              // a button
+      sfxTone(t, 1000, 700, 0.04, 0.12 * k, 'square');
     } else if (name === 'tick') {               // the call timer's last seconds: a light blip (higher and louder as time runs out)
       sfxTone(t, 1250 + 500 * Math.min(1, k), 1100 + 400 * Math.min(1, k), 0.07, 0.22 + 0.14 * Math.min(1, k), 'square');
     } else if (name === 'grunt') {
@@ -2734,7 +2771,7 @@ N.showRoom = function (v) {
       '<button type="button" class="ho-ready" id="lb-ready">' + (you ? 'NOT READY' : 'I AGREE · I’M READY') + '</button>' +
       '<button type="button" class="lb-alt" id="lb-practice">' + (me === 'batter' ? 'Practice swings' : 'Practice calling and catching') + '</button>' +
       '<button type="button" class="ho-back" id="lb-leave">Leave the room</button></div>');
-    $('lb-ready').onclick = function () { N.post('/room/ready', { ready: you ? '0' : '1' }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
+    $('lb-ready').onclick = function () { BTP.bgm.sfx('click', 1.0); N.post('/room/ready', { ready: you ? '0' : '1' }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
     var pb = $('lb-practice'); if (pb) pb.onclick = function () { N.hideLobby(); if (me === 'batter') { if (N.hooks.practice) N.hooks.practice(); } else if (N.hooks.catchPractice) N.hooks.catchPractice(); };
     Array.prototype.forEach.call(document.querySelectorAll('[data-guide]'), function (b) {
       b.onclick = function () { N.post('/room/guide', { v: b.dataset.guide }).then(function (v2) { if (v2 && v2.room && N.onView) { N.view = v2; N.onView(v2, true); } }); };
@@ -2744,6 +2781,7 @@ N.showRoom = function (v) {
 };
 N.showMatch = function (v) {
   var r = v.room, m = v.match; if (!m) return;
+  var sk = r.phase + m.id + m.half; if (N.sndKey !== sk) { N.sndKey = sk; BTP.bgm.sfx(r.phase === 'halftime' ? 'switch' : (m.result === 'win' ? 'win' : (m.result === 'lose' ? 'lose' : 'switch')), 1.0); }
   var key = [r.phase, m.id, m.half, m.you, m.opp, m.votes && m.votes.you, m.votes && m.votes.opp, r.paused ? 1 : 0, r.connected.catcher, r.connected.batter].join('|');
   if (key === N.lobbyKey) return;
   N.lobbyKey = key;
@@ -3401,6 +3439,7 @@ function batterSwing(pressedAt) {
   if (t < a.tRel - 0.35 || t > d.tClose) return;                                   // before the rings start, or too late to touch it: nothing
   var off = t + BTP.duel.LAG - a.tHitZ, aim = autoAim(a);
   d.swing = { cx: 0, cy: 0, dx: aim.dx, dy: aim.dy, off: off, t: t };
+  var gk = BTP.duel.gradeOf(off).key; if (Math.abs(off) <= BTP.duel.AUTO.max) BTP.bgm.sfx(gk === 'perfect' ? 'chime' : (gk === 'good' ? 'good' : 'dull'), 1.0);
   a.swung = true; a.tContact = t + BTP.duel.LAG; a.holdAt = Math.min(a.holdAt, a.tContact);
   if (a.practice) { practiceResolve(a, d.swing); return; }
   duelSend(a, d.swing);
@@ -3783,7 +3822,7 @@ function buildModel(now) {
       pop = ag < 0.5 ? Math.sin(Math.min(1, ag / 0.07) * Math.PI / 2) * (1 - ease(ag / 0.5)) * (q2 === 'clean' ? 1 : (q2 === 'barely' ? 1.35 : 0.35)) : 0;
       if (q2 === 'barely') tilt += Math.sin(ag * 38) * 0.28 * Math.max(0, 1 - ag / 0.45);                                      // a bobble
       once('rsnd', true, function () {
-        if (q2 === 'clean') BTP.bgm.sfx('pop', 1.15);
+        if (q2 === 'clean') { BTP.bgm.sfx('pop', 1.15); BTP.bgm.sfx('ping', 1.0); }
         else if (q2 === 'barely') { BTP.bgm.sfx('dull', 1.0); BTP.bgm.sfx('pop', 0.45); }
         else BTP.bgm.sfx('whoosh', 0.9);
       });
@@ -3821,6 +3860,7 @@ function buildModel(now) {
     m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: -0.12 + 0.12 * pop };
     if (a.caught && popAge >= 0 && popAge < 0.40) m.pop = { x: mp.x, y: mp.y, r: mp.size * (0.8 + popAge * 4), a: 1 - popAge / 0.40 };
     if (a.caught) once('pop', popAge >= 0, function () { BTP.bgm.sfx('pop', 1.0); });
+    if (a.caught && a.l.result !== 'Pending') once('call', popAge >= 0.28, function () { if (a.l.result === 'Strike' || a.l.result === 'Whiff') BTP.bgm.sfx('strike', 1.0); });
     var shakeAge = a.caught ? popAge : t - a.tContact;
     if ((a.caught || a.swung) && shakeAge >= 0 && shakeAge < 0.14) {          // one short jolt, then still again
       var amp = (a.caught ? 7 : 4) * (1 - shakeAge / 0.14) * (1 - shakeAge / 0.14);
@@ -3862,6 +3902,19 @@ function buildModel(now) {
         return o;
       });
       m.batterHidden = true;
+      once('crowd', st2 > 0.9, function () { if (a.l.batted.label === 'Home run') BTP.bgm.sfx('roar', 1.0); else if (a.l.batted.label !== 'Out' && a.l.batted.label !== 'Error') BTP.bgm.sfx('cheer', 1.0); });
+      Object.keys(m.fielders).forEach(function (pos) {                                   // a fielder takes the ball: a soft pop (a grounder: a scoop)
+        var fo = m.fielders[pos], was = a.fmov && a.fmov[pos]; a.fmov = a.fmov || {}; a.fmov[pos] = fo.moving;
+        var near = Math.hypot(fo.x - w.x, fo.z - w.z) < 3.2;
+        if (fo.catching) once('fc' + pos, true, function () { BTP.bgm.sfx('fieldcatch', 1.0); });
+        else if (was && !fo.moving && near && y < 1.5) once('fs' + pos + '_' + Math.floor(st2 * 2), true, function () { BTP.bgm.sfx(a.l.batted.ball_type === 'ground' ? 'scoop' : 'fieldcatch', 1.0); });   // he reaches the ball and stops: it is in his glove
+      });
+      a.script.ball.segs.forEach(function (sg, ix) {                                      // every later leg of the ball is a throw
+        if (ix > 0 && Math.hypot(sg[4] - sg[2], sg[5] - sg[3]) > 14) once('thr' + ix, st2 >= sg[0], function () { BTP.bgm.sfx('throw', 1.0); });
+      });
+      (a.script.marks || []).forEach(function (mk, ix) {                                  // SAFE / OUT / RUN: heard when they are seen
+        once('mk' + ix, st2 >= mk[0], function () { BTP.bgm.sfx(mk[1] === 'OUT' ? 'out' : (mk[1] === 'SAFE' ? 'safe' : 'run'), 1.0); });
+      });
       // the chase camera: it follows the ball, then rises to show the whole play; it fades in right after contact and back out to the catcher before the result panel
       if (!a.fr) { a.fr = aerialFraming(a.script); a.fr.lz = BTP.aerialFitTarget(W, H, a.fr.lx, a.fr.lz, a.fr.cover); a.tLandS = a.script.ball.segs.length ? a.script.ball.segs[0][1] : 1.5; }
       var aT0 = a.tContact + 0.20, aT1 = a.tAfter - 1.45;

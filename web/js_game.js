@@ -577,6 +577,7 @@ function batterSwing(pressedAt) {
   if (t < a.tRel - 0.35 || t > d.tClose) return;                                   // before the rings start, or too late to touch it: nothing
   var off = t + BTP.duel.LAG - a.tHitZ, aim = autoAim(a);
   d.swing = { cx: 0, cy: 0, dx: aim.dx, dy: aim.dy, off: off, t: t };
+  var gk = BTP.duel.gradeOf(off).key; if (Math.abs(off) <= BTP.duel.AUTO.max) BTP.bgm.sfx(gk === 'perfect' ? 'chime' : (gk === 'good' ? 'good' : 'dull'), 1.0);
   a.swung = true; a.tContact = t + BTP.duel.LAG; a.holdAt = Math.min(a.holdAt, a.tContact);
   if (a.practice) { practiceResolve(a, d.swing); return; }
   duelSend(a, d.swing);
@@ -959,7 +960,7 @@ function buildModel(now) {
       pop = ag < 0.5 ? Math.sin(Math.min(1, ag / 0.07) * Math.PI / 2) * (1 - ease(ag / 0.5)) * (q2 === 'clean' ? 1 : (q2 === 'barely' ? 1.35 : 0.35)) : 0;
       if (q2 === 'barely') tilt += Math.sin(ag * 38) * 0.28 * Math.max(0, 1 - ag / 0.45);                                      // a bobble
       once('rsnd', true, function () {
-        if (q2 === 'clean') BTP.bgm.sfx('pop', 1.15);
+        if (q2 === 'clean') { BTP.bgm.sfx('pop', 1.15); BTP.bgm.sfx('ping', 1.0); }
         else if (q2 === 'barely') { BTP.bgm.sfx('dull', 1.0); BTP.bgm.sfx('pop', 0.45); }
         else BTP.bgm.sfx('whoosh', 0.9);
       });
@@ -997,6 +998,7 @@ function buildModel(now) {
     m.mitt = { x: mp.x, y: mp.y + pop * mp.size * 0.18, size: mp.size, pop: pop, tilt: -0.12 + 0.12 * pop };
     if (a.caught && popAge >= 0 && popAge < 0.40) m.pop = { x: mp.x, y: mp.y, r: mp.size * (0.8 + popAge * 4), a: 1 - popAge / 0.40 };
     if (a.caught) once('pop', popAge >= 0, function () { BTP.bgm.sfx('pop', 1.0); });
+    if (a.caught && a.l.result !== 'Pending') once('call', popAge >= 0.28, function () { if (a.l.result === 'Strike' || a.l.result === 'Whiff') BTP.bgm.sfx('strike', 1.0); });
     var shakeAge = a.caught ? popAge : t - a.tContact;
     if ((a.caught || a.swung) && shakeAge >= 0 && shakeAge < 0.14) {          // one short jolt, then still again
       var amp = (a.caught ? 7 : 4) * (1 - shakeAge / 0.14) * (1 - shakeAge / 0.14);
@@ -1038,6 +1040,19 @@ function buildModel(now) {
         return o;
       });
       m.batterHidden = true;
+      once('crowd', st2 > 0.9, function () { if (a.l.batted.label === 'Home run') BTP.bgm.sfx('roar', 1.0); else if (a.l.batted.label !== 'Out' && a.l.batted.label !== 'Error') BTP.bgm.sfx('cheer', 1.0); });
+      Object.keys(m.fielders).forEach(function (pos) {                                   // a fielder takes the ball: a soft pop (a grounder: a scoop)
+        var fo = m.fielders[pos], was = a.fmov && a.fmov[pos]; a.fmov = a.fmov || {}; a.fmov[pos] = fo.moving;
+        var near = Math.hypot(fo.x - w.x, fo.z - w.z) < 3.2;
+        if (fo.catching) once('fc' + pos, true, function () { BTP.bgm.sfx('fieldcatch', 1.0); });
+        else if (was && !fo.moving && near && y < 1.5) once('fs' + pos + '_' + Math.floor(st2 * 2), true, function () { BTP.bgm.sfx(a.l.batted.ball_type === 'ground' ? 'scoop' : 'fieldcatch', 1.0); });   // he reaches the ball and stops: it is in his glove
+      });
+      a.script.ball.segs.forEach(function (sg, ix) {                                      // every later leg of the ball is a throw
+        if (ix > 0 && Math.hypot(sg[4] - sg[2], sg[5] - sg[3]) > 14) once('thr' + ix, st2 >= sg[0], function () { BTP.bgm.sfx('throw', 1.0); });
+      });
+      (a.script.marks || []).forEach(function (mk, ix) {                                  // SAFE / OUT / RUN: heard when they are seen
+        once('mk' + ix, st2 >= mk[0], function () { BTP.bgm.sfx(mk[1] === 'OUT' ? 'out' : (mk[1] === 'SAFE' ? 'safe' : 'run'), 1.0); });
+      });
       // the chase camera: it follows the ball, then rises to show the whole play; it fades in right after contact and back out to the catcher before the result panel
       if (!a.fr) { a.fr = aerialFraming(a.script); a.fr.lz = BTP.aerialFitTarget(W, H, a.fr.lx, a.fr.lz, a.fr.cover); a.tLandS = a.script.ball.segs.length ? a.script.ball.segs[0][1] : 1.5; }
       var aT0 = a.tContact + 0.20, aT1 = a.tAfter - 1.45;
