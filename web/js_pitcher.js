@@ -1,13 +1,15 @@
 /* ===================================================================================
-   The pitcher's delivery: a heavy, deliberate, full-body motion in the spirit of a big power left-hander
-   (a calm start, the knee lifted high, weight loaded over the back leg, then a long stride and a hard, sequenced snap:
-   hips, then chest, then the elbow leading the arm, then release and follow-through).
-   This is an original animation made from those general traits. It is not a reconstruction of any real player's motion.
+   The pitcher's delivery: a big, exaggerated, comic-book-style full-body motion, made to look fast and a little scary from behind the plate.
+     1. He waits SIDEWAYS (chest turned away from home), calm, with a slow sway: the "tame" (tame = the wind-up that stores energy).
+     2. The lead knee goes up high, the hands rise, and the upper body twists back even further than the hips. He freezes there for a beat.
+     3. A long, low stride, with the chest still closed (hips and shoulders separate).
+     4. Then everything turns in order, fast: hips, then chest, then shoulders, then the elbow leads the arm to the release.
+     5. A big follow-through: the upper body folds over the front leg and the back leg swings through.
+   Calm, then a snap, then a big sweep. It is an original, deliberately exaggerated animation, not a reconstruction of any real pitcher.
 
-   The whole body is a small skeleton with real segment lengths. The hips and the shoulders turn separately (hips first, then
-   shoulders: the "separation" that makes the throw look powerful), the feet are placed, and the knees and elbows are solved
-   with two-bone IK so the limbs stay connected. A left-hander is the same motion mirrored, so the stride foot, arm and
-   release point stay consistent for either hand.
+   The body is a skeleton with real segment lengths; the feet are placed and the knees and elbows are solved with two-bone IK, so
+   the limbs stay connected and never fold the wrong way. A left-hander is the same motion mirrored (the stride foot, the throwing arm and the
+   release point all swap sides together).
    =================================================================================== */
 (function () {
 'use strict';
@@ -15,11 +17,12 @@ var BTP = window.BTP;
 
 /* ---- time line (seconds): when each phase of the delivery happens ---- */
 var T = BTP.DELIVERY = {
-  set: 0.40,        // calm and still, hands at the chest
-  lift: 1.00,       // the knee goes up, weight settles over the back leg
-  plant: 1.30,      // the stride foot lands
-  release: 1.50,    // the ball leaves the hand
-  end: 2.05         // the follow-through has finished
+  set: 0.45,        // waiting, sideways, a slow sway
+  lift: 1.10,       // the knee goes up high and the hands rise
+  hold: 1.35,       // the freeze at the top
+  plant: 1.55,      // the stride foot lands (a long, quick stride)
+  release: 1.78,    // the ball leaves the hand
+  end: 2.40         // the follow-through has finished
 };
 
 /* ---- tiny helpers ---- */
@@ -52,26 +55,29 @@ function ik(root, end, l1, l2, bend) {
 }
 function rotY(v, a) { var c = Math.cos(a), s = Math.sin(a); return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]; }
 
-/* ---- the keyframes (for a right-hander, in his own frame: x = his right, y = up, z = toward home plate) ---- */
+/* ---- the keyframes (for a right-hander, in his own frame: x = his right, y = up, z = toward home plate) ----
+   hip / sho are turn angles in radians: + means the chest is turned toward his right (away from home, "closed"), - means opened toward home. */
 var K = {
-  // pelvis position
-  py: [[0, 0.97], [T.set, 0.97], [0.85, 1.03, 'ss'], [1.05, 1.02], [T.plant, 0.92, 'in'], [T.release, 0.90], [T.end, 0.80, 'out']],
-  pz: [[0, 0], [T.set, 0], [0.90, -0.07], [1.05, -0.05], [T.plant, 0.50, 'in'], [T.release, 0.64, 'out'], [T.end, 0.88]],
-  // hip and shoulder turn (radians; + = chest turned toward his right = "closed", - = open toward home and beyond)
-  hip: [[0, 0], [T.set, 0], [0.90, 0.55], [1.18, 0.55], [T.release - 0.04, -0.40, 'in'], [T.end, -0.75, 'out']],
-  sho: [[0, 0], [T.set, 0], [0.90, 0.50], [T.plant + 0.02, 0.56], [T.release, -0.22, 'in'], [T.end, -1.05, 'out']],
-  lean: [[0, 0.03], [0.90, -0.04], [T.plant, 0.20], [T.release, 0.55, 'in'], [T.end, 0.88, 'out']],
-  // the feet
-  lead: [[0, [-0.15, 0.05, 0.0]], [T.set, [-0.15, 0.05, 0.0]], [0.70, [-0.15, 0.50, 0.14], 'ss'], [T.lift, [-0.16, 0.74, 0.20]],
-         [1.14, [-0.18, 0.60, 0.55]], [T.plant, [-0.24, 0.05, 1.22], 'in'], [T.end, [-0.24, 0.05, 1.22]]],
-  back: [[0, [0.17, 0.05, -0.02]], [1.05, [0.17, 0.05, -0.02]], [T.plant, [0.17, 0.05, 0.12]], [T.release, [0.19, 0.06, 0.24]],
-         [1.72, [0.22, 0.42, 0.80], 'ss'], [T.end, [0.22, 0.10, 1.12]]],
-  // the throwing hand, relative to its shoulder, in the shoulder frame (right, up, forward)
-  hand: [[0, [0.04, -0.30, 0.30]], [T.lift, [0.04, -0.28, 0.30]], [1.13, [0.12, -0.55, 0.06], 'ss'], [1.26, [0.50, -0.06, -0.50], 'ss'],
-         [1.40, [0.44, 0.12, -0.38], 'ss'], [T.release, [0.10, 0.58, 0.40], 'in'], [1.66, [-0.22, -0.18, 0.50], 'out'], [T.end, [-0.26, -0.42, 0.34]]],
-  glove: [[0, [-0.04, -0.30, 0.30]], [T.lift, [-0.04, -0.30, 0.30]], [1.12, [-0.22, -0.12, 0.36], 'ss'], [1.28, [-0.20, 0.10, 0.60], 'ss'],
-          [T.release, [-0.12, 0.00, 0.46]], [1.68, [-0.05, -0.30, 0.22], 'ss'], [T.end, [-0.05, -0.30, 0.22]]],
-  cock: [[0, 0], [1.16, 0, 'ss'], [1.30, 1, 'ss'], [1.42, 1], [T.release, 0, 'in'], [T.end, 0]]
+  // pelvis position: a little sway, up on the lift, back over the rear leg for the freeze, then a long drop and drive forward
+  py: [[0, 0.96], [0.22, 0.99, 'ss'], [T.set, 0.97], [0.85, 1.04], [T.lift, 1.07], [T.hold, 1.08], [T.plant, 0.84, 'in'], [T.release, 0.88], [T.end, 0.62, 'out']],
+  pz: [[0, 0], [T.set, 0], [T.lift, -0.12, 'ss'], [T.hold, -0.16], [T.plant, 0.78, 'in'], [T.release, 0.96, 'out'], [T.end, 1.30]],
+  // hips turn first, then the shoulders (which also wound up further back than the hips during the freeze)
+  hip: [[0, 1.25], [T.set, 1.25], [T.lift, 1.38, 'ss'], [T.hold, 1.38], [1.50, 1.30], [T.release - 0.07, -0.55, 'in'], [T.end, -0.95, 'out']],
+  sho: [[0, 1.30], [T.set, 1.30], [T.lift, 1.60, 'ss'], [T.hold, 1.80, 'ss'], [T.plant + 0.03, 1.80], [T.release - 0.04, -0.40, 'in'], [T.release + 0.02, -0.55], [T.end, -1.30, 'out']],
+  // the upper body leans back during the freeze, then folds forward over the front leg
+  lean: [[0, 0.02], [T.set, 0.02], [T.lift, -0.20, 'ss'], [T.hold, -0.26], [T.plant, 0.12, 'in'], [T.release, 0.42, 'in'], [T.end, 1.10, 'out']],
+  // the feet. Sideways stance: the lead foot toward home, the back foot behind it.
+  lead: [[0, [-0.04, 0.05, 0.24]], [T.set, [-0.04, 0.05, 0.24]], [0.80, [-0.04, 0.55, 0.30], 'ss'], [T.lift, [-0.03, 0.84, 0.16], 'ss'],
+         [T.hold, [-0.03, 0.84, 0.16]], [1.45, [-0.12, 0.55, 0.85], 'in'], [T.plant, [-0.27, 0.05, 1.48], 'in'], [T.end, [-0.27, 0.05, 1.48]]],
+  back: [[0, [0.12, 0.05, -0.18]], [T.hold, [0.12, 0.05, -0.18]], [T.plant, [0.14, 0.05, 0.14], 'in'], [T.release, [0.16, 0.10, 0.32]],
+         [1.98, [0.22, 0.60, 0.98], 'ss'], [T.end, [0.22, 0.08, 1.30], 'out']],
+  // the throwing hand, relative to its shoulder, in the shoulder frame (right, up, forward). It goes up with the knee, then back, then the elbow leads.
+  hand: [[0, [0.04, -0.30, 0.30]], [T.set, [0.04, -0.30, 0.30]], [0.80, [0.03, 0.22, 0.26], 'ss'], [T.lift, [0.00, 0.62, 0.14], 'ss'], [T.hold, [0.00, 0.62, 0.14]],
+         [1.46, [0.22, 0.12, -0.36], 'ss'], [T.plant + 0.02, [0.56, 0.06, -0.58], 'ss'], [T.release - 0.07, [0.46, 0.16, -0.40], 'ss'],
+         [T.release, [0.08, 0.68, 0.34], 'in'], [1.98, [-0.22, -0.35, 0.50], 'out'], [T.end, [-0.30, -0.55, 0.30]]],
+  glove: [[0, [-0.04, -0.30, 0.30]], [T.set, [-0.04, -0.30, 0.30]], [0.80, [-0.03, 0.22, 0.26], 'ss'], [T.lift, [-0.02, 0.62, 0.14], 'ss'], [T.hold, [-0.02, 0.62, 0.14]],
+          [1.46, [-0.22, 0.05, 0.55], 'ss'], [T.plant + 0.02, [-0.20, 0.10, 0.66], 'ss'], [T.release, [-0.12, 0.00, 0.46]], [1.98, [-0.05, -0.35, 0.25], 'ss'], [T.end, [-0.05, -0.35, 0.25]]],
+  cock: [[0, 0], [1.40, 0, 'ss'], [1.60, 1, 'ss'], [T.release - 0.07, 1], [T.release, 0, 'in'], [T.end, 0]]
 };
 
 // the delivery at time t (seconds since the motion started) as joints in the pitcher's own frame
